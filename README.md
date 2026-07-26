@@ -6,7 +6,8 @@
 
 基于 PySide6 的 AI 桌面伴侣，深度集成 Hanako 生态。支持多桌宠并行运行，每个 Hanako agent 可独立拥有一个桌宠窗口。
 
-## 功能清单
+<details>
+<summary>功能清单</summary>
 
 ### 对话系统
 - 💬 **文字对话** -- 复用 Hanako 身份/记忆/模型配置，支持 tool calling
@@ -91,6 +92,8 @@ linjian-peek → MCP Plugin → Hanako tool calling ─────────�
 
 ### 通知
 - 📱 **ntfy 通知** -- 推送通知到手机（需安装 ntfy app）
+
+</details>
 
 ## 环境要求
 

@@ -1,0 +1,135 @@
+{
+  "character": "yuexinmiao",
+  "scale": 1.0,
+  "opacity": 1.0,
+  "behavior": "normal",
+  "window": {
+    "width": 200,
+    "height": 300,
+    "x": 1432,
+    "y": 361
+  },
+  "break_reminder": {
+    "enabled": true,
+    "idle_minutes": 15,
+    "gradual": true,
+    "cooldown_minutes": 30
+  },
+  "action_linker": {
+    "enabled": true,
+    "highlight_duration": 30
+  },
+  "tts": {
+    "enabled": true,
+    "volume": 0.8,
+    "provider": "mimo"
+  },
+  "proactive": {
+    "enabled": true,
+    "cooldown_minutes": 10,
+    "rules": [
+      {
+        "idle_min": 5,
+        "foreground": [
+          "writing",
+          "development",
+          "browsing"
+        ],
+        "prompt": "写了这么久，休息一下吧？",
+        "weight": 0.7
+      },
+      {
+        "idle_min": 15,
+        "foreground": [
+          "gaming",
+          "entertainment"
+        ],
+        "prompt": "带我一起玩嘛～",
+        "weight": 0.5
+      },
+      {
+        "idle_min": 30,
+        "foreground": [
+          "communication"
+        ],
+        "prompt": "还在忙吗？想和你说说话～",
+        "weight": 0.3
+      },
+      {
+        "idle_min": 60,
+        "foreground": [
+          "*"
+        ],
+        "prompt": "好安静啊……你在做什么呢？",
+        "weight": 0.3
+      }
+    ]
+  },
+  "agents": [
+    {
+      "id": "yuexinmiao",
+      "enabled": true,
+      "position": {
+        "x": 1346,
+        "y": 395
+      },
+      "scale": 1.0,
+      "builtin": true
+    },
+    {
+      "id": "phoebe",
+      "enabled": false,
+      "position": {
+        "x": 1768,
+        "y": 431
+      },
+      "scale": 1.0,
+      "builtin": true
+    }
+  ],
+  "mouse_interaction": true,
+  "screen": {
+    "enabled": true,
+    "interval": 120
+  },
+  "asr": {
+    "provider": "mimo"
+  },
+  "memory": {
+    "budget_mode": "auto",
+    "budget_chars": 3000
+  },
+  "phone_receiver": {
+    "enabled": true,
+    "port": 8077
+  },
+  "ntfy": {
+    "enabled": false,
+    "server": "https://ntfy.sh",
+    "topic": "",
+    "away_threshold_minutes": 5,
+    "priority": 4,
+    "quiet_hours": {
+      "start": 1,
+      "end": 7
+    }
+  },
+  "solitude": {
+    "enabled": true,
+    "pc_idle_threshold_minutes": 10,
+    "check_intervals": {
+      "day": {
+        "start": 13,
+        "end": 23,
+        "minutes": 15
+      },
+      "night": {
+        "start": 23,
+        "end": 13,
+        "minutes": 90
+      }
+    },
+    "cooldown_multiplier": 2,
+    "max_solitude_hours": 4
+  }
+}

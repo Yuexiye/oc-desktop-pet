@@ -1,0 +1,8 @@
+{
+  "tests/test_response_categoriser.py::TestCategorise::test_basic_separation": true,
+  "tests/test_response_categoriser.py::TestCategorise::test_deepseek_style": true,
+  "test_core.py::TestEmotionStateMachine": true,
+  "test_core.py::TestTimePerception": true,
+  "test_core.py::TestProactiveScheduler": true,
+  "test_core.py::TestCompactBubbleText": true
+}

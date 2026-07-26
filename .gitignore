@@ -7,6 +7,7 @@ data/
 *.png
 *.jpg
 *.ico
+crash_trace.txt
 
 # Python
 __pycache__/
@@ -24,3 +25,4 @@ test-env/
 characters/*
 !characters/yuexinmiao/
 !characters/yuexinmiao/**
+PROJECT_LOG.md
