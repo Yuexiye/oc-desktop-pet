@@ -1,0 +1,35 @@
+# 运行时数据
+config.json
+config.json.bak
+hanako-state.json
+.env
+data/
+*.png
+*.jpg
+*.ico
+crash_trace.txt
+logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 构建产物
+output/
+import-pets/
+sandbox/
+sandbox_runner.py
+test-env/
+
+# characters 目录除了内置角色外忽略
+characters/*
+!characters/yuexinmiao/
+!characters/yuexinmiao/**
+PROJECT_LOG.md
+
+# 备份文件
+.backups/
+*.bak
+*.bak-*
+
