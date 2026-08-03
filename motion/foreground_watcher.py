@@ -218,8 +218,12 @@ class ForegroundWatcher:
         if app == self._last_app and title == self._last_title:
             return None
 
-        # 冷却中
+        # 冷却中：记录新状态但不触发回调（避免切换轰炸），
+        # 这样冷却结束后能正确对比，不会把冷却期内的切换误判为"没变"。
         if now < self._cooldown_until:
+            self._last_app = app
+            self._last_category = category
+            self._last_title = title
             return None
 
         self._last_app = app

@@ -98,6 +98,47 @@ SCREENSHOT_TITLE_BLACKLIST: list[str] = [
 ]
 
 
+def _extract_json_object(text: str) -> dict | None:
+    """从可能夹带文字/多个 JSON 的回复中提取第一个完整 JSON 对象。
+
+    用括号配对 + 字符串引号感知扫描，支持嵌套对象/数组，
+    比单层正则更稳健（视觉模型可能返回嵌套结构）。
+
+    Returns:
+        解析出的 dict，失败返回 None
+    """
+    if not text:
+        return None
+    start = text.find('{')
+    if start == -1:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == '\\':
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[start:i + 1])
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
 def _is_screen_blacklisted(app: str, title: str, enabled: bool = False) -> bool:
     """检查前台窗口是否在截图黑名单中（仅在 enabled=True 时生效）"""
     if not enabled:
@@ -126,6 +167,7 @@ class ScreenPerception:
     MAX_CONSECUTIVE_FAILURES = 3
     BASE_BACKOFF_SECONDS = 60  # 基础退避时间
     MAX_BACKOFF_SECONDS = 600  # 最大退避时间（10分钟）
+    MAX_CONSECUTIVE_EMPTY = 3  # 连续空响应阈值：超过则停用（避免无限空转）
 
     def __init__(self, interval: int = 120):
         self._interval = interval
@@ -142,6 +184,7 @@ class ScreenPerception:
         self._activity_history: list[ActivityEvent] = []  # 最近 50 个活动事件
         self._last_frame_hash: str = ""
         self._consecutive_failures: int = 0
+        self._consecutive_empty: int = 0  # 连续空响应计数
         # 视觉模型配置状态（避免未配置/配置错误时反复请求刷屏）
         self._vision_disabled: bool = False            # 400/401 后本次会话停用
         self._vision_skip_logged: bool = False          # 未配置时只提示一次
@@ -381,6 +424,7 @@ class ScreenPerception:
                             if len(self._activity_history) > 50:
                                 self._activity_history.pop(0)
                     self._consecutive_failures = 0
+                    self._consecutive_empty = 0  # 成功一次即重置空响应计数
                     self._interval = self._base_interval  # 恢复正常间隔
                     logger.info("Screen analysis [%s]: %s", mode, description[:50])
                     self.on_update(description)
@@ -391,8 +435,25 @@ class ScreenPerception:
                     self._check_screen_proactive(description, detail=detail_text)
                     return event
                 else:
-                    logger.warning("Vision API returned empty content")
+                    # 空响应：模型返回 200 但无 content。
+                    # 可能是模型不支持图像输入 / 返回格式异常，不是单纯网络故障。
+                    # 连续空响应达到阈值则停用，避免每个周期空打 API 无限空转。
+                    self._consecutive_empty += 1
                     self._consecutive_failures += 1
+                    if self._consecutive_empty >= self.MAX_CONSECUTIVE_EMPTY:
+                        if not self._vision_skip_logged:
+                            logger.warning(
+                                "屏幕感知已停用：视觉模型连续 %d 次返回空内容。"
+                                "通常当前模型不支持图像输入，或视觉模型配置有误。"
+                                "请在设置面板检查视觉模型，或保持留空以关闭屏幕感知。",
+                                self.MAX_CONSECUTIVE_EMPTY,
+                            )
+                        self._vision_disabled = True
+                        return None
+                    logger.warning(
+                        "Vision API 返回空内容 (%d/%d)：模型可能不支持图像输入",
+                        self._consecutive_empty, self.MAX_CONSECUTIVE_EMPTY,
+                    )
             else:
                 # 400/401 属于配置问题（模型不存在 / Key 无效），不是临时故障；
                 # 停用屏幕感知避免每个周期重复请求刷屏，仅提示一次。
@@ -428,11 +489,11 @@ class ScreenPerception:
     def _parse_activity_json(self, raw: str, app: str) -> ActivityEvent | None:
         """解析视觉模型返回的 JSON，生成 ActivityEvent"""
         try:
-            # 尝试提取 JSON（模型可能在 JSON 前后加文字）
-            json_match = re.search(r'\{[^{}]+\}', raw)
-            if not json_match:
+            # 提取 JSON（模型可能在 JSON 前后加文字）。
+            # 用括号配对扫描替代单层正则：支持嵌套 JSON（detail 等字段可能含对象）。
+            data = _extract_json_object(raw)
+            if data is None:
                 return None
-            data = json.loads(json_match.group())
 
             valid_categories = {'work', 'learn', 'entertainment', 'communication', 'other'}
             category = data.get('category', 'other')

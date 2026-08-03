@@ -25,22 +25,18 @@ logger = logging.getLogger(__name__)
 
 def map_emotion_to_anim(emotion: str) -> str:
     """情绪 -> 动画序列
-    
-    与 pet.py 中的情绪动画映射保持一致：
-    - happy -> waving
-    - surprised -> jumping
-    - thinking -> running
-    - sad -> failed
-    - 其他 -> idle
+
+    统一从 config.EXPRESSION_MAP（权威映射）读取，避免多份映射分叉。
+    与 pet.py 的 _do_screen_emotion / SpriteRenderer 保持一致。
     """
-    anim_map = {
-        'happy': 'waving',
-        'angry': 'waving',
-        'surprised': 'jumping',
-        'thinking': 'running',
-        'sad': 'failed',
-    }
-    return anim_map.get(emotion, 'idle')
+    try:
+        from config import EXPRESSION_MAP
+        mapped = EXPRESSION_MAP.get(emotion)
+        if mapped:
+            return mapped[0] or 'idle'
+    except Exception:
+        pass
+    return 'idle'
 
 
 class ConversationEngine:

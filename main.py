@@ -154,7 +154,14 @@ def main():
 
     manager.launch_all()
 
-    sys.exit(app.exec())
+    rc = app.exec()
+    # 退出前 flush 防抖写盘，避免丢失最后一次位置保存
+    try:
+        from config import async_config_saver
+        async_config_saver.shutdown()
+    except Exception:
+        pass
+    sys.exit(rc)
 
 
 if __name__ == "__main__":

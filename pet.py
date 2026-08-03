@@ -22,7 +22,8 @@ from PySide6.QtGui import (
     QFontMetrics, QAction, QIcon, QTransform, QImage,
     QCursor
 )
-from config import CHARACTER_INFO, EXPRESSION_MAP, get_transition_style, load_config, save_config
+from config import (CHARACTER_INFO, EXPRESSION_MAP, get_transition_style,
+                    load_config, save_config, async_config_saver)
 from core.hanako_monitor import HanakoMonitor, compact_bubble_text
 from core.idle_chatter import IdleChatter
 
@@ -109,6 +110,10 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, QWidget):
         self._drag_poll_timer.timeout.connect(self._drag_poll_tick)
         self._drag_last_pos = QPoint()   # 上一帧拖拽位置,用于速度计算
         self._drag_last_time = 0.0
+        # 速度滑动平均窗口（拖拽甩动平滑）：保留最近 N 帧的速度，
+        # 释放时取平均替代单帧，避免快速甩动时的初速度抖动。
+        self._drag_vel_hist = []         # [(vx, vy), ...]
+        self._drag_vel_hist_max = 5      # 窗口大小
         self._vy = 0.0                   # 垂直速度(弹跳用)
         self._bounce_active = False      # 弹跳模式中
         self._is_sitting = False         # 是否坐在窗口边缘
@@ -417,6 +422,10 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, QWidget):
             if hasattr(self, '_hanako_monitor') and self._hanako_monitor:
                 if hasattr(self._hanako_monitor, 'set_ws_client'):
                     self._hanako_monitor.set_ws_client(ws_client)
+                # 绑定本桌宠对应的助手：只观测该助手的会话，
+                # 不转播其他 agent 的活动（一个桌宠对应一个助手）
+                if hasattr(self._hanako_monitor, 'set_agent_context'):
+                    self._hanako_monitor.set_agent_context(self._agent_id, session_manager)
             logger.info("Hanako WS injected into PetWindow")
         except Exception as e:
             logger.warning("set_hanako_ws failed: %s", e)
@@ -1793,17 +1802,17 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, QWidget):
                         self._is_dragging = False
                         self._store_label_pos()
 
-                        # ── 弹跳:释放时计算拖拽速度 ──
-                        now = time.time()
-                        cursor = QCursor.pos()
-                        dt = now - self._drag_last_time
-                        if dt > 0 and dt < 0.2:
-                            dx = cursor.x() - self._drag_last_pos.x()
-                            dy = cursor.y() - self._drag_last_pos.y()
-                            vx = dx / dt * 0.02
-                            vy = dy / dt * 0.02
+                        # ── 弹跳:释放时用滑动平均速度估算（平滑甩动） ──
+                        # 用最近 N 帧的平均速度，避免单帧抖动导致初速度忽大忽小
+                        if self._drag_vel_hist:
+                            n = len(self._drag_vel_hist)
+                            avg_vx = sum(v[0] for v in self._drag_vel_hist) / n
+                            avg_vy = sum(v[1] for v in self._drag_vel_hist) / n
+                            self._drag_vel_hist.clear()
+                            vx = avg_vx * 0.02
+                            vy = avg_vy * 0.02
                             speed = math.sqrt(vx ** 2 + vy ** 2)
-                            if speed > 1.5:
+                            if speed > 1.2:
                                 self._bounce_active = True
                                 self._is_walking = False
                                 self._motion_state = "bounce"
@@ -1830,7 +1839,8 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, QWidget):
                         pos = self.pos()
                         self.config.setdefault("window", {})["x"] = pos.x()
                         self.config.setdefault("window", {})["y"] = pos.y()
-                        save_config(self.config)
+                        # 异步防抖保存：释放瞬间不阻塞 GUI 线程（避免拖拽卡顿）
+                        async_config_saver.schedule(self.config)
                         if self._on_position_change:
                             self._on_position_change(pos.x(), pos.y())
                     elif self._pet_cuddle:
@@ -1863,9 +1873,17 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, QWidget):
             cursor = QCursor.pos()
             delta = cursor - self._drag_start_cursor
             self.move(self._drag_start_window + delta)
-            # 记录用于释放后速度估算
+            # 记录用于释放后速度估算（用滑动平均，平滑甩动）
+            now = time.time()
+            dt = now - self._drag_last_time
+            if dt > 0:
+                vx = (cursor.x() - self._drag_last_pos.x()) / dt
+                vy = (cursor.y() - self._drag_last_pos.y()) / dt
+                self._drag_vel_hist.append((vx, vy))
+                if len(self._drag_vel_hist) > self._drag_vel_hist_max:
+                    self._drag_vel_hist.pop(0)
             self._drag_last_pos = cursor
-            self._drag_last_time = time.time()
+            self._drag_last_time = now
 
     # ── 窗口边缘吸附坐下 ──
 
@@ -1919,7 +1937,8 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, QWidget):
         # 保存位置
         self.config.setdefault("window", {})["x"] = x
         self.config.setdefault("window", {})["y"] = y
-        save_config(self.config)
+        # 异步防抖保存（避免通用写盘阻塞）
+        async_config_saver.schedule(self.config)
         if self._on_position_change:
             self._on_position_change(x, y)
 
@@ -2393,7 +2412,8 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, QWidget):
         pos = self.pos()
         self.config.setdefault("window", {})["x"] = pos.x()
         self.config.setdefault("window", {})["y"] = pos.y()
-        save_config(self.config)
+        # 异步防抖保存：散步每次到达都写盘会周期性卡顿，改走后台
+        async_config_saver.schedule(self.config)
         if self._on_position_change:
             self._on_position_change(pos.x(), pos.y())
         params = self._get_behavior_params()
@@ -2407,7 +2427,8 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, QWidget):
         self._bounce_active = False
         self.config.setdefault("window", {})["x"] = x
         self.config.setdefault("window", {})["y"] = y
-        save_config(self.config)
+        # 异步防抖保存
+        async_config_saver.schedule(self.config)
 
     def on_facing_change(self, facing_right: bool):
         self._facing_right = facing_right
@@ -2819,11 +2840,10 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, QWidget):
 
             self._perception.trigger_emotion(emotion, intensity)
             EventBus.emit("screen_analyzed", emotion=emotion, intensity=intensity)
-            anim_map = {
-                'happy': 'waving', 'surprised': 'jumping',
-                'thinking': 'running', 'sad': 'failed',
-            }
-            anim = anim_map.get(emotion, 'idle')
+            # 统一从 config.EXPRESSION_MAP 取动画（权威映射，避免分叉）
+            from config import EXPRESSION_MAP
+            mapped = EXPRESSION_MAP.get(emotion)
+            anim = mapped[0] if mapped else 'idle'
             if anim in self._renderer._frames:
                 self._set_anim_seq(anim, emotion=emotion, style=get_transition_style(emotion))
                 self._set_surface_emotion(emotion, duration_ms=3000)

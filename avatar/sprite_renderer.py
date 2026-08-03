@@ -451,7 +451,8 @@ class SpriteRenderer(AvatarRenderer):
                 self._anim_seq = anim
                 self._anim_range = (start, end)
                 self._anim_idx = start if start is not None else 0
-                speed = 330 if anim == 'idle' else 250
+                fps = self._seq_fps.get(anim)
+                speed = max(30, int(1000 / fps)) if fps else (330 if anim == 'idle' else 250)
                 self._anim_timer.setInterval(speed)
                 self._show_frame()
                 self._current_anim = anim
@@ -487,7 +488,8 @@ class SpriteRenderer(AvatarRenderer):
                     self._anim_seq = seq
                     self._anim_range = (start, end)
                     self._anim_idx = start if start is not None else 0
-                    speed = 330 if seq == 'idle' else 250
+                    fps = self._seq_fps.get(seq)
+                    speed = max(30, int(1000 / fps)) if fps else (330 if seq == 'idle' else 250)
                     self._anim_timer.setInterval(speed)
                     self._show_frame()
                     self._current_anim = seq
@@ -499,7 +501,14 @@ class SpriteRenderer(AvatarRenderer):
             self._anim_seq = anim
             self._anim_range = (None, None)
             self._anim_idx = 0
-            speed = 330 if anim == 'idle' else 250
+            # 优先用角色资源定义的帧率（pet.json fps），回退到硬编码
+            # 修复：walk/running 之前被写死成 250ms，忽略 _seq_fps，
+            # 导致移动平滑但动画帧率错配（“脚滑”感）。
+            fps = self._seq_fps.get(anim)
+            if fps:
+                speed = max(30, int(1000 / fps))
+            else:
+                speed = 330 if anim == 'idle' else 250
             self._anim_timer.setInterval(speed)
             self._show_frame()
             self._current_anim = anim

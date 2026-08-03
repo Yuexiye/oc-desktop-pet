@@ -5,10 +5,10 @@
 import time
 from unittest.mock import patch
 
-from perception import (
+from core.perception import (
     EmotionStateMachine, TimePerception, ProactiveScheduler
 )
-from hanako_monitor import compact_bubble_text
+from core.hanako_monitor import compact_bubble_text
 
 
 # ════════════════════════════════════════════════════════════
@@ -213,3 +213,128 @@ class TestCompactBubbleText:
         # compact_bubble_text 取最后一句
         assert "句话" in result
         assert len(result) <= len(text)
+
+
+# ════════════════════════════════════════════════════════════
+#  _extract_json_object（视觉感知 JSON 提取）
+# ════════════════════════════════════════════════════════════
+
+class TestExtractJsonObject:
+
+    def _extract(self, text):
+        from core.perception.screen import _extract_json_object
+        return _extract_json_object(text)
+
+    def test_plain_json(self):
+        assert self._extract('{"activity": "a", "category": "work"}')["category"] == "work"
+
+    def test_nested_json(self):
+        r = self._extract('{"detail": {"apps": ["vscode"], "state": {"ok": true}}}')
+        assert r["detail"]["apps"] == ["vscode"]
+        assert r["detail"]["state"]["ok"] is True
+
+    def test_wrapped_with_text(self):
+        r = self._extract('分析：{"summary": "写代码"} 结束')
+        assert r["summary"] == "写代码"
+
+    def test_brace_inside_string(self):
+        r = self._extract('{"text": "a {b} c", "x": 1}')
+        assert r["text"] == "a {b} c"
+
+    def test_no_json(self):
+        assert self._extract("纯文字") is None
+        assert self._extract("") is None
+
+    def test_first_of_multiple(self):
+        assert self._extract('{"a": 1} 后 {"b": 2}') == {"a": 1}
+
+
+# ════════════════════════════════════════════════════════════
+#  map_emotion_to_anim（情绪→动画映射一致性）
+# ════════════════════════════════════════════════════════════
+
+class TestEmotionToAnim:
+
+    def test_matches_expression_map(self):
+        """map_emotion_to_anim 必须与 config.EXPRESSION_MAP 权威映射一致"""
+        from core.conversation_engine import map_emotion_to_anim
+        from config import EXPRESSION_MAP
+        for emo in EXPRESSION_MAP:
+            expected = EXPRESSION_MAP[emo][0] or "idle"
+            assert map_emotion_to_anim(emo) == expected, f"{emo} 不一致"
+
+    def test_unknown_emotion_falls_back_to_idle(self):
+        from core.conversation_engine import map_emotion_to_anim
+        assert map_emotion_to_anim("nonexistent_emotion") == "idle"
+
+
+# ════════════════════════════════════════════════════════════
+#  HanakoMonitor agent 过滤（一桌宠一助手）
+# ════════════════════════════════════════════════════════════
+
+class _FakeSession:
+    def __init__(self, sid, agent):
+        self.session_id = sid
+        self.session_path = f"/agents/{agent}/sessions/{sid}.jsonl"
+        self.agent_id = agent
+
+
+class _FakeSM:
+    def __init__(self, sessions):
+        self._sessions = sessions
+
+    def _session_for_event(self, event):
+        sid = event.get("sessionId")
+        for s in self._sessions:
+            if s.session_id == sid:
+                return s
+        return None
+
+
+class TestHanakoMonitorAgentFilter:
+
+    def _make_monitor(self, agent_id, sessions):
+        from core.hanako_monitor import HanakoMonitor
+        mon = HanakoMonitor()
+        mon.set_agent_context(agent_id, _FakeSM(sessions))
+        return mon
+
+    def test_own_agent_event_shown(self):
+        sessions = [_FakeSession("sess_yue", "yuexinmiao"), _FakeSession("sess_gla", "glados")]
+        mon = self._make_monitor("yuexinmiao", sessions)
+        called = []
+        mon._on_state_change = lambda *a, **k: called.append(a)
+        mon.push_event({"type": "thinking_start", "sessionId": "sess_yue"})
+        assert called, "own agent event should be shown"
+
+    def test_other_agent_event_filtered(self):
+        sessions = [_FakeSession("sess_yue", "yuexinmiao"), _FakeSession("sess_gla", "glados")]
+        mon = self._make_monitor("yuexinmiao", sessions)
+        called = []
+        mon._on_state_change = lambda *a, **k: called.append(a)
+        mon.push_event({"type": "thinking_start", "sessionId": "sess_gla"})
+        assert not called, "other agent event should be filtered"
+
+    def test_no_agent_bound_passes(self):
+        """未绑定 agent_id 时不过滤（向后兼容）"""
+        from core.hanako_monitor import HanakoMonitor
+        mon = HanakoMonitor()
+        called = []
+        mon._on_state_change = lambda *a, **k: called.append(a)
+        mon.push_event({"type": "thinking_start", "sessionId": "sess_gla"})
+        assert called, "no-agent bound should pass through"
+
+    def test_agent_inferred_from_session_path(self):
+        """session_manager 映射不到 agent_id 时，从 session_path 推断"""
+        from core.hanako_monitor import HanakoMonitor
+        mon = HanakoMonitor()
+        mon.set_agent_context("yuexinmiao", None)  # 无 session_manager
+        assert mon._event_belongs_to_agent({
+            "type": "thinking_start",
+            "sessionPath": "/agents/yuexinmiao/sessions/abc.jsonl"
+        }) is True
+        assert mon._event_belongs_to_agent({
+            "type": "thinking_start",
+            "sessionPath": "/home/u/.hanako/agents/glados/sessions/abc.jsonl"
+        }) is False
+        assert mon._event_belongs_to_agent({"type": "thinking_start"}) is True

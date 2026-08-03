@@ -1,6 +1,8 @@
 """配置管理"""
 import json
 import os
+import threading
+import time
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
 
@@ -208,3 +210,80 @@ def save_config(cfg):
         except OSError:
             pass
         raise
+
+
+class _AsyncConfigSaver:
+    """防抖异步配置保存器 — 高频位置写入不阻塞 GUI 线程。
+
+    设计：
+      - 同一次调度周期内多次 schedule() 只落盘一次（保留最新配置）
+      - 写盘在后台线程执行，绝不阻塞调用方（GUI 主线程）
+      - 线程安全：schedule 可从任意线程调用
+
+    用法：
+        saver = AsyncConfigSaver()
+        saver.schedule(cfg)   # 防抖 150ms 后异步写盘
+    """
+
+    def __init__(self, debounce_ms: int = 150):
+        self._debounce = debounce_ms / 1000.0
+        self._lock = threading.Lock()
+        self._pending: dict | None = None          # 待写的最新配置
+        self._due: float | None = None             # 下次写盘时刻（防抖窗口）
+        self._thread: threading.Thread | None = None
+        self._stop = False
+
+    def schedule(self, cfg: dict) -> None:
+        """登记一次保存。同窗口内多次调用合并为一次落地。"""
+        with self._lock:
+            self._pending = cfg
+            now = time.monotonic()
+            self._due = now + self._debounce
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(target=self._run, daemon=True)
+                self._thread.start()
+
+    def _run(self) -> None:
+        """后台循环：等到防抖窗口，写盘最新快照。"""
+        while True:
+            with self._lock:
+                if self._stop:
+                    return
+                now = time.monotonic()
+                if self._pending is None:
+                    return
+                if now < self._due:
+                    wait = self._due - now
+                else:
+                    wait = None
+            if wait is not None:
+                time.sleep(wait)
+                continue
+            # 窗口已到：取最新快照并写盘
+            with self._lock:
+                cfg = self._pending
+                self._pending = None
+            try:
+                save_config(cfg)
+            except Exception:
+                pass
+            # 若调度期间又有新值，继续循环；否则退出
+            with self._lock:
+                if self._pending is None:
+                    return
+
+    def shutdown(self) -> None:
+        """停止并处理最后一次待写（进程退出前调用）。"""
+        with self._lock:
+            self._stop = True
+            cfg = self._pending
+            self._pending = None
+        if cfg is not None:
+            try:
+                save_config(cfg)
+            except Exception:
+                pass
+
+
+# 进程级共享实例：桌宠位置这类高频写入都走它，合并落盘。
+async_config_saver = _AsyncConfigSaver()

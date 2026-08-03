@@ -242,6 +242,10 @@ class HanakoMonitor:
         self._last_update = 0
         self._last_todo_count = -1
         self._ws_connected = False
+        # 会话过滤：一个桌宠只观测自己对应助手的会话，
+        # 不转播其他 agent 的活动（避免“没操作却一直在动”）。
+        self._agent_id: str | None = None
+        self._session_manager = None
         # 情绪缓存（用于气泡颜色）
         self._current_emotion = "neutral"
         # 状态推断
@@ -472,10 +476,57 @@ class HanakoMonitor:
             if err:
                 logger.warning("WS 状态异常: %s, err=%s — 启用文件轮询 fallback", state, err)
 
+    def set_agent_context(self, agent_id: str, session_manager=None) -> None:
+        """绑定桌宠对应的助手 agent，只观测该助手的会话事件。
+
+        一个桌宠对应一个助手：传入 agent_id 后，WS 事件将按 agent 过滤，
+        不再转播其他 agent 的活动（避免“没操作却一直在动”）。
+
+        Args:
+            agent_id: 桌宠对应的助手 id（如 "yuexinmiao"）
+            session_manager: 可选，用于把事件的 sessionId 映射到 agent_id。
+        """
+        self._agent_id = agent_id
+        self._session_manager = session_manager
+
+    def _event_belongs_to_agent(self, event: dict) -> bool:
+        """判断事件是否属于本桌宠对应的助手。
+
+        事件本身只带 sessionId/sessionPath，优先用 session_manager 把
+        session 映射到 SessionRef（含 agent_id）；映射不到时从
+        session_path 推断（路径形如 ~/.hanako/agents/<agent>/sessions/...）。
+
+        未绑定 agent_id 时不过滤（向后兼容）；完全无法判断时保守放行
+        （避免误滤掉正常事件）。
+        """
+        if not self._agent_id:
+            return True
+        agent = None
+        sm = self._session_manager
+        if sm is not None:
+            try:
+                session = sm._session_for_event(event) if hasattr(sm, "_session_for_event") else None
+                if session is not None:
+                    agent = getattr(session, "agent_id", None) or None
+            except Exception:
+                agent = None
+        # 兜底：从 session_path 解析 agent（路径含 agents/<agent_id>/）
+        if not agent:
+            path = str(event.get("sessionPath") or "").replace("\\", "/")
+            m = re.search(r"/agents/([^/]+)/sessions/", path)
+            if m:
+                agent = m.group(1)
+        if agent is None:
+            return True  # 无法判断，保守放行
+        return agent == self._agent_id
+
     def push_event(self, event: dict):
         """直接推送事件（WebSocket 模式回调）。
         当 BridgeClient 通过 WebSocket 收到事件时调用此方法。
         """
+        # 会话过滤：只观测本桌宠对应助手的活动
+        if not self._event_belongs_to_agent(event):
+            return
         result = map_event_to_mood(event)
         if result:
             mood, message, emotion = result

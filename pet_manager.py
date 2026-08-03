@@ -494,9 +494,16 @@ class PetManager:
         return {}
 
     def update_agent_cfg(self, agent_id: str, **kwargs):
-        """更新 agent 配置（position, scale 等）"""
+        """更新 agent 配置（position, scale 等）
+
+        位置这类高频写入走异步防抖保存，避免阻塞 GUI 线程（拖拽卡顿根因）。
+        """
         for agent in self.agents:
             if agent["id"] == agent_id:
                 agent.update(kwargs)
-                self._save_config()
+                try:
+                    from config import async_config_saver
+                    async_config_saver.schedule(self._config)
+                except Exception:
+                    self._save_config()
                 return
