@@ -308,21 +308,15 @@ class Live2DRenderer(AvatarRenderer):
         except Exception as e:
             logger.warning("Live2DRenderer.mouth 异常: %s", e)
 
-        # 设置 OpenGL 投影矩阵（live2d 绘制依赖正确的投影，否则模型画不出来）。
+        # live2d-py 的 Model.Draw() 内部用 Cubism 5.0 shader 渲染并自行管理投影矩阵，
+        # 无需外部 glOrtho 固定管线投影（反而可能干扰）。
+        # 只需确保视口正确（QOpenGLWidget 已设置）。
         try:
             from OpenGL import GL
-            w = int(getattr(self, "_gl_w", 220) or 220)
-            h = int(getattr(self, "_gl_h", 260) or 260)
-            GL.glViewport(0, 0, w, h)
-            GL.glMatrixMode(GL.GL_PROJECTION)
-            GL.glLoadIdentity()
-            GL.glOrtho(0, w, h, 0, -1.0, 1.0)
-            GL.glMatrixMode(GL.GL_MODELVIEW)
-            GL.glLoadIdentity()
             GL.glEnable(GL.GL_BLEND)
             GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
         except Exception as e:
-            logger.warning("Live2DRenderer: 设置 GL 投影失败: %s", e)
+            logger.warning("Live2DRenderer: 设置 GL 混合失败: %s", e)
 
         try:
             # 显式传 float dt 给 Update（避免 LAppModel 内部 dt 类型问题）
