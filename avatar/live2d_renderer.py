@@ -184,6 +184,14 @@ class Live2DRenderer(AvatarRenderer):
             model.SetAutoBlink(True)
             model.SetAutoBreath(True)
 
+            # 关键：live2d 文档要求初次加载必须 Resize(宽,高)，否则模型不显示。
+            # 这里用默认视口尺寸（真实尺寸由 on_resize 触发后重算）
+            try:
+                model.Resize(int(getattr(self, "_gl_w", 220) or 220),
+                             int(getattr(self, "_gl_h", 260) or 260))
+            except Exception as e:
+                logger.warning("Live2DRenderer: Resize 失败: %s", e)
+
             # 收集可用表情/动作组，用于情绪映射
             try:
                 self._expression_names = list(model.GetExpressions() or [])
