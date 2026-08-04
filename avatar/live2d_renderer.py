@@ -234,11 +234,22 @@ class Live2DRenderer(AvatarRenderer):
             return
         try:
             l2d = self._live2d
-            l2d.clearBuffer(0.0, 0.0, 0.0, 0.0)  # 透明背景
+            # 清除画布（live2d-py 0.7.0.4 的 clearBuffer 为无参调用）
+            l2d.clearBuffer()
+        except Exception as e:
+            logger.warning("Live2DRenderer.clearBuffer 异常: %s", e)
 
+        # 参数驱动每步独立 try：即使某个参数调用报错，也不阻塞模型绘制
+        try:
             self._update_gaze_params()
+        except Exception as e:
+            logger.warning("Live2DRenderer.gaze 异常: %s", e)
+        try:
             self._update_mouth()
+        except Exception as e:
+            logger.warning("Live2DRenderer.mouth 异常: %s", e)
 
+        try:
             self._model.Update()
             self._model.Draw()
         except Exception as e:
