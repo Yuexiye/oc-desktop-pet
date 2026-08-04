@@ -231,17 +231,25 @@ class Live2DRenderer(AvatarRenderer):
         self._recompute_fit()
 
     def _recompute_fit(self) -> None:
-        """根据视口与模型画布尺寸计算缩放/偏移（best-effort，可能需按模型微调）。"""
+        """根据视口与模型像素画布尺寸计算缩放/偏移（best-effort，可能需按模型微调）。"""
         if not self._model or not hasattr(self, "_gl_w"):
             return
         try:
-            cw, ch = self._model.GetCanvasSize()
-            if not cw or not ch:
+            # 用像素画布尺寸（GetCanvasSizePixel），而非逻辑单位（GetCanvasSize）。
+            # 逻辑单位（如 13.6）乘以 PixelsPerUnit(88.24) 才是真实像素。
+            # 若用逻辑单位算 SetScale，会放大 ~88 倍导致角色超出视口不可见。
+            cw_px, ch_px = self._model.GetCanvasSizePixel()
+            if not cw_px or not ch_px:
+                # 回退到逻辑单位 × PixelsPerUnit
+                ppu = self._model.GetPixelsPerUnit() or 1.0
+                cw_log, ch_log = self._model.GetCanvasSize()
+                cw_px, ch_px = cw_log * ppu, ch_log * ppu
+            if not cw_px or not ch_px:
                 return
-            fit = min(self._gl_w / cw, self._gl_h / ch) * 0.92 * self._fit_scale
+            fit = min(self._gl_w / cw_px, self._gl_h / ch_px) * 0.92 * self._fit_scale
             self._model.SetScale(fit)
-            ox = (self._gl_w - cw * fit) / 2.0 / fit + self._offset_scale[0]
-            oy = (self._gl_h - ch * fit) / 2.0 / fit + self._offset_scale[1]
+            ox = (self._gl_w - cw_px * fit) / 2.0 / fit + self._offset_scale[0]
+            oy = (self._gl_h - ch_px * fit) / 2.0 / fit + self._offset_scale[1]
             self._model.SetOffset(ox, oy)
         except Exception as e:
             logger.warning("Live2DRenderer: 缩放计算失败: %s", e)
@@ -473,10 +481,13 @@ class Live2DRenderer(AvatarRenderer):
         self._facing_right = right
         if self._model:
             try:
-                sx = self._fit_scale if right else -self._fit_scale
-                # 翻转仅影响水平方向：重算缩放（保留 fit）
-                cw, ch = self._model.GetCanvasSize()
-                fit = min(self._gl_w / cw, self._gl_h / ch) * 0.92 * abs(sx)
+                # 用像素画布尺寸计算缩放（与 _recompute_fit 一致）
+                cw_px, ch_px = self._model.GetCanvasSizePixel()
+                if not cw_px or not ch_px:
+                    ppu = self._model.GetPixelsPerUnit() or 1.0
+                    cw_log, ch_log = self._model.GetCanvasSize()
+                    cw_px, ch_px = cw_log * ppu, ch_log * ppu
+                fit = min(self._gl_w / cw_px, self._gl_h / ch_px) * 0.92 * abs(self._fit_scale)
                 self._model.SetScaleX(fit * (1 if right else -1))
                 self._model.SetScaleY(fit)
             except Exception:
