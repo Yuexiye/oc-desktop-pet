@@ -175,8 +175,8 @@ class Live2DRenderer(AvatarRenderer):
 
             l2d.glInit()
 
-            # 统一用「先建空模型 + LoadModelJson」路径，避免 l2d.Model(path)
-            # 带路径构造在部分 GL 上下文/驱动下段错误（段错误不抛异常，fallback 不触发）
+            # 用底层 Model（LAppModel.Update 内部封装 _model.Update(dt) 有 dt 类型 bug，
+            # 直接显式传 float dt 更可控）
             model = l2d.Model()
             model.LoadModelJson(self._model_path)
 
@@ -204,7 +204,11 @@ class Live2DRenderer(AvatarRenderer):
             except Exception:
                 self._expression_names = []
             try:
-                self._motion_groups = dict(model.GetMotions() or {})
+                if hasattr(model, "GetMotionGroups"):
+                    groups = model.GetMotionGroups()
+                    self._motion_groups = {g: [] for g in (groups or [])}
+                else:
+                    self._motion_groups = dict(model.GetMotions() or {})
             except Exception:
                 self._motion_groups = {}
 
@@ -264,7 +268,8 @@ class Live2DRenderer(AvatarRenderer):
             logger.warning("Live2DRenderer.mouth 异常: %s", e)
 
         try:
-            self._model.Update()
+            # 显式传 float dt 给 Update（避免 LAppModel 内部 dt 类型问题）
+            self._model.Update(0.016)
         except Exception as e:
             logger.warning("Live2DRenderer.Update 异常: %s", e)
         try:
@@ -311,8 +316,14 @@ class Live2DRenderer(AvatarRenderer):
         if not self._model:
             return
         try:
-            self._model.StartRandomMotion(self._live2d.MotionGroup.IDLE,
-                                          self._live2d.MotionPriority.IDLE)
+            # 从模型实际的 motion 组挑一个（此模型组名为空字符串 ''），
+            # 避免硬编码 MotionGroup.IDLE 找不到组
+            if self._motion_groups:
+                group = next(iter(self._motion_groups))
+                self._model.StartRandomMotion(group, self._live2d.MotionPriority.IDLE)
+            else:
+                self._model.StartRandomMotion(self._live2d.MotionGroup.IDLE,
+                                              self._live2d.MotionPriority.IDLE)
         except Exception as e:
             logger.warning("Live2DRenderer: 起始待机动作失败: %s", e)
 
