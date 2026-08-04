@@ -265,9 +265,12 @@ class Live2DRenderer(AvatarRenderer):
 
         try:
             self._model.Update()
+        except Exception as e:
+            logger.warning("Live2DRenderer.Update 异常: %s", e)
+        try:
             self._model.Draw()
         except Exception as e:
-            logger.warning("Live2DRenderer.draw 异常: %s", e)
+            logger.warning("Live2DRenderer.Draw 异常: %s", e)
 
     # ── 内部：参数驱动 ──
 
@@ -282,10 +285,10 @@ class Live2DRenderer(AvatarRenderer):
         self._gaze_cur_ball_x += (self._gaze_target_ball_x - self._gaze_cur_ball_x) * s
         self._gaze_cur_ball_y += (self._gaze_target_ball_y - self._gaze_cur_ball_y) * s
         try:
-            self._model.SetParameterValue(P.ParamAngleX, self._gaze_cur_angle_x)
-            self._model.SetParameterValue(P.ParamAngleY, self._gaze_cur_angle_y)
-            self._model.SetParameterValue(P.ParamEyeBallX, self._gaze_cur_ball_x)
-            self._model.SetParameterValue(P.ParamEyeBallY, self._gaze_cur_ball_y)
+            self._model.SetParameterValue(P.ParamAngleX, self._gaze_cur_angle_x, 1.0)
+            self._model.SetParameterValue(P.ParamAngleY, self._gaze_cur_angle_y, 1.0)
+            self._model.SetParameterValue(P.ParamEyeBallX, self._gaze_cur_ball_x, 1.0)
+            self._model.SetParameterValue(P.ParamEyeBallY, self._gaze_cur_ball_y, 1.0)
         except Exception:
             pass
 
@@ -300,7 +303,7 @@ class Live2DRenderer(AvatarRenderer):
         else:
             val = 0.0
         try:
-            self._model.SetParameterValue(P.ParamMouthOpenY, val)
+            self._model.SetParameterValue(P.ParamMouthOpenY, val, 1.0)
         except Exception:
             pass
 
