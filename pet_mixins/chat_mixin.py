@@ -1,0 +1,190 @@
+"""ChatMixin — 桌宠对话入口（输入框 / 语音 / 发送 / 新建会话）。
+
+由 PetWindow 多重继承。访问 self._engine / self._tts_player / self._voice_input /
+self._perception / self.bubble / self.input_widget / self.input_field / self._show_bubble /
+self._set_anim_seq / self._mark_user_interaction 等，均由 PetWindow 提供（鸭子类型）。
+
+亮点：发送消息时触发 P1 全链路打断（new_message 推进代际，作废旧回复）；
+      语音开始录音时触发打断（voice_start，barge-in）。
+
+拆分自 pet.py 的对话入口区块（原 1294-1353 / 1704-1970 行），降低 PetWindow 体积。
+"""
+import logging
+import threading
+
+from config import get_transition_style
+
+logger = logging.getLogger(__name__)
+
+
+class ChatMixin:
+    """对话入口：输入框切换、语音录音、消息发送、新建会话。"""
+
+    # ── 输入框 / 语音 ──
+
+    def _toggle_input(self):
+        """切换输入框显示"""
+        self._mark_user_interaction()
+        if self.input_widget.isVisible():
+            self.input_widget.hide()
+        else:
+            self.input_widget.show()
+            self.input_field.setFocus()
+
+    def _toggle_voice(self):
+        """切换语音录音"""
+        self._mark_user_interaction()
+        if not self._voice_input:
+            self._show_bubble("语音输入不可用", emotion="neutral")
+            return
+
+        if not self._voice_recording:
+            # 开始录音 → 立即打断当前对话（barge-in），进入聆听
+            if self._engine:
+                try:
+                    self._engine.interrupt(reason="voice_start")
+                except Exception:
+                    pass
+            self._tts_player.stop()
+            if self._voice_input.start():
+                self._voice_recording = True
+                self._voice_action.setText("⏹ 停止")
+            else:
+                self._show_bubble("录音启动失败", emotion="neutral")
+        else:
+            # 停止录音 -> 识别 -> 发送
+            self._voice_action.setText("🎤 说话")
+            self._voice_recording = False
+
+            # 在后台线程识别，避免阻塞 UI
+            def _do_asr():
+                text = self._voice_input.stop()
+                if text:
+                    # 通过引擎发送
+                    self._engine.send(text, character=self._current_char)
+                    logger.info("Voice input sent: %s", text[:30])
+                    # 不显示输入文字，隐藏气泡
+                    self.voice_status_signal.emit("")
+                    # 截停 TTS
+                    self._tts_player.stop()
+                    self._is_thinking = True
+                    self._pending_chat = True
+                    self._pending_user_msg = text
+                else:
+                    self.voice_status_signal.emit("没听清...")
+
+            t = threading.Thread(target=_do_asr, daemon=True)
+            t.start()
+
+    def _on_voice_status(self, msg: str):
+        """语音输入状态 - 从后台线程，通过信号转主线程"""
+        self.voice_status_signal.emit(msg)
+
+    def _do_voice_status(self, msg: str):
+        """在主线程处理语音状态"""
+        if msg:
+            self._show_bubble(msg, emotion="thinking")
+        else:
+            try:
+                self.bubble.hide_bubble()
+            except Exception:
+                pass
+
+    # ── 聊天切换 / 发送 ──
+
+    def _toggle_chat(self):
+        self._stop_walking()
+        if self.input_widget.isVisible():
+            self.input_widget.hide()
+            self.input_field.clear()
+        else:
+            self.input_widget.show()
+            self.input_widget.raise_()
+            self.input_field.setFocus()
+
+    def _send_message(self):
+        text = self.input_field.text().strip()
+        if not text or self._is_thinking:
+            return
+
+        self._mark_user_interaction()
+        self.input_field.clear()
+        self.input_widget.hide()
+
+        # P2: 用户交互 -> 重置情绪状态机
+        try:
+            self._perception.reset_emotion()
+        except Exception:
+            pass
+
+        # 标记对话时间（主动对话用）
+        if self._perception.proactive:
+            self._perception.proactive.mark_conversation()
+
+        # ── 用户发新消息 → 立即截停旧 TTS(P2 可中断管线)──
+        self._tts_player.stop()
+        # P1 全链路打断：推进代际 + 中断 LLM 层（旧消息作废，转入新对话）
+        if self._engine:
+            try:
+                self._engine.interrupt(reason="new_message")
+            except Exception:
+                pass
+
+        # 通过对话引擎发送（异步）
+        if self._engine:
+            self._engine.send(text, character=self._current_char)
+
+        self.bubble.set_text("⏳ 思考中...")
+        self._reposition_bubble()
+        self.bubble.show()
+        self.bubble.raise_()
+        self._is_thinking = True
+        self._pending_user_msg = text
+        self._pending_emotion = "neutral"
+        self._pending_chat = True
+
+        # 立即切换到思考动画（视觉反馈）
+        try:
+            self._set_anim_seq("working", emotion="thinking", style=get_transition_style("thinking"))
+        except Exception:
+            pass
+
+        # 超时保护：30 秒无回复自动恢复
+        if not hasattr(self, '_think_timeout'):
+            from PySide6.QtCore import QTimer as _QTimer
+            self._think_timeout = _QTimer()
+            self._think_timeout.setSingleShot(True)
+            self._think_timeout.timeout.connect(self._on_think_timeout)
+        # M4: Hanako 模式下默认 180 秒（长任务支持）；直连模式保持 30 秒
+        think_timeout_ms = 30000
+        try:
+            if hasattr(self._engine, '_adapter') and self._engine._adapter:
+                if getattr(self._engine._adapter, 'transport_mode', 'direct') != 'direct':
+                    think_timeout_ms = int(
+                        getattr(self._engine._adapter, '_reply_timeout', 180) * 1000
+                    )
+        except Exception:
+            pass
+        self._think_timeout.start(think_timeout_ms)
+
+    # ── 新建会话 ──
+
+    def _create_new_session(self):
+        """右键菜单：创建新 Session"""
+        self._mark_user_interaction()
+        if not hasattr(self, '_engine') or self._engine is None:
+            self._show_bubble("引擎还没起来", emotion="thinking")
+            return
+        if not hasattr(self._engine, 'create_new_session'):
+            self._show_bubble("当前模式不支持新建对话", emotion="neutral")
+            return
+        session = self._engine.create_new_session(agent_id=self._current_char)
+        if session is not None:
+            try:
+                self.bubble.hide_bubble()
+            except Exception:
+                pass
+            self._show_bubble("🔄 新对话已创建", emotion="happy")
+            logger.info("新 Session 创建成功: %s", getattr(session, 'session_id', '?'))
+        else:
+            self._show_bubble("新对话创建失败", emotion="sad")
