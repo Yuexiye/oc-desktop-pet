@@ -21,14 +21,15 @@ class GLCharWidget(QOpenGLWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # live2d Cubism 需要 OpenGL 2.0+（glad 加载 GL 函数）。
-        # 显式指定 3.3 Core，避免 Qt 默认降到 OpenGL ES/过低版本导致
-        # live2d.glInit() 报 "Can't initilize glad" 后 Model 加载段错误崩退。
+        # live2d Cubism 需要 OpenGL 2.0+（glad 加载 GL 函数），且用固定管线
+        # （glMatrixMode/glOrtho）绘制。必须用 Compatibility Profile——
+        # Core Profile 移除了固定管线，导致 glMatrixMode 报 GL_INVALID_OPERATION
+        # 且 live2d 模型画不出来。
         fmt = QSurfaceFormat()
         fmt.setAlphaBufferSize(8)
         fmt.setRenderableType(QSurfaceFormat.OpenGL)
         fmt.setVersion(3, 3)
-        fmt.setProfile(QSurfaceFormat.CoreProfile)
+        fmt.setProfile(QSurfaceFormat.CompatibilityProfile)
         fmt.setDepthBufferSize(24)
         fmt.setStencilBufferSize(8)
         self.setFormat(fmt)
