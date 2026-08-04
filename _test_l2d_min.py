@@ -55,7 +55,7 @@ class Live2DWidget(QOpenGLWidget):
             return
         import live2d.v3 as l2d
         l2d.clearBuffer()
-        self._model.Update(0.016)
+        self._model.Update()  # LAppModel.Update 无参（内部自算 dt）
         self._model.Draw()
         self._draw_count += 1
         # 第 5 帧后截图保存

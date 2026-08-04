@@ -175,20 +175,15 @@ class Live2DRenderer(AvatarRenderer):
 
             l2d.glInit()
 
-            # 用底层 Model（LAppModel.Update 内部封装 _model.Update(dt) 有 dt 类型 bug，
-            # 直接显式传 float dt 更可控）
-            model = l2d.Model()
+            # 用 LAppModel（高层封装，内部管理 dt/投影/自动眨眼/呼吸）。
+            # 最小测试验证 LAppModel 能正确绘制（底层 Model 画不出来）。
+            model = l2d.LAppModel()
             model.LoadModelJson(self._model_path)
 
             self._model = model
-            # Cubism 4+ 必须显式创建 renderer 才能绘制，否则 Draw() 报
-            # "argument 1 must be float"（内部 renderer 未初始化）。
-            try:
-                model.CreateRenderer()
-            except Exception as e:
-                logger.warning("Live2DRenderer: CreateRenderer 失败: %s", e)
-            model.SetAutoBlink(True)
-            model.SetAutoBreath(True)
+            # LAppModel.LoadModelJson 内部已自动 CreateRenderer
+            model.SetAutoBlinkEnable(True)
+            model.SetAutoBreathEnable(True)
 
             # 关键：live2d 文档要求初次加载必须 Resize(宽,高)，否则模型不显示。
             # 这里用默认视口尺寸（真实尺寸由 on_resize 触发后重算）
@@ -319,8 +314,8 @@ class Live2DRenderer(AvatarRenderer):
             logger.warning("Live2DRenderer: 设置 GL 混合失败: %s", e)
 
         try:
-            # 显式传 float dt 给 Update（避免 LAppModel 内部 dt 类型问题）
-            self._model.Update(0.016)
+            # LAppModel.Update 无参（内部自算 dt + 管理眨眼/呼吸）
+            self._model.Update()
         except Exception as e:
             logger.warning("Live2DRenderer.Update 异常: %s", e)
         try:
