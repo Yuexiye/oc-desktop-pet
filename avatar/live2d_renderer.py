@@ -267,10 +267,25 @@ class Live2DRenderer(AvatarRenderer):
                     cw, ch = self._model.GetCanvasSize()
                 except Exception:
                     pass
+                cw_px = ch_px = 0
+                try:
+                    cw_px, ch_px = self._model.GetCanvasSizePixel()
+                except Exception:
+                    pass
                 logger.info(
-                    "Live2DRenderer: draw 首帧就绪 model=%s canvas=(%s,%s) gl=%sx%s scale=%.3f",
-                    self._ready, cw, ch, getattr(self, "_gl_w", "?"), getattr(self, "_gl_h", "?"), self._fit_scale,
+                    "Live2DRenderer: draw 首帧就绪 model=%s canvas=(%s,%s)px=(%s,%s) gl=%sx%s scale=%.3f",
+                    self._ready, cw, ch, cw_px, ch_px,
+                    getattr(self, "_gl_w", "?"), getattr(self, "_gl_h", "?"), self._fit_scale,
                 )
+                # 离屏截图诊断：保存 GL 内容，确认模型是否真的画出来
+                try:
+                    from PySide6.QtWidgets import QApplication
+                    self.char_label.grabFramebuffer().save(
+                        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                     "logs", "l2d_diag.png"))
+                    logger.info("Live2DRenderer: 已保存离屏截图 logs/l2d_diag.png")
+                except Exception as e:
+                    logger.warning("Live2DRenderer: 离屏截图失败: %s", e)
             except Exception:
                 pass
         try:
