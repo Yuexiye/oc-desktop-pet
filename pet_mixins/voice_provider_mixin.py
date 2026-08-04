@@ -1,0 +1,152 @@
+"""VoiceProviderMixin — TTS / ASR provider 管理（创建 / 按需重建 / 签名判断）。
+
+由 PetWindow 多重继承。访问 self.config / self._engine / self._tts_provider_sig /
+self._tts_reload_gen 等，均由 PetWindow 提供（鸭子类型，无需 import pet）。
+
+关键点：TTS provider 的构造与预热必须在后台线程完成（cosyvoice 分支的
+import 链会阻塞 Qt 事件循环几十秒），因此重建用代际号保证只采纳最后一次结果。
+
+拆分自 pet.py 的语音 provider 区块（原 1304-1437 行），降低 PetWindow 体积。
+"""
+import logging
+import threading
+
+logger = logging.getLogger(__name__)
+
+
+class VoiceProviderMixin:
+    """TTS / ASR provider 的创建与按需重建。"""
+
+    def _create_tts_provider(self):
+        """根据配置创建 TTS provider，失败返回 None"""
+        provider = self.config.get("tts", {}).get("provider", "cosyvoice")
+        try:
+            if provider == "mimo":
+                from tts_provider.mimo_tts import MimoTtsProvider
+                from env_config import get_tts_api_config
+                cfg = get_tts_api_config()
+                if not cfg.get("base_url") or not cfg.get("api_key"):
+                    logger.warning(
+                        "TTS 引擎设为 MIMO 但 API 配置为空，回退到本地 CosyVoice"
+                    )
+                    from tts_provider.cosyvoice import CosyVoiceProvider
+                    return CosyVoiceProvider()
+                mimo = MimoTtsProvider()
+                mimo.configure(
+                    base_url=cfg["base_url"],
+                    api_key=cfg["api_key"],
+                    model=cfg.get("model", ""),
+                    voice=cfg.get("voice", "default_zh"),
+                )
+                return mimo
+            elif provider == "api":
+                from tts_provider.api_tts import ApiTtsProvider
+                return ApiTtsProvider()
+            else:
+                from tts_provider.cosyvoice import CosyVoiceProvider
+                return CosyVoiceProvider()
+        except Exception as e:
+            logger.warning("TTS provider 创建失败 (%s): %s", provider, e)
+            return None
+
+    def _tts_provider_signature(self) -> tuple:
+        """TTS provider 的身份签名——只有它变了才需要重建实例。
+
+        只纳入决定「创建出哪个 provider 实例」的字段。volume / enabled
+        这类运行期开关不算，它们由 _tts_player 直接生效，无需重建。
+        """
+        tts_cfg = self.config.get("tts", {}) or {}
+        provider = tts_cfg.get("provider", "cosyvoice")
+        api_sig: tuple = ()
+        if provider in ("mimo", "api"):
+            try:
+                from env_config import get_tts_api_config
+                c = get_tts_api_config() or {}
+                api_sig = (
+                    c.get("base_url", ""), c.get("api_key", ""),
+                    c.get("model", ""), c.get("voice", ""),
+                )
+            except Exception:
+                api_sig = ()
+        return (provider, api_sig)
+
+    def _maybe_reload_tts_provider(self):
+        """按需重建 TTS provider —— 构造与预热全部在后台线程完成。
+
+        绝不能在 Qt 主线程调 _create_tts_provider()：cosyvoice 分支的
+        import 链（funasr → torch/lightning/diffusers → onnxruntime → wetext
+        → ModelScope 下载）会把事件循环冻住几十秒。
+        """
+        if not self._engine:
+            return
+
+        sig = self._tts_provider_signature()
+        if sig == getattr(self, "_tts_provider_sig", None):
+            return  # 配置没变：跳过，避免重复拉起重型依赖
+        self._tts_provider_sig = sig
+
+        # 代际号：连续保存时只有最后一次的结果会被采纳
+        self._tts_reload_gen = getattr(self, "_tts_reload_gen", 0) + 1
+        gen = self._tts_reload_gen
+        old = getattr(self._engine, "_tts", None)
+
+        def _discard(p):
+            if p is None:
+                return
+            try:
+                p.cleanup()
+            except Exception:
+                pass
+
+        def _rebuild():
+            provider = None
+            try:
+                provider = self._create_tts_provider()   # 重型构造，后台执行
+                if gen != self._tts_reload_gen:
+                    _discard(provider)                   # 期间又保存过，本次作废
+                    return
+                if provider is not None:
+                    provider.preload()
+                if gen != self._tts_reload_gen:
+                    _discard(provider)
+                    return
+                self._engine._tts = provider
+                self._engine._tts_ready = bool(provider is not None and provider.is_ready)
+                logger.info(
+                    "TTS provider 已切换: %s (ready=%s)",
+                    getattr(provider, "name", None), self._engine._tts_ready,
+                )
+            except Exception as e:
+                logger.warning("TTS provider 重建失败: %s", e)
+                _discard(provider)
+            finally:
+                # 旧实例只有确实被换下来时才释放
+                if old is not None and old is not getattr(self._engine, "_tts", None):
+                    _discard(old)
+
+        threading.Thread(target=_rebuild, name="TTSReload", daemon=True).start()
+
+    def _create_asr_provider(self):
+        """根据配置创建 ASR provider，失败返回 None"""
+        provider = self.config.get("asr", {}).get("provider", "whisper_local")
+        try:
+            if provider == "mimo":
+                from asr_provider.mimo_asr import MimoAsrProvider
+                from env_config import get_asr_api_config
+                mimo = MimoAsrProvider()
+                cfg = get_asr_api_config()
+                mimo.configure(
+                    base_url=cfg.get("base_url", ""),
+                    api_key=cfg.get("api_key", ""),
+                    model=cfg.get("model", ""),
+                )
+                return mimo
+            elif provider == "api":
+                from asr_provider.api_asr import ApiAsrProvider
+                return ApiAsrProvider()
+            else:
+                from asr_provider.whisper_local import WhisperLocalProvider
+                return WhisperLocalProvider()
+        except Exception as e:
+            logger.warning("ASR provider 创建失败 (%s): %s", provider, e)
+            return None

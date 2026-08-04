@@ -213,6 +213,7 @@ build_context() → 注入 LLM prompt
 | 2026-08-03 | 一桌宠一助手：HanakoMonitor 按 agent 过滤 WS 事件，只观测本桌宠对应助手会话 |
 | 2026-08-03 | 拖拽/渲染/感知优化：异步防抖保存、fps 读角色定义、嵌套 JSON 解析、前台冷却修复 |
 | 2026-08-03 | PetWindow 拆分：拆出 AnimationMixin / InteractionMixin / ChatMixin，pet.py 2749→2193 行，清理死代码 |
+| 2026-08-03 | PetWindow 继续拆分：Behavior/VoiceProvider/Nurturing/Bubble 四个 mixin，pet.py 2193→1316 行，测试扩至 42 |
 
 ---
 
@@ -241,44 +242,30 @@ build_context() → 注入 LLM prompt
 
 详见 `core/P1_INTERRUPT_PLAN.md`（实时进度）。
 
-## PetWindow 功能索引（2026-08-03，按行号定位）
+## PetWindow 功能索引（2026-08-03，按 mixin 定位）
 
-> pet.py 2749 行 / 145 个方法。看代码时按此索引**定位到区间**，不要整文件扫描。
-> 以下行号基于 2026-08-03 提交，修改后需手动更新。
+> pet.py 1316 行，PetWindow 自身 70 个方法。大部分职责已拆到 pet_mixins/。
+> 看代码时按此索引定位到对应 mixin 文件，不要整文件扫描。
 
-| 功能域 | 方法 | 行号区间 |
-|---|---|---|
-| **初始化/生命周期** | `__init__` / `set_hanako_ws` / `set_nurturing` / `closeEvent` | 92-433, 3038-3060 |
-| **窗口设置** | `_setup_window` / `_toggle_passthrough` / `_setup_tray` / `_on_tray_activated` / `_toggle_visibility` | 518-557, 559-660 |
-| **行为模式** | `_switch_behavior_mode` / `_get_behavior_params` | 665-692 |
-| **缩放/透明度** | `_recalc_geometry` / `_apply_scale` / `_adjust_opacity` / `_opacity_up/down` | 711-755 |
-| **UI 搭建** | `_setup_ui` / `_setup_animation` | 756-837 |
-| **动画** | `_bob_tick` / `_gaze_tick(852)` / `_unified_tick` / `_set_anim_seq` / `_anim_tick` / `_show_anim_frame` / `_get_char_top_y` | 838-970 |
-| **气泡定位** | `_reposition_bubble` / `_reposition_overlays` / `_head_local_point` | 971-982, 2028-2040 |
-| **菜单** | `_setup_menu` / `_show_context_menu` | 983-1116, 2925 |
-| **养成** | `_feed_item` / `_start_work` / `_on_work_finish` / `_build_mission_menu` / `_show_status_summary` | 1117-1355 |
-| **输入/语音** | `_toggle_input` / `_toggle_voice` / `_on_voice_status` / `_do_voice_status` | 1356-1424 |
-| **TTS/ASR 管理** | `_create_tts_provider` / `_maybe_reload_tts_provider` / `_create_asr_provider` | 1425-1626 |
-| **设置/主题** | `_open_settings` / `_apply_settings` / `_refresh_theme_menu` / `_set_theme_mode` / `_open_activity_feed` / `_open_plugin_panel` / `_send_plugin_command` | 1627-1721 |
-| **字符加载** | `load_character` / `_store_label_pos` | 1722-1748 |
-| **事件过滤/拖拽** | `eventFilter` / `_drag_poll_tick` | 1749-1898 |
-| **坐下/边缘** | `_check_edge_sitting` / `_enter_sitting` / `_exit_sitting` | 1899-2011 |
-| **点击/抚摸** | `_schedule_pending_click` / `_fire_pending_click` / `_cancel_pending_click` / `_on_pet_pat` / `_on_pet_stroke` / `_pet_play_happy` / `_pet_revert` / `_reset_pet_combo` / `_quick_feed` | 2012-2140 |
-| **聊天/发送** | `_toggle_chat` / `_send_message` / `_auto_hide_bubble` / `_on_think_timeout` / `_clear_hanako_bubble` / `_on_emotion_expired` / `_set_surface_emotion` | 2141-2265 |
-| **引擎回复** | `_on_engine_reply` / `_do_engine_reply` / `_do_engine_reply_inner` / `_on_engine_status` / `_do_engine_status` / `_do_tool_progress` / `_create_new_session` | 2266-2407 |
-| **物理回调** | `get_screen_geometry` / `get_pos` / `get_size` / `move_to` / `on_walk_finished` / `on_bounce_finished` / `on_facing_change` / `set_anim` | 2408-2462 |
-| **交互标记/空闲** | `_mark_user_interaction` / `_can_idle_chatter` / `_do_idle_chatter` / `_break_check` / `_break_check_inner` | 2463-2545 |
-| **前台/主动** | `_foreground_tick` / `_on_foreground_change` / `_on_proactive_trigger` | 2546-2618 |
-| **视线/鼠标** | `_gaze_tick(2619)` / `_get_window_rect` / `_check_reaction_cooldown` / `_on_mouse_nearby` / `_on_mouse_hover` / `_on_mouse_chase` | 2619-2673 |
-| **待机/追逐** | `_tick_idle_life` / `_do_look_around` / `_end_look_around` / `_do_stretch` / `_update_chase` / `_end_chase` / `_show_sticker` / `_on_mouse_startled` / `_on_mouse_leave` | 2674-2836 |
-| **屏幕感知** | `_on_screen_emotion` / `_do_screen_emotion` / `_on_screen_proactive` / `_do_screen_proactive` | 2837-2924 |
-| **气泡/Hanako** | `_show_bubble` / `_show_bubble_impl` / `_on_hanako_state` / `_do_hanako_state` | 2880-2910, 2959-3037 |
+| 功能域 | 定位文件 |
+|---|---|
+| 动画（呼吸/视线/序列/帧） | `pet_mixins/animation_mixin.py` |
+| 交互（鼠标/拖拽/抚摸/坐下/喂食） | `pet_mixins/interaction_mixin.py` |
+| 对话入口（输入/语音/发送/新建会话） | `pet_mixins/chat_mixin.py` |
+| 行为（用户标记/空闲/前台/鼠标反应/屏幕感知） | `pet_mixins/behavior_mixin.py` |
+| TTS/ASR provider 管理 | `pet_mixins/voice_provider_mixin.py` |
+| 养成（喂食/工作/任务/状态） | `pet_mixins/nurturing_mixin.py` |
+| 气泡/右键菜单/Hanako 状态 | `pet_mixins/bubble_mixin.py` |
+| 音频回调 | `pet_mixins/audio_mixin.py` |
+| 盲盒/图鉴 | `pet_mixins/gacha_mixin.py` |
+| 状态 HUD/主题 | `pet_mixins/status_hud_mixin.py` |
+| 窗口装配/信号/物理回调/公共接口 | `pet.py`（PetWindow 自身） |
 
-**已知问题**：`_gaze_tick` 在 852 与 2619 两次定义（后者覆盖前者，为死代码）；`_show_bubble` 在 2880 与 2897 为分派+实现。拆分时需清理。
+**已知问题**：拆分时删除死代码 `_gaze_tick`（原 pet.py 852/2619 重复定义，现统一在 AnimationMixin）。
 
 ## PetWindow 拆分计划（已完成，2026-08-03）
 
-**现状**：`pet.py` 2193 行（原 2749 行），1 个 PetWindow 类 + 6 个 mixin。
+**现状**：`pet.py` 1316 行（原 2749 行），1 个 PetWindow 类 + 10 个 mixin。
 
 **已完成拆分**（从 pet.py 迁移到 pet_mixins/）：
 | mixin | 职责 | 行数 |
@@ -286,14 +273,21 @@ build_context() → 注入 LLM prompt
 | `AnimationMixin` | 呼吸浮动/视线/动画序列/帧推进 | 74 |
 | `InteractionMixin` | 鼠标事件/拖拽/抚摸/边缘坐下/喂食 | 306 |
 | `ChatMixin` | 输入框/语音/发送/新建会话 | 155 |
+| `BehaviorMixin` | 用户交互标记/空闲/前台/鼠标反应/屏幕感知 | 366 |
+| `VoiceProviderMixin` | TTS/ASR provider 创建/重建/签名 | 128 |
+| `NurturingMixin` | 喂食/工作/任务菜单/状态摘要 | 289 |
+| `BubbleMixin` | 气泡/右键菜单/Hanako 状态呈现 | 149 |
 | `AudioMixin`（已有） | 音频 | 61 |
 | `GachaMixin`（已有） | 盲盒 | 101 |
 | `StatusHudMixin`（已有） | 状态 HUD | 134 |
 
 **约定**：mixin 用鸭子类型访问 PetWindow 属性（`self._xxx`），不显式 import pet；
-跨域方法（如 `_unified_tick` 聚合物理/养成/待机）保留在 PetWindow。
+跨域方法（如 `_unified_tick` 聚合物理/养成/待机、`_setup_ui`/`_setup_window` 装配）保留在 PetWindow。
 
 **清理**：拆分时删除死代码 `_gaze_tick`（原在 pet.py 852 与 2619 重复定义，后者覆盖前者，现统一在 AnimationMixin）。
+
+**效果**：PetWindow 自身方法 145 → 70，非私有公共接口仅剩初始化/信号/物理回调/公开方法。
+拆后测试扩展至 42 个（新增气泡节流 + TTS 签名）。
 
 ---
 

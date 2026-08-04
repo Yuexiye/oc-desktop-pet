@@ -407,3 +407,107 @@ class TestInterruptStateMachine:
         eng.interrupt(reason="user_stop")
         assert eng._is_stale(1) is True   # 打断后过期
         assert eng._is_stale(2) is False
+
+
+# ════════════════════════════════════════════════════════════
+#  BubbleMixin 气泡节流逻辑（不依赖真实 Qt）
+# ════════════════════════════════════════════════════════════
+
+class _FakeTimer:
+    """模拟 QTimer：记录 start 调用"""
+    def __init__(self):
+        self.started = 0
+    def start(self, ms):
+        self.started += 1
+
+
+class _FakeBubble:
+    """模拟气泡：记录 set_text / show / isVisible"""
+    def __init__(self):
+        self.visible = False
+        self.text = ""
+        self.bright = False
+    def set_text(self, text, bright=False):
+        self.text = text
+        self.bright = bright
+    def show(self):
+        self.visible = True
+    def raise_(self):
+        pass
+    def isVisible(self):
+        return self.visible
+
+
+class TestBubbleThrottle:
+    """验证气泡节流：相同内容不重复、优先级排队"""
+
+    def _mk(self):
+        from pet_mixins.bubble_mixin import BubbleMixin
+        obj = BubbleMixin.__new__(BubbleMixin)
+        obj.bubble = _FakeBubble()
+        obj._bubble_timer = _FakeTimer()
+        obj._bubble_message = ""
+        obj._bubble_priority = 0
+        obj._pending_bubbles = []
+        obj._is_thinking = False
+        obj._reposition_bubble = lambda: None
+        return obj
+
+    def test_same_text_throttled(self):
+        """相同内容且气泡可见时不重复设置（只续期）"""
+        obj = self._mk()
+        obj._show_bubble_impl("你好", emotion="happy")
+        first = obj._bubble_timer.started
+        # 再次显示相同内容 → 节流，不重新 set_text
+        obj._show_bubble_impl("你好", emotion="happy")
+        assert obj._bubble_timer.started >= first + 1, "应续期"
+        # 相同内容且可见 → 不重复 set_text（text 不变）
+        assert obj.bubble.text == "你好"
+
+    def test_priority_queue(self):
+        """高优先级正在显示时，低优先级排队"""
+        obj = self._mk()
+        obj._bubble_priority = 5
+        obj.bubble.visible = True
+        obj._show_bubble_impl("低优先级", emotion="neutral", priority=2)
+        assert obj._pending_bubbles, "低优先级应排队"
+        assert obj._pending_bubbles[0][0] == "低优先级"
+
+    def test_high_priority_overrides(self):
+        """更高优先级直接显示（覆盖当前）"""
+        obj = self._mk()
+        obj._bubble_priority = 1
+        obj.bubble.visible = True
+        obj._show_bubble_impl("高优先级", emotion="happy", priority=5)
+        assert obj.bubble.text == "高优先级", "高优先级应覆盖"
+
+
+# ════════════════════════════════════════════════════════════
+#  VoiceProviderMixin TTS 签名（不依赖真实 Qt）
+# ════════════════════════════════════════════════════════════
+
+class TestTtsSignature:
+    """验证 TTS provider 签名：只有决定性字段变化才需重建"""
+
+    def _mk(self, tts_cfg):
+        from pet_mixins.voice_provider_mixin import VoiceProviderMixin
+        obj = VoiceProviderMixin.__new__(VoiceProviderMixin)
+        obj.config = {"tts": tts_cfg}
+        return obj
+
+    def test_default_cosyvoice(self):
+        """默认 cosyvoice 签名固定"""
+        obj = self._mk({})
+        assert obj._tts_provider_signature() == ("cosyvoice", ())
+
+    def test_provider_change_changes_sig(self):
+        """provider 变化 → 签名变化（需重建）"""
+        a = self._mk({"provider": "cosyvoice"})
+        b = self._mk({"provider": "mimo"})
+        assert a._tts_provider_signature() != b._tts_provider_signature()
+
+    def test_volume_not_in_sig(self):
+        """volume/enabled 运行期开关不进入签名（无需重建）"""
+        a = self._mk({"provider": "cosyvoice", "volume": 0.5})
+        b = self._mk({"provider": "cosyvoice", "volume": 0.9})
+        assert a._tts_provider_signature() == b._tts_provider_signature()
