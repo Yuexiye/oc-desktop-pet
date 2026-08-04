@@ -250,10 +250,28 @@ class Live2DRenderer(AvatarRenderer):
         """由 GLCharWidget.paintGL 调用：每帧更新并绘制模型。"""
         if not self._live2d or not self._model:
             return
+        # 诊断：确认 draw 是否被调用、模型是否就绪（仅首次打印）
+        if not getattr(self, "_draw_diag_logged", False):
+            self._draw_diag_logged = True
+            try:
+                cw = ch = 0
+                try:
+                    cw, ch = self._model.GetCanvasSize()
+                except Exception:
+                    pass
+                logger.info(
+                    "Live2DRenderer: draw 首帧就绪 model=%s canvas=(%s,%s) gl=%sx%s scale=%.3f",
+                    self._ready, cw, ch, getattr(self, "_gl_w", "?"), getattr(self, "_gl_h", "?"), self._fit_scale,
+                )
+            except Exception:
+                pass
         try:
             l2d = self._live2d
             # 清除画布（live2d-py 0.7.0.4 的 clearBuffer 为无参调用）
             l2d.clearBuffer()
+
+            # 确保缩放已应用（on_resize 可能未触发，兜底重算）
+            self._recompute_fit()
         except Exception as e:
             logger.warning("Live2DRenderer.clearBuffer 异常: %s", e)
 
