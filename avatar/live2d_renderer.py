@@ -181,6 +181,12 @@ class Live2DRenderer(AvatarRenderer):
             model.LoadModelJson(self._model_path)
 
             self._model = model
+            # Cubism 4+ 必须显式创建 renderer 才能绘制，否则 Draw() 报
+            # "argument 1 must be float"（内部 renderer 未初始化）。
+            try:
+                model.CreateRenderer()
+            except Exception as e:
+                logger.warning("Live2DRenderer: CreateRenderer 失败: %s", e)
             model.SetAutoBlink(True)
             model.SetAutoBreath(True)
 
