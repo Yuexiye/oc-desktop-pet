@@ -72,6 +72,9 @@ class BehaviorMixin:
         emotion = emotion or "neutral"
         self._show_bubble(text, emotion=emotion)
         anim = EXPRESSION_MAP.get(emotion, EXPRESSION_MAP["neutral"])[0]
+        # 收窄：surprised/angry 不切瞪眼帧，避免空闲自言自语高频瞪眼
+        if emotion in ("surprised", "angry"):
+            anim = "idle"
         self._set_anim_seq(anim, emotion=emotion, style=get_transition_style(emotion))
 
         self._current_emotion = emotion
@@ -414,6 +417,9 @@ class BehaviorMixin:
             # 统一从 config.EXPRESSION_MAP 取动画（权威映射，避免分叉）
             mapped = EXPRESSION_MAP.get(emotion)
             anim = mapped[0] if mapped else 'idle'
+            # 收窄：surprised/angry 不切瞪眼帧，避免高频瞪眼
+            if emotion in ('surprised', 'angry'):
+                anim = 'idle'
             if anim in self._renderer._frames:
                 self._set_anim_seq(anim, emotion=emotion, style=get_transition_style(emotion))
                 self._set_surface_emotion(emotion, duration_ms=3000)

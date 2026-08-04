@@ -222,10 +222,28 @@ class ScreenPerception:
 
         Returns:
             ScreenEvent 或 None（黑名单/失败时）
+
+        注意：这是同步调用，内部会做 Vision API 请求（最长 timeout=30s）。
+        从主线程/对话线程调用时可能阻塞，请用 capture_async。
         """
         if not self._enabled:
             return None
         return self._capture_and_analyze(mode=mode)
+
+    def capture_async(self, mode: str = "manual"):
+        """异步主动截图：后台线程执行，不阻塞调用方。
+
+        结果通过 on_update / on_emotion / on_screen_proactive 回调返回。
+        用于主线程/对话线程触发截图，避免 Vision API 阻塞 UI 或消息队列。
+        """
+        if not self._enabled:
+            return
+        threading.Thread(
+            target=self._capture_and_analyze,
+            args=(mode,),
+            daemon=True,
+            name="ScreenCaptureAsync",
+        ).start()
 
     def on_foreground_change(self, app: str, category: str, title: str):
         """前台窗口切换时调用（由 ForegroundWatcher 触发）

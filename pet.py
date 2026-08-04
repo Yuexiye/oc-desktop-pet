@@ -872,16 +872,20 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
                 if self._status_hud.isVisible():
                     self._refresh_status_hud()
             # 情绪驱动本体动画（仅平静状态下，避免打断行走/追逐/对话）
+            # 收窄：surprised/angry 不切瞪眼帧（用户反馈高频瞪眼），只保留表情脸表达
             if not hasattr(self, '_last_body_emotion'):
                 self._last_body_emotion = 'neutral'
-            if emo != self._last_body_emotion and hasattr(self, '_renderer'):
+            body_emo = emo
+            if body_emo in ('surprised', 'angry'):
+                body_emo = 'neutral'  # 驱动本体动画时降级为中性，避免瞪眼
+            if body_emo != self._last_body_emotion and hasattr(self, '_renderer'):
                 calm = (not getattr(self, '_physics', None) or not self._physics.is_active) \
                     and not getattr(self, '_chasing', False) \
                     and not getattr(self, '_is_thinking', False) \
                     and not getattr(self, '_is_dragging', False)
                 if calm:
-                    self._renderer.set_emotion(emo)
-                self._last_body_emotion = emo
+                    self._renderer.set_emotion(body_emo)
+                self._last_body_emotion = body_emo
         # 6. 养成 tick（每秒一次）+ 自动保存（自带 60s 节流）
         #    所有访问都靠 hasattr 守卫，没注入养成模块时跳过
         if self._bob_frame % 20 == 0:
@@ -1288,9 +1292,12 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
                 self._last_tts_emotion = emotion or "neutral"
                 self._tts_player.play(audio_path)
 
-        # 动画
+        # 动画（收窄：surprised/angry 不切瞪眼帧，避免对话时高频瞪眼）
         try:
-            self._set_anim_seq(anim, emotion=emotion, style=get_transition_style(emotion))
+            body_anim = anim
+            if emotion in ('surprised', 'angry'):
+                body_anim = 'idle'
+            self._set_anim_seq(body_anim, emotion=emotion, style=get_transition_style(emotion))
         except Exception:
             pass
 

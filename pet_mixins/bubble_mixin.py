@@ -144,10 +144,13 @@ class BubbleMixin:
                 logger.warning("TTS/bubble error: %s", e)
 
         # 2. 动画(P3: 传递 emotion,支持帧区间)
+        # 收窄：surprised/angry 不切瞪眼帧，避免高频瞪眼（只保留气泡情绪）
         try:
             if anim_name != self._current_anim:
                 safe_anims = ['idle', 'walk', 'extra']
                 if anim_name not in safe_anims:
+                    anim_name = 'idle'
+                if emotion in ('surprised', 'angry'):
                     anim_name = 'idle'
                 self._current_anim = anim_name
                 self._set_anim_seq(anim_name, emotion=emotion, style=get_transition_style(emotion))

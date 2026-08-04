@@ -426,21 +426,14 @@ class CapabilityRouter:
             )
 
         elif cap.name == "screenshot_now":
-            event = self._perception._screen.capture_now(mode="manual")
-            if event and event.description:
-                return RouteResult(
-                    capability=cap.name,
-                    text=f"屏幕分析：{event.description}",
-                    emotion="thinking",
-                    anim="idle",
-                )
-            else:
-                return RouteResult(
-                    capability=cap.name,
-                    text="截图失败或无变化",
-                    emotion="neutral",
-                    anim="idle",
-                )
+            # 异步截图：避免 Vision API 阻塞对话线程（最长 30s 超时）
+            self._perception._screen.capture_async(mode="manual")
+            return RouteResult(
+                capability=cap.name,
+                text="📸 正在分析屏幕...",
+                emotion="thinking",
+                anim="idle",
+            )
 
         elif cap.name == "recent_activities":
             summary = self._perception._screen.get_activity_summary(minutes=120)
