@@ -290,6 +290,42 @@ class InteractionMixin:
         self._motion.reset()
         self._set_anim_seq('idle')
 
+    def _head_local_point(self) -> QPoint:
+        """宠物头顶的窗口局部坐标（爱心/表情的原点）"""
+        top = self._get_char_top_y()
+        return QPoint(self.width() // 2, top)
+
+    def _reposition_overlays(self):
+        """把 HUD / 情绪脸定位到头顶，避免在屏幕边缘重叠"""
+        if not hasattr(self, '_status_hud'):
+            return
+        top = self._get_char_top_y()
+        cx = self.width() // 2
+        face_h = self._emotion_face.height()
+        hud_h = self._status_hud.height()
+
+        # 情绪脸：头顶正上方
+        face_y = max(top - face_h - 6, 2)
+        self._emotion_face.move(cx - self._emotion_face.width() // 2, face_y)
+
+        # 状态 HUD：
+        #   - pinned（用户右键勾选常驻）→ 放头顶，方便随时查看
+        #   - 临时闪现（喂食/抚摸）→ 放窗口右下角，不遮挡桌宠主体
+        if getattr(self, '_hud_pinned', False):
+            hud_y = top - hud_h - face_h - 12
+            if hud_y <= face_h + 8:
+                hud_x = cx + 10
+                hud_y = max(top + 8, 2)
+                if hud_x + self._status_hud.width() > self.width():
+                    hud_x = max(cx - self._status_hud.width() // 2, 2)
+            else:
+                hud_x = cx - self._status_hud.width() // 2
+            self._status_hud.move(hud_x, max(hud_y, 2))
+        else:
+            hud_x = max(self.width() - self._status_hud.width() - 6, 2)
+            hud_y = max(self.height() - self._status_hud.height() - 6, 2)
+            self._status_hud.move(hud_x, hud_y)
+
     # ── 抚摸 / 喂食 ──
 
     def _schedule_pending_click(self):
