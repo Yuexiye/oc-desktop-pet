@@ -338,3 +338,72 @@ class TestHanakoMonitorAgentFilter:
             "sessionPath": "/home/u/.hanako/agents/glados/sessions/abc.jsonl"
         }) is False
         assert mon._event_belongs_to_agent({"type": "thinking_start"}) is True
+
+
+# ════════════════════════════════════════════════════════════
+#  P1 打断状态机（消息代际）
+# ════════════════════════════════════════════════════════════
+
+class _FakeAdapter:
+    """模拟 LLM 适配器：阻塞一段时间后返回，可统计调用次数"""
+    def __init__(self, delay=0.3):
+        self.calls = 0
+        self.delay = delay
+
+    def chat(self, message, inject_memory=True, extra_context="", tools=None, source="user"):
+        self.calls += 1
+        import time
+        time.sleep(self.delay)
+        return message, "happy"
+
+
+class TestInterruptStateMachine:
+
+    def _eng(self):
+        from core.conversation_engine import ConversationEngine
+        eng = ConversationEngine(character_id="test")
+        eng._adapter = _FakeAdapter()
+        eng._tts = None
+        return eng
+
+    def test_normal_message_callback(self):
+        """正常处理（未打断）应回调结果"""
+        eng = self._eng()
+        replies = []
+        eng.on_reply = lambda r, e, a, p: replies.append(r)
+        eng._process_message({"text": "hi", "character": "test", "source": "user", "gen": 1})
+        assert replies == ["hi"], f"正常应回调, got {replies}"
+
+    def test_interrupt_discards_inflight(self):
+        """LLM 调用中被打断 → 结果被丢弃（不回调）"""
+        import threading, time
+        eng = self._eng()
+        replies = []
+        eng.on_reply = lambda r, e, a, p: replies.append(r)
+        eng._generation = 1  # 模拟 send 后
+        msg = {"text": "hi", "character": "test", "source": "user", "gen": 1}
+        t = threading.Thread(target=lambda: eng._process_message(msg), daemon=True)
+        t.start()
+        time.sleep(0.1)  # LLM 调用中
+        state = eng.interrupt(reason="voice_start")  # 打断, generation -> 2
+        t.join(timeout=1)
+        assert eng._adapter.calls == 1, "LLM 应被调用过一次"
+        assert replies == [], f"打断后结果应丢弃, got {replies}"
+        assert state == "interrupted"
+
+    def test_interrupt_state_mapping(self):
+        """打断原因 → 状态映射"""
+        eng = self._eng()
+        assert eng.interrupt(reason="new_message") == "cancelled"
+        assert eng.interrupt(reason="voice_start") == "interrupted"
+        assert eng.interrupt(reason="user_stop") == "interrupted"
+
+    def test_stale_after_interrupt(self):
+        """打断后旧消息代际过期"""
+        eng = self._eng()
+        eng._generation = 1
+        assert eng._is_stale(0) is True   # 旧代际过期
+        assert eng._is_stale(1) is False  # 当前代际有效
+        eng.interrupt(reason="user_stop")
+        assert eng._is_stale(1) is True   # 打断后过期
+        assert eng._is_stale(2) is False

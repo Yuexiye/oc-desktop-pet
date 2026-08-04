@@ -209,7 +209,50 @@ build_context() → 注入 LLM prompt
 | 清理 | 删除 hanako_bridge.py 死代码 |
 | 2026-07-27 | 新增事件总线 + 任务系统（core/mission）+ 盲盒（core/gacha）+ PetSave 双货币字段（gacha_energy 等）；事件源覆盖 pet.py / phone_activity / multi_pet_bridge / mission_manager / pet_state 共 10+ 处，零侵入现有数据流 |
 | 2026-07-27 | attribute_changed 实质化：PetStateManager 按 5 点桶发属性变化事件；追踪器 attribute 条件改 `<attr>:<阈值>` 格式；新增 mood/hunger/energy/health 类任务 |
+| 2026-08-03 | P1 打断状态机：conversation_engine 引入消息代际（generation），用户打断时 LLM/TTS/回调全链路作废旧结果；interrupt() 区分 interrupted/cancelled/completed；pet.py 三入口接入（新消息/语音开始/停止） |
+| 2026-08-03 | 一桌宠一助手：HanakoMonitor 按 agent 过滤 WS 事件，只观测本桌宠对应助手会话 |
+| 2026-08-03 | 拖拽/渲染/感知优化：异步防抖保存、fps 读角色定义、嵌套 JSON 解析、前台冷却修复 |
 
 ---
 
-*最后更新：2026-07-27*
+## 打断状态机（P1，2026-08-03）
+
+**目标**：实现全链路打断——用户插话/发消息/点停止时，同时中断 LLM 生成、TTS 合成、音频播放，并区分打断状态，不粗暴丢弃。
+
+**机制**：消息代际（generation）
+- `conversation_engine` 维护 `_generation` 计数器，每次 `send(user)` / `interrupt()` 递增
+- 每条消息带 `gen`，处理时用 `_is_stale(gen)` 检查是否过期（`gen < 当前`）
+- 检查点：LLM 调用后 / TTS 合成前 / TTS 合成后 / 工具执行循环中
+- 过期 → 丢弃该消息的 LLM/TTS/回调结果（不播放、不回调）
+
+**打断状态**（`interrupt(reason)` → state）：
+| reason | state | 行为 |
+|---|---|---|
+| `new_message` | `cancelled` | 旧回复作废，转入新对话 |
+| `voice_start` | `interrupted` | 进入聆听，旧回复让位（barge-in） |
+| `user_stop` | `interrupted` | 停止，保留待恢复 |
+
+**LLM 层打断**：
+- Hanako WS：`session_manager.abort()` 真正取消 LLM 思考（`chat_via_hanako` 返回 aborted → 代际检查丢弃）
+- 直连 API：requests 无法真正取消，但代际检查会在 LLM 返回后丢弃结果（不播放）
+
+**入口**（pet.py）：`_send_message`（new_message）、`_toggle_voice` 录音开始（voice_start）、`_tts_player.stop()`（播放层）
+
+详见 `core/P1_INTERRUPT_PLAN.md`（实时进度）。
+
+## PetWindow 拆分计划（评估中，2026-08-03）
+
+**现状**：`pet.py` 2737 行，1 个类（PetWindow），145 个方法——God Object，增量堆积的根源。
+
+**评估**：不推荐全量重写（风险高/周期长）。建议**定点模块化**——P1 已顺带把对话职责从 PetWindow 外移到 conversation_engine（更清晰）。
+
+**候选拆分方向**（待 P1 稳定性确认后评估）：
+- 交互层（拖拽/抚摸/菜单）→ 拆出 interaction_mixin
+- 状态层（HUD/情绪脸/养成）→ 已有 StatusHudMixin / GachaMixin / AudioMixin
+- 渲染层（sprite/live2d）→ 已有 avatar/ 目录
+
+**决策点**：P1 完成后若 PetWindow 仍显臃肿，再启动一次专项拆分；否则保持现状避免为重构而重构。
+
+---
+
+*最后更新：2026-08-03*

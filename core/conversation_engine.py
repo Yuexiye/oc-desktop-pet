@@ -58,6 +58,14 @@ class ConversationEngine:
         self._running = False
         self._user_turn_active = False  # 用户对话进行中时阻止主动消息
 
+        # ── P1 打断状态机：消息代际（generation）机制 ──
+        # 每次 send/interrupt 递增 generation，消息处理时校验代际是否过期：
+        #   过期（用户已发新消息/已打断）→ 丢弃该消息的 LLM/TTS/回调结果，
+        #   避免“打断后旧回复又冒出来”。
+        self._generation = 0
+        self._current_gen: int | None = None   # 正在处理的消息代际
+        self._interrupt_event = threading.Event()  # 打断信号（LLM/工具/合成可检查）
+
         # 工具系统
         from .tool_registry import ToolRegistry
         from .tool_executor import ToolExecutor
@@ -221,18 +229,76 @@ class ConversationEngine:
         source: 'user' | 'proactive' | 'idle'
         - proactive/idle: 始终允许，插队到最前面（走直接 LLM，不碰 Hanako）
         - user: 正常排队 + 走 capability 路由
+
+        P1 打断：用户消息会推进代际，使正在处理的旧消息失效（打断）。
         """
         with self._lock:
+            # 用户消息：推进代际，打断当前正在处理的旧消息
+            if source == "user":
+                self._generation += 1
+                self._interrupt_event.set()
             item = {
                 "text": text,
                 "character": character or self._character_id,
                 "time": time.time(),
                 "source": source,
+                "gen": self._generation,
             }
             if source in ("proactive", "idle"):
                 self._queue.insert(0, item)
             else:
                 self._queue.append(item)
+
+    def interrupt(self, reason: str = "user_interrupt") -> str:
+        """主动打断当前对话（用户点停止 / 语音输入开始 / 发新消息）。
+
+        P1 打断状态机：每次打断记录原因，供消费方（pet.py）决定后续行为。
+        状态：
+          - new_message: 用户发新消息 → 旧回复作废，转入新对话
+          - voice_start: 语音输入开始 → 旧回复作废，进入聆听
+          - user_stop:   用户点停止   → 旧回复保留待恢复（不粗暴丢弃）
+
+        效果：
+          - 推进代际，使正在处理的旧消息失效
+          - 清理待处理队列（主动消息），保留最新用户消息
+          - 触发打断信号，供 LLM/TTS 层检查
+          - 若走 Hanako WS，调用 session_manager.abort 真正取消 LLM 思考
+
+        Returns:
+            本次打断状态（"interrupted" / "cancelled" / "completed"）
+        """
+        # 状态映射：打断原因 → 状态
+        state_map = {
+            "new_message": "cancelled",   # 旧回复作废，转入新对话
+            "voice_start": "interrupted", # 进入聆听，旧回复让位
+            "user_stop": "interrupted",   # 停止，保留待恢复
+        }
+        state = state_map.get(reason, "interrupted")
+        with self._lock:
+            self._generation += 1
+            self._interrupt_event.set()
+            self._last_interrupt_state = state
+            self._last_interrupt_reason = reason
+            # 清掉非用户消息（proactive/idle 的可丢），保留最新用户消息
+            self._queue = [m for m in self._queue if m.get("source") == "user"]
+        # 打断 Hanako WS 的 LLM 思考（若当前在 Hanako 上）
+        try:
+            sm = self._session_manager
+            adapter = self._adapter
+            if sm is not None and adapter is not None:
+                session = getattr(adapter, "_current_session", None)
+                if session is not None and hasattr(sm, "abort"):
+                    sm.abort(session, reason=reason)
+        except Exception as e:
+            logger.warning("interrupt: abort Hanako session failed: %s", e)
+        logger.info("对话打断: gen=%d state=%s reason=%s", self._generation, state, reason)
+        return state
+
+    @property
+    def last_interrupt_state(self) -> str | None:
+        """最近一次打断的状态（interrupted / cancelled / completed）"""
+        with self._lock:
+            return getattr(self, "_last_interrupt_state", None)
 
     def _run(self):
         """后台线程主循环"""
@@ -268,11 +334,26 @@ class ConversationEngine:
             else:
                 time.sleep(0.2)
 
+    def _is_stale(self, gen: int) -> bool:
+        """检查消息代际是否已过期（用户已打断/发新消息）。
+
+        过期 → 应丢弃该消息的 LLM/TTS/回调结果。
+        判断：gen 小于当前代际则视为过期（当前代际仍有效）。
+        """
+        with self._lock:
+            return gen < self._generation
+
     def _process_message(self, msg: dict):
         """处理一条消息：LLM -> 工具调用（可选）-> 回调文字 -> TTS"""
         text = msg["text"]
         character = msg["character"]
         source = msg.get("source", "user")
+        gen = msg.get("gen", self._generation)
+
+        # P1：若消息在入队后被新消息打断（代际过期），直接跳过
+        if self._is_stale(gen):
+            logger.debug("跳过过期消息: gen=%d 当前=%d", gen, self._generation)
+            return
 
         logger.info("处理消息 [%s]: %s", character, text[:50])
 
@@ -335,7 +416,7 @@ class ConversationEngine:
                     reply, emotion = cleaned or "…", emotion or "neutral"
                 else:
                     reply, emotion = self._handle_tool_calls(
-                        reply, text, character, perception_ctx
+                        reply, text, character, perception_ctx, gen
                     )
 
             if not reply:
@@ -345,6 +426,11 @@ class ConversationEngine:
             logger.error("LLM 失败: %s", e)
             reply = "…（信号不太好，你再说一遍？）"
             emotion = "neutral"
+
+        # P1：LLM 调用后检查——若已打断（代际过期），不再继续 TTS/回调
+        if self._is_stale(gen):
+            logger.debug("LLM 后已打断，丢弃结果: gen=%d", gen)
+            return
 
         # 2. 动画映射
         anim = map_emotion_to_anim(emotion)
@@ -360,6 +446,9 @@ class ConversationEngine:
             skip_reason = "empty reply"
         elif reply.strip() in ("\u2026", "..."):
             skip_reason = "ellipsis reply"
+        # P1：若在合成前发现已打断，跳过合成（省一次 TTS 算力）
+        elif self._is_stale(gen):
+            skip_reason = "interrupted before synth"
         
         if not skip_reason:
             try:
@@ -378,13 +467,22 @@ class ConversationEngine:
         else:
             logger.info("TTS skipped: %s", skip_reason or "unknown")
 
+        # P1：合成完成后检查——若已打断，丢弃结果（不播放、不回调）
+        if self._is_stale(gen):
+            logger.debug("TTS 后已打断，丢弃: gen=%d", gen)
+            return
+
         # 4. 回调（文字 + 音频一起）
         if source == "user":
             self._user_turn_active = False
         self.on_reply(reply, emotion, anim, audio_path)
 
-    def _handle_tool_calls(self, resp: dict, user_text: str, character: str, perception_ctx: str) -> tuple:
-        """处理 LLM 的 tool_calls：执行工具 → 结果回传 → 再次调用 LLM"""
+    def _handle_tool_calls(self, resp: dict, user_text: str, character: str, perception_ctx: str, gen: int = None) -> tuple:
+        """处理 LLM 的 tool_calls：执行工具 → 结果回传 → 再次调用 LLM
+
+        Args:
+            gen: 消息代际。工具执行中若被打断（代际过期），停止后续工具。
+        """
         tool_calls = resp["tool_calls"]
         assistant_message = resp["message"]
 
@@ -397,6 +495,10 @@ class ConversationEngine:
 
         # 逐个执行工具
         for tc in tool_calls:
+            # P1：工具执行中被打断 → 停止后续工具
+            if gen is not None and self._is_stale(gen):
+                logger.debug("工具执行中被打断，停止: gen=%d", gen)
+                return "已中断", "neutral"
             func = tc.get("function", {})
             tool_name = func.get("name", "")
             tool_id = tc.get("id", "")

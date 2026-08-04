@@ -1370,7 +1370,13 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, QWidget):
             return
 
         if not self._voice_recording:
-            # 开始录音
+            # 开始录音 → 立即打断当前对话（barge-in），进入聆听
+            if self._engine:
+                try:
+                    self._engine.interrupt(reason="voice_start")
+                except Exception:
+                    pass
+            self._tts_player.stop()
             if self._voice_input.start():
                 self._voice_recording = True
                 self._voice_action.setText("⏹ 停止")
@@ -2153,6 +2159,12 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, QWidget):
 
         # ── 用户发新消息 → 立即截停旧 TTS(P2 可中断管线)──
         self._tts_player.stop()
+        # P1 全链路打断：推进代际 + 中断 LLM 层（旧消息作废，转入新对话）
+        if self._engine:
+            try:
+                self._engine.interrupt(reason="new_message")
+            except Exception:
+                pass
 
         # 通过对话引擎发送（异步）
         if self._engine:
