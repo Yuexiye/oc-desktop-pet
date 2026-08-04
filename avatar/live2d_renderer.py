@@ -156,13 +156,29 @@ class Live2DRenderer(AvatarRenderer):
             if not getattr(self, "_global_inited", False):
                 l2d.init()
                 self._global_inited = True
+
+            # GL 可用性检查：live2d 需要真实 OpenGL 上下文（glad 加载 GL 函数）。
+            # 若 GL 不可用（headless / 驱动问题），glInit 会打印 "Can't initilize glad"
+            # 但 C 层不抛异常，随后 Model 加载纹理时段错误崩退。
+            # 这里先行探测 GL 扩展，探测失败则跳过 live2d 并回退 sprite（角色透明不崩）。
+            try:
+                from OpenGL import GL as _gl
+                version = _gl.glGetString(_gl.GL_VERSION)
+                if not version:
+                    raise RuntimeError("GL version empty")
+                logger.info("Live2DRenderer: OpenGL %s 可用", version)
+            except Exception as e:
+                logger.warning("Live2DRenderer: OpenGL 不可用，回退 sprite 渲染: %s", e)
+                self._ready = False
+                self._model = None
+                return
+
             l2d.glInit()
 
-            try:
-                model = l2d.Model(self._model_path)
-            except Exception:
-                model = l2d.Model()
-                model.LoadModelJson(self._model_path)
+            # 统一用「先建空模型 + LoadModelJson」路径，避免 l2d.Model(path)
+            # 带路径构造在部分 GL 上下文/驱动下段错误（段错误不抛异常，fallback 不触发）
+            model = l2d.Model()
+            model.LoadModelJson(self._model_path)
 
             self._model = model
             model.SetAutoBlink(True)

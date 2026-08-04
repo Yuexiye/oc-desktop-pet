@@ -21,9 +21,16 @@ class GLCharWidget(QOpenGLWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
+        # live2d Cubism 需要 OpenGL 2.0+（glad 加载 GL 函数）。
+        # 显式指定 3.3 Core，避免 Qt 默认降到 OpenGL ES/过低版本导致
+        # live2d.glInit() 报 "Can't initilize glad" 后 Model 加载段错误崩退。
         fmt = QSurfaceFormat()
         fmt.setAlphaBufferSize(8)
         fmt.setRenderableType(QSurfaceFormat.OpenGL)
+        fmt.setVersion(3, 3)
+        fmt.setProfile(QSurfaceFormat.CoreProfile)
+        fmt.setDepthBufferSize(24)
+        fmt.setStencilBufferSize(8)
         self.setFormat(fmt)
 
         self._renderer = None  # Live2DRenderer 反向引用（绘制时回调）
@@ -38,7 +45,10 @@ class GLCharWidget(QOpenGLWidget):
 
     def initializeGL(self) -> None:
         if self._renderer is not None:
+            # 确保当前 GL 上下文激活后再初始化 live2d（glad 需要 current context）
+            self.makeCurrent()
             self._renderer.on_gl_initialized()
+            self.doneCurrent()
 
     def paintGL(self) -> None:
         if self._renderer is not None:
