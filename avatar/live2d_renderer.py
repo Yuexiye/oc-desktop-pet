@@ -193,6 +193,19 @@ class Live2DRenderer(AvatarRenderer):
             except Exception as e:
                 logger.warning("Live2DRenderer: Resize 失败: %s", e)
 
+            # 显式设置初始缩放（用像素画布尺寸，与最小测试一致）。
+            # 不设置则模型保持默认 scale，可能过大/过小画不出来。
+            try:
+                cw_px, ch_px = model.GetCanvasSizePixel()
+                if cw_px and ch_px:
+                    w = int(getattr(self, "_gl_w", 220) or 220)
+                    h = int(getattr(self, "_gl_h", 260) or 260)
+                    scale = min(w / cw_px, h / ch_px) * 0.9 * self._fit_scale
+                    model.SetScale(scale)
+                    logger.info("Live2DRenderer: 初始缩放 scale=%.3f", scale)
+            except Exception as e:
+                logger.warning("Live2DRenderer: 初始缩放失败: %s", e)
+
             # 收集可用表情/动作组，用于情绪映射
             try:
                 self._expression_names = list(model.GetExpressions() or [])
