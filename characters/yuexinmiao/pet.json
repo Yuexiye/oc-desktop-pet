@@ -3,7 +3,11 @@
   "name": "月薪喵",
   "description": "一只白色的小办公室猫咪",
   "style": "flat",
-  "format": "q6",
+  "format": "live2d",
+  "live2d": {
+    "scale": 0.9,
+    "offset": [0, 0]
+  },
   "animations": {
     "idle":          { "row": 0, "frames": 6, "fps": 3 },
     "running-right": { "row": 1, "frames": 8, "fps": 6 },
