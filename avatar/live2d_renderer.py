@@ -99,6 +99,11 @@ class Live2DRenderer(AvatarRenderer):
         # GL 承载控件（真正的渲染表面）
         self.char_label = GLCharWidget(parent)
         self.char_label.setFixedSize(220, 260)
+        # 关键：必须显式设置位置并显示，否则 widget 存在但不显示（画了看不见）。
+        # 对齐 SpriteRenderer 的 move()+lower() 行为。
+        self.char_label.move(10, 0)
+        self.char_label.lower()
+        self.char_label.show()
         self.char_label.move(10, 0)
         self.char_label.lower()
         self.char_label.set_renderer(self)
@@ -313,16 +318,9 @@ class Live2DRenderer(AvatarRenderer):
         except Exception as e:
             logger.warning("Live2DRenderer.mouth 异常: %s", e)
 
-        # live2d-py 的 Model.Draw() 内部用 Cubism 5.0 shader 渲染并自行管理投影矩阵，
-        # 无需外部 glOrtho 固定管线投影（反而可能干扰）。
-        # 只需确保视口正确（QOpenGLWidget 已设置）。
-        try:
-            from OpenGL import GL
-            GL.glEnable(GL.GL_BLEND)
-            GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
-        except Exception as e:
-            logger.warning("Live2DRenderer: 设置 GL 混合失败: %s", e)
-
+        # 与验证可行的最小测试保持完全一致的绘制路径：
+        #   clearBuffer -> Update -> Draw
+        # 不手动设置 GL 混合（live2d shader 自行管理），不设投影。
         try:
             # LAppModel.Update 无参（内部自算 dt + 管理眨眼/呼吸）
             self._model.Update()
