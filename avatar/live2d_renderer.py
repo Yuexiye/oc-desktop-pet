@@ -276,10 +276,10 @@ class Live2DRenderer(AvatarRenderer):
                 cw_px, ch_px = cw_log * ppu, ch_log * ppu
             if not cw_px or not ch_px:
                 return
-            # 用高度方向缩放（模型是正方形 1200px，label 是竖长 220x260）。
-            # 若用 min(宽比,高比) 会取宽度比，角色被缩得很小、上下留白很多。
-            # 按高度比缩放让角色尽量填满 label，更大更清晰。
-            fit = (self._gl_h / ch_px) * 0.95 * self._fit_scale
+            # 用 min(宽比,高比) 让角色完整适配窗口，不溢出被裁切。
+            # 注意：绝不能按高度放大到超过窗口宽——角色是正方形，
+            # 按高度缩放会让宽度溢出窗口，被左右裁切（这就是之前"角色小/不完整"的真相）。
+            fit = min(self._gl_w / cw_px, self._gl_h / ch_px) * 0.95 * self._fit_scale
             self._model.SetScale(fit)
             logger.info("Live2DRenderer: 缩放 fit=%.3f (gl=%sx%s, canvas_px=%sx%s)",
                         fit, self._gl_w, self._gl_h, cw_px, ch_px)
