@@ -519,10 +519,13 @@ class Live2DRenderer(AvatarRenderer):
         return self._scale
 
     def recalc_geometry(self, window_w: int, window_h: int) -> None:
-        w = int(220 * self._scale)
-        h = int(260 * self._scale)
+        # 用窗口尺寸设置角色 label（不再用固定 220x260 基准——那比 200 宽的窗口还宽，
+        # 导致角色宽度溢出被窗口裁切、显示不完整）。
+        # 模型是正方形(1200px)，label 用窗口宽，角色按高度填满。
+        w = int(window_w * self._scale)
+        h = int(window_h * self._scale)
         self.char_label.setFixedSize(w, h)
-        self._base_label_pos = QPoint(10, 0)
+        self._base_label_pos = QPoint(0, 0)
         self._recompute_fit()
 
     def set_facing(self, right: bool) -> None:

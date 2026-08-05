@@ -64,7 +64,7 @@ class ChatBubble(QWidget):
         self._typewriter_speed = 28
         self._padding_h = 14
         self._padding_v = 10
-        self._max_width = 220
+        self._max_width = 180  # 适配 200px 窗口，避免气泡超出窗口被裁切
         self._theme = "light"  # 默认 light
         self._bg_color = self._color("bg")
         self._text_color = self._color("text")
