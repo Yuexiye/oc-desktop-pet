@@ -276,11 +276,13 @@ class Live2DRenderer(AvatarRenderer):
                 cw_px, ch_px = cw_log * ppu, ch_log * ppu
             if not cw_px or not ch_px:
                 return
-            fit = min(self._gl_w / cw_px, self._gl_h / ch_px) * 0.92 * self._fit_scale
+            # 用高度方向缩放（模型是正方形 1200px，label 是竖长 220x260）。
+            # 若用 min(宽比,高比) 会取宽度比，角色被缩得很小、上下留白很多。
+            # 按高度比缩放让角色尽量填满 label，更大更清晰。
+            fit = (self._gl_h / ch_px) * 0.95 * self._fit_scale
             self._model.SetScale(fit)
-            # 不调用 SetOffset：纯测试从不调用 SetOffset 也能正常画出。
-            # SetOffset 可能触发 live2d 内部状态变更导致绘制失败。
-            # 若需微调，后续再单独处理。
+            logger.info("Live2DRenderer: 缩放 fit=%.3f (gl=%sx%s, canvas_px=%sx%s)",
+                        fit, self._gl_w, self._gl_h, cw_px, ch_px)
         except Exception as e:
             logger.warning("Live2DRenderer: 缩放计算失败: %s", e)
 
