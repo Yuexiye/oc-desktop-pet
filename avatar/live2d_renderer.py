@@ -300,9 +300,6 @@ class Live2DRenderer(AvatarRenderer):
             l2d = self._live2d
             # 清除画布（live2d-py 0.7.0.4 的 clearBuffer 为无参调用）
             l2d.clearBuffer()
-
-            # 确保缩放已应用（on_resize 可能未触发，兜底重算）
-            self._recompute_fit()
         except Exception as e:
             logger.warning("Live2DRenderer.clearBuffer 异常: %s", e)
 
