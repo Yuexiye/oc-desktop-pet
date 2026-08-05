@@ -153,6 +153,9 @@ class Live2DRenderer(AvatarRenderer):
 
     def on_gl_initialized(self) -> None:
         """GL 上下文就绪：初始化 live2d 后端并加载模型。"""
+        # 调试二分：环境变量 L2D_DEBUG_MINIMAL=1 时跳过所有附加逻辑，
+        # 只保留纯测试路径（init->glInit->LAppModel->Load->Resize->SetScale->Draw）
+        self._debug_minimal = os.environ.get("L2D_DEBUG_MINIMAL") == "1"
         if self._ready or not self._model_path:
             return
         try:
@@ -162,23 +165,18 @@ class Live2DRenderer(AvatarRenderer):
                 l2d.init()
                 self._global_inited = True
 
-            # GL 可用性检查：live2d 需要真实 OpenGL 上下文（glad 加载 GL 函数）。
-            # 若 GL 不可用（headless / 驱动问题），glInit 会打印 "Can't initilize glad"
-            # 但 C 层不抛异常，随后 Model 加载纹理时段错误崩退。
-            # 这里先行探测 GL 扩展，探测失败则跳过 live2d 并回退 sprite（角色透明不崩）。
+            # GL 可用性检查：不 import PyOpenGL 的 GL（它与 live2d-py 的 glad 加载的
+            # GL 函数可能冲突，污染函数指针导致模型绘制失败——纯测试从不 import
+            # PyOpenGL 能正常画出）。直接尝试 glInit，失败则回退 sprite。
             try:
-                from OpenGL import GL as _gl
-                version = _gl.glGetString(_gl.GL_VERSION)
-                if not version:
-                    raise RuntimeError("GL version empty")
-                logger.info("Live2DRenderer: OpenGL %s 可用", version)
+                import live2d.v3
+                l2d.glInit()
+                logger.info("Live2DRenderer: glInit OK（未依赖 PyOpenGL）")
             except Exception as e:
-                logger.warning("Live2DRenderer: OpenGL 不可用，回退 sprite 渲染: %s", e)
+                logger.warning("Live2DRenderer: glInit 失败，回退 sprite 渲染: %s", e)
                 self._ready = False
                 self._model = None
                 return
-
-            l2d.glInit()
 
             # 用 LAppModel（高层封装，内部管理 dt/投影/自动眨眼/呼吸）。
             # 最小测试验证 LAppModel 能正确绘制（底层 Model 画不出来）。
@@ -187,14 +185,25 @@ class Live2DRenderer(AvatarRenderer):
 
             self._model = model
             # LAppModel.LoadModelJson 内部已自动 CreateRenderer
-            model.SetAutoBlinkEnable(True)
-            model.SetAutoBreathEnable(True)
+            if not self._debug_minimal:
+                model.SetAutoBlinkEnable(True)
+                model.SetAutoBreathEnable(True)
+            else:
+                logger.info("Live2DRenderer: L2D_DEBUG_MINIMAL=1 跳过自动眨眼/呼吸")
 
             # 关键：live2d 文档要求初次加载必须 Resize(宽,高)，否则模型不显示。
-            # 这里用默认视口尺寸（真实尺寸由 on_resize 触发后重算）
+            # 用 GLCharWidget 实际尺寸（而非硬编码默认 220），与纯测试一致。
+            # 若 _gl_w 未设置（initializeGL 早于 resizeGL），回退到 widget 实际 size。
             try:
-                model.Resize(int(getattr(self, "_gl_w", 220) or 220),
-                             int(getattr(self, "_gl_h", 260) or 260))
+                gl_w = int(getattr(self, "_gl_w", 0) or 0)
+                gl_h = int(getattr(self, "_gl_h", 0) or 0)
+                if not gl_w or not gl_h:
+                    cl = getattr(self, "char_label", None)
+                    if cl is not None:
+                        gl_w = cl.width() or 220
+                        gl_h = cl.height() or 260
+                model.Resize(gl_w, gl_h)
+                logger.info("Live2DRenderer: Resize(%s,%s)", gl_w, gl_h)
             except Exception as e:
                 logger.warning("Live2DRenderer: Resize 失败: %s", e)
 
@@ -203,30 +212,38 @@ class Live2DRenderer(AvatarRenderer):
             try:
                 cw_px, ch_px = model.GetCanvasSizePixel()
                 if cw_px and ch_px:
-                    w = int(getattr(self, "_gl_w", 220) or 220)
-                    h = int(getattr(self, "_gl_h", 260) or 260)
-                    scale = min(w / cw_px, h / ch_px) * 0.9 * self._fit_scale
+                    gl_w = int(getattr(self, "_gl_w", 0) or 0)
+                    gl_h = int(getattr(self, "_gl_h", 0) or 0)
+                    if not gl_w or not gl_h:
+                        cl = getattr(self, "char_label", None)
+                        if cl is not None:
+                            gl_w = cl.width() or 220
+                            gl_h = cl.height() or 260
+                    scale = min(gl_w / cw_px, gl_h / ch_px) * 0.9 * self._fit_scale
                     model.SetScale(scale)
                     logger.info("Live2DRenderer: 初始缩放 scale=%.3f", scale)
             except Exception as e:
                 logger.warning("Live2DRenderer: 初始缩放失败: %s", e)
 
             # 收集可用表情/动作组，用于情绪映射
-            try:
-                self._expression_names = list(model.GetExpressions() or [])
-            except Exception:
-                self._expression_names = []
-            try:
-                if hasattr(model, "GetMotionGroups"):
-                    groups = model.GetMotionGroups()
-                    self._motion_groups = {g: [] for g in (groups or [])}
-                else:
-                    self._motion_groups = dict(model.GetMotions() or {})
-            except Exception:
-                self._motion_groups = {}
+            self._expression_names = []
+            self._motion_groups = {}
+            if not self._debug_minimal:
+                try:
+                    self._expression_names = list(model.GetExpressions() or [])
+                except Exception:
+                    self._expression_names = []
+                try:
+                    if hasattr(model, "GetMotionGroups"):
+                        groups = model.GetMotionGroups()
+                        self._motion_groups = {g: [] for g in (groups or [])}
+                    else:
+                        self._motion_groups = dict(model.GetMotions() or {})
+                except Exception:
+                    self._motion_groups = {}
 
-            # 起始待机动作
-            self._start_idle()
+                # 起始待机动作
+                self._start_idle()
 
             self._ready = True
             logger.info(
@@ -261,9 +278,9 @@ class Live2DRenderer(AvatarRenderer):
                 return
             fit = min(self._gl_w / cw_px, self._gl_h / ch_px) * 0.92 * self._fit_scale
             self._model.SetScale(fit)
-            ox = (self._gl_w - cw_px * fit) / 2.0 / fit + self._offset_scale[0]
-            oy = (self._gl_h - ch_px * fit) / 2.0 / fit + self._offset_scale[1]
-            self._model.SetOffset(ox, oy)
+            # 不调用 SetOffset：纯测试从不调用 SetOffset 也能正常画出。
+            # SetOffset 可能触发 live2d 内部状态变更导致绘制失败。
+            # 若需微调，后续再单独处理。
         except Exception as e:
             logger.warning("Live2DRenderer: 缩放计算失败: %s", e)
 
@@ -309,14 +326,15 @@ class Live2DRenderer(AvatarRenderer):
             logger.warning("Live2DRenderer.clearBuffer 异常: %s", e)
 
         # 参数驱动每步独立 try：即使某个参数调用报错，也不阻塞模型绘制
-        try:
-            self._update_gaze_params()
-        except Exception as e:
-            logger.warning("Live2DRenderer.gaze 异常: %s", e)
-        try:
-            self._update_mouth()
-        except Exception as e:
-            logger.warning("Live2DRenderer.mouth 异常: %s", e)
+        if not self._debug_minimal:
+            try:
+                self._update_gaze_params()
+            except Exception as e:
+                logger.warning("Live2DRenderer.gaze 异常: %s", e)
+            try:
+                self._update_mouth()
+            except Exception as e:
+                logger.warning("Live2DRenderer.mouth 异常: %s", e)
 
         # 与验证可行的最小测试保持完全一致的绘制路径：
         #   clearBuffer -> Update -> Draw
