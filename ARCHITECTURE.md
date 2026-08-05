@@ -44,7 +44,10 @@ oc-pet/
 │
 ├── avatar/                   # 渲染系统
 │   ├── base.py                 # AvatarRenderer 抽象接口
-│   └── sprite_renderer.py      # 2D 帧精灵渲染器（自动扫描帧目录）
+│   ├── sprite_renderer.py      # 2D 帧精灵渲染器（自动扫描帧目录）
+│   ├── live2d_renderer.py      # Live2D (Cubism) 渲染器（live2d-py，透明 QOpenGLWidget）
+│   └── gl_char_widget.py       # 承载 Live2D 的透明 QOpenGLWidget
+│   └── factory.py              # 按角色目录自动选择渲染器（live2d / sprite）
 │
 ├── motion/                   # 运动系统
 │   ├── physics.py              # 物理引擎（重力/弹跳/惯性）
@@ -127,6 +130,7 @@ build_context() → 注入 LLM prompt
 | `ToolRegistry` | tool_registry.py | 插件工具发现 |
 | `ToolExecutor` | tool_executor.py | 插件工具执行 |
 | `SpriteRenderer` | sprite_renderer.py | 2D 帧精灵渲染 |
+| `Live2DRenderer` | live2d_renderer.py | Live2D (Cubism) 透明渲染（live2d-py） |
 | `TTSTtsPlayer` | tts_player.py | TTS 音频播放 |
 | `ForegroundWatcher` | foreground_watcher.py | 前台窗口检测 |
 | `EmotionStateMachine` | perception.py | 情绪状态机 |
@@ -193,6 +197,24 @@ build_context() → 注入 LLM prompt
 
 > 注：早期"感知/渲染/运动"等章节仍沿用较早描述（如 perception.py 现含多个子模块、pet.py 行数等），
 > 与本次新增的"任务系统/事件总线/盲盒"章节并列阅读即可。整体深度校对待排期。
+
+## Live2D 渲染（2026-08-05 接入）
+
+桌宠角色默认走 **Live2D (Cubism)** 精致形象，模型按角色放在 `characters/<角色>/live2d/<model>.model3.json`。
+
+**渲染链路**：`factory` → `Live2DRenderer` → `GLCharWidget`（透明 QOpenGLWidget）→ `live2d-py`（LAppModel）
+
+**关键实现点（踩坑沉淀）**：
+- **必须用 `LAppModel`**（高层封装，内部管理 dt/投影/自动眨眼/呼吸），底层 `Model` 画不出来。
+- **QLAppModel.Update() 无参**（内部自算 dt），传参反而会报错。
+- **GL 用 Compatibility Profile 3.3**（live2d 用固定管线，Core Profile 移除了 glMatrixMode）。
+- **缩放用像素画布** `GetCanvasSizePixel()`（如 1200px），不用逻辑单位（13.6），否则放大 ~88 倍。
+- **`char_label` 必须 addWidget 进布局**，否则 QOpenGLWidget 不显示。
+- **⚠️ 不要 import PyOpenGL 的 `GL`**：它与 live2d-py 的 glad 加载的 GL 函数冲突，污染函数指针导致模型绘制失败（全黑）。GL 可用性直接用 `l2d.glInit()` 探测即可。
+- **不要调用 `SetOffset`**（偏移单位不明确，算错把模型移出视野）；只 `SetScale` 即可居中。
+
+**调试方法论**：headless 无法验证 GL（需真实 GPU+显示器），用「二分测试」定位——
+纯 LAppModel → GLCharWidget+纯 LAppModel → Live2DRenderer+GLCharWidget 逐级隔离，找出画不出的一层。
 
 ## 近期变更
 
