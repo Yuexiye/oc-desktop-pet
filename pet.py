@@ -771,6 +771,11 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         # 兼容别名(供 pet.py 其他部分使用)
         self.char_label = self._renderer.label
         self.char_label.installEventFilter(self)
+        # 关键：必须把角色 widget 加进布局，否则 QOpenGLWidget 不显示（画了看不见）。
+        # 透明测试已验证 addWidget 后 Live2D 能正常显示。精灵渲染用绝对定位 move()，
+        # 但 QOpenGLWidget 需要进布局才能触发正确的显示/绘制。
+        self.main_layout.addWidget(self.char_label, 0, Qt.AlignCenter)
+        self.char_label.raise_()
 
         # 启动画面
         self._startup_screen = StartupScreen(self)
