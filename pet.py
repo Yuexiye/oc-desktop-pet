@@ -530,7 +530,7 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         )
         self.setAttribute(Qt.WA_TranslucentBackground)
         self._apply_penetration()
-        self.setFixedSize(200, 360)
+        self.setFixedSize(300, 520)
 
         win_cfg = self._init_position or self.config.get("window", {})
         if win_cfg.get("x", -1) >= 0 and win_cfg.get("y", -1) >= 0:
@@ -717,10 +717,10 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
 
     def _recalc_geometry(self):
         """缩放后重算窗口和角色图片尺寸(不改变窗口位置)"""
-        # 基准 200x360；放大窗口到 300x520 会触发 live2d 在更大 GL 画布下崩溃（闪退）。
-        # 保持在 200x360 稳定，角色通过渲染器内按高度填满 label 来放大。
-        w = max(200, int(200 * self._pet_scale))
-        h = max(360, int(360 * self._pet_scale))
+        # 基准 300x520（此前误以为放大窗口会闪退，实际闪退是 CCleaner 清理）。
+        # 放大后角色更大更清晰。
+        w = max(300, int(300 * self._pet_scale))
+        h = max(520, int(520 * self._pet_scale))
         self.setFixedSize(w, h)
         # 委托给 SpriteRenderer 处理角色尺寸
         self._renderer.set_scale(self._pet_scale)
@@ -811,7 +811,7 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
 
         # 底部输入区
         self.input_widget = QWidget(self)
-        self.input_widget.setFixedSize(200, 40)
+        self.input_widget.setFixedSize(280, 40)
         self.input_widget.setStyleSheet("background: transparent;")
         input_layout = QHBoxLayout(self.input_widget)
         input_layout.setContentsMargins(4, 2, 4, 2)

@@ -276,10 +276,11 @@ class Live2DRenderer(AvatarRenderer):
                 cw_px, ch_px = cw_log * ppu, ch_log * ppu
             if not cw_px or not ch_px:
                 return
-            # 用 min(宽比,高比) 让角色完整适配窗口，不溢出被裁切。
-            # 注意：绝不能按高度放大到超过窗口宽——角色是正方形，
-            # 按高度缩放会让宽度溢出窗口，被左右裁切（这就是之前"角色小/不完整"的真相）。
-            fit = min(self._gl_w / cw_px, self._gl_h / ch_px) * 0.95 * self._fit_scale
+            # 让角色尽量大：按窗口高度缩放（模型正方形，窗口竖长）。
+            # 系数 0.92 让角色占满窗口高度约 92%，宽度可能略超窗口(300)被裁
+            # 左右边缘——但角色居中，主体完整，视觉上明显更大。
+            # 用 fit_scale 微调（pet.json live2d.scale）。
+            fit = (self._gl_h / ch_px) * 0.92 * self._fit_scale
             self._model.SetScale(fit)
             logger.info("Live2DRenderer: 缩放 fit=%.3f (gl=%sx%s, canvas_px=%sx%s)",
                         fit, self._gl_w, self._gl_h, cw_px, ch_px)
@@ -532,13 +533,13 @@ class Live2DRenderer(AvatarRenderer):
         self._facing_right = right
         if self._model:
             try:
-                # 用像素画布尺寸计算缩放（与 _recompute_fit 一致）
+                # 用像素画布尺寸计算缩放（与 _recompute_fit 一致，按高度缩放）
                 cw_px, ch_px = self._model.GetCanvasSizePixel()
                 if not cw_px or not ch_px:
                     ppu = self._model.GetPixelsPerUnit() or 1.0
                     cw_log, ch_log = self._model.GetCanvasSize()
                     cw_px, ch_px = cw_log * ppu, ch_log * ppu
-                fit = min(self._gl_w / cw_px, self._gl_h / ch_px) * 0.92 * abs(self._fit_scale)
+                fit = (self._gl_h / ch_px) * 0.92 * abs(self._fit_scale)
                 self._model.SetScaleX(fit * (1 if right else -1))
                 self._model.SetScaleY(fit)
             except Exception:
