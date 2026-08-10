@@ -8,6 +8,10 @@ CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
 
 DEFAULT_CONFIG = {
     "character": "yuexinmiao",
+    "dialog": {
+        "agent_id": "",  # 对话后端绑定的 Hanako agent（空=未绑定，首次启动引导选择；不硬编码默认）
+        # 每个桌宠实例可自定义绑定；多桌宠各自独立
+    },
     "scale": 1.0,
     "opacity": 1.0,
     "behavior": "normal",
@@ -187,22 +191,49 @@ def load_config():
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
-    """深度合并：override 的键覆盖 base，但 base 独有的键保留"""
+    """深度合并：override 的键覆盖 base，但 base 独有的键保留。
+
+    空值保护：override 的值为空字符串/None 时不覆盖 base 的已有非空值，
+    避免旧快照用空值把真实配置（如 dialog.agent_id=aimis）冲掉。
+    """
     result = base.copy()
     for k, v in override.items():
         if k in result and isinstance(result[k], dict) and isinstance(v, dict):
             result[k] = _deep_merge(result[k], v)
+        elif v is None or v == "":
+            # 空值不覆盖已有非空值（保留 base 现值）
+            if k in result:
+                continue
+            result[k] = v
         else:
             result[k] = v
     return result
 
 def save_config(cfg):
-    """原子写入配置文件"""
+    """原子写入配置文件（合并式）
+
+    以磁盘现有内容为底，用传入 cfg 覆盖后写回。
+    这样只更新调用方关心的字段，不会把其他系统（如 dialog.agent_id）
+    用旧快照冲掉——避免 F5 绑定丢失问题。
+    """
     import tempfile
+    merged = {}
+    try:
+        if os.path.exists(CONFIG_PATH):
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                merged = json.load(f)
+    except Exception:
+        merged = {}
+    # 传入的 cfg 覆盖（含其内部 dict 键）
+    for k, v in cfg.items():
+        if k in merged and isinstance(merged[k], dict) and isinstance(v, dict):
+            merged[k] = _deep_merge(merged[k], v)
+        else:
+            merged[k] = v
     tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(CONFIG_PATH), suffix='.tmp')
     try:
         with os.fdopen(tmp_fd, 'w', encoding='utf-8') as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
+            json.dump(merged, f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, CONFIG_PATH)  # 原子替换
     except Exception:
         try:

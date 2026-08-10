@@ -6,7 +6,7 @@
 
 ```
 oc-pet/
-├── pet.py                    # 主窗口（1700+ 行），UI + 事件循环 + 所有交互
+├── pet.py                    # 主窗口（1517 行），UI + 事件循环 + 所有交互
 ├── main.py                   # 入口
 ├── config.py                 # 配置加载/保存
 ├── env_config.py             # .env 环境变量读取
@@ -236,6 +236,10 @@ build_context() → 注入 LLM prompt
 | 2026-08-03 | 拖拽/渲染/感知优化：异步防抖保存、fps 读角色定义、嵌套 JSON 解析、前台冷却修复 |
 | 2026-08-03 | PetWindow 拆分：拆出 AnimationMixin / InteractionMixin / ChatMixin，pet.py 2749→2193 行，清理死代码 |
 | 2026-08-03 | PetWindow 继续拆分：Behavior/VoiceProvider/Nurturing/Bubble 四个 mixin，pet.py 2193→1316 行，测试扩至 42 |
+| 2026-08-05 | Live2D 接入：纯 LAppModel → GLCharWidget → Live2DRenderer 逐级隔离，避 PyOpenGL 污染、用像素画布、Compatibility 3.3（本表上文 Live2D 章节） |
+| 2026-08-05 | 注册表防误清理：CCleaner 智能清理 Monitoring=1 + FinderInclude4 含 W 盘，删启动项/关监控/W 盘移出扫描列表（对应 T2） |
+| 2026-08-06 | 窗口放大 200x360→300x520 + 角色按高度缩放填满（fit=0.359），踩坑：直接放大曾致 LIve2D 闪退，回退后改按高度缩放适配 |
+| 2026-08-07 | T1 排查：对话反复新建 Session（无回复）。定位裂缝在 harness_adapter.chat_via_hanako + hanako_session_manager.ensure_session 的 fallback——服务端列表查不到 pinned session 时静默 create_session；本地 _current_session 无运行中重置路径（仅 init/switch_character），疑服务端侧新建。无头复现测试 test_session_loop_repro.py 已钉死机制 |
 
 ---
 

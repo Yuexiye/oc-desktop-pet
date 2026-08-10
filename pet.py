@@ -20,7 +20,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QPixmap, QPainter, QFont, QColor, QPen, QPainterPath,
     QFontMetrics, QAction, QIcon, QTransform, QImage,
-    QCursor
+    QCursor, QWheelEvent
 )
 from config import (CHARACTER_INFO, EXPRESSION_MAP, get_transition_style,
                     load_config, save_config, async_config_saver)
@@ -292,9 +292,20 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
                     break
 
         # ── 对话引擎（合并 bridge，单进程）──
+        # F2/F5: 对话后端 agent 从配置 dialog.agent_id 读取（零硬编码）。
+        # 未绑定（空）时回退到显示角色名（向后兼容），引导选择后再切换。
+        _dlg_agent = ""
+        try:
+            # 顶部已全局 import load_config，这里直接用（避免遮蔽）
+            _dlg_agent = (load_config().get("dialog", {}) or {}).get("agent_id", "") or ""
+        except Exception:
+            _dlg_agent = ""
+        if not _dlg_agent:
+            _dlg_agent = self._current_char
         self._engine = ConversationEngine(
             self._current_char, perception=self._perception,
-            tts_provider=tts_provider, builtin=is_builtin
+            tts_provider=tts_provider, builtin=is_builtin,
+            agent_id=_dlg_agent,
         )
         self._engine.on_reply = self._on_engine_reply
         self._engine.on_status = self._on_engine_status
@@ -417,6 +428,9 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         )
         # 注入 agent 身份（异步，不阻塞启动）
         self._inject_agent_identity()
+        # F5: 首次启动引导——若 dialog.agent_id 未绑定且服务端无同名 agent，
+        # 自动绑定到第一个可用 agent（零硬编码，不静默乱落）
+        self._ensure_dialog_agent()
 
     def set_hanako_ws(self, ws_client, session_manager):
         """注入共享 Hanako WS 客户端（由 PetManager 调用）"""
@@ -508,6 +522,53 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
             except Exception as e:
                 logger.debug("Agent identity injection skipped: %s", e)
         threading.Thread(target=_load, daemon=True).start()
+
+    def _ensure_dialog_agent(self):
+        """F5: 确保对话后端 agent 已绑定（首次启动引导）。
+
+        规则（零硬编码）：
+          - 若 dialog.agent_id 已绑定 → 不动
+          - 否则看服务端是否有与本地角色同名的 agent → 有则绑定它
+          - 否则绑定第一个可用 agent（不静默乱落，记录日志）
+          - 若服务端无任何 agent → 保持未绑定（回退本地直接对话）
+        """
+        # 只在引擎就绪后做，避免竞态
+        if not (hasattr(self, '_engine') and self._engine):
+            return
+        try:
+            from config import load_config, save_config
+            cfg = load_config()
+            bound = (cfg.get("dialog", {}) or {}).get("agent_id", "") or ""
+            if bound:
+                return  # 已绑定
+            agents = self._available_agents()
+            if not agents:
+                logger.info("F5: 服务端无可用 agent，回退本地对话（未绑定）")
+                return
+            # 优先同名角色
+            target = next((a for a in agents if a.get("id") == self._current_char), None)
+            if target is None:
+                target = agents[0]
+            tid = target.get("id", "")
+            if not tid:
+                return
+            cfg.setdefault("dialog", {})["agent_id"] = tid
+            save_config(cfg)
+            # 同步 self.config 快照，避免退出时旧值覆盖
+            try:
+                self.config = cfg
+            except Exception:
+                pass
+            # 应用到引擎
+            try:
+                if hasattr(self._engine, 'switch_agent'):
+                    self._engine.switch_agent(tid)
+            except Exception:
+                pass
+            logger.info("F5: 首次启动自动绑定对话 assistant=%s (角色=%s)", tid, self._current_char)
+            self._refresh_agent_menu()
+        except Exception as e:
+            logger.warning("F5: 引导失败: %s", e)
 
     # ── 屏幕查询 ──
 
@@ -732,6 +793,50 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
     def _apply_scale(self):
         """应用缩放设置"""
         self._recalc_geometry()
+
+    def wheelEvent(self, event: QWheelEvent):
+        """滚轮缩放桌宠：上滚放大，下滚缩小。
+
+        范围 0.5~3.0，实时生效并持久化到 config.scale。
+        按住 Ctrl + 滚轮同样触发（避免与悬浮窗滚动冲突）。
+        """
+        try:
+            delta = event.angleDelta().y()
+            if delta == 0:
+                event.ignore()
+                return
+            step = 0.1 if abs(delta) < 120 else 0.15  # 高分辨率滚轮每格更精细
+            new_scale = self._pet_scale + (step if delta > 0 else -step)
+            new_scale = round(max(0.5, min(3.0, new_scale)), 2)
+            if new_scale != self._pet_scale:
+                self._pet_scale = new_scale
+                self._apply_scale()
+                # 持久化到 config
+                try:
+                    self.config["scale"] = new_scale
+                    from config import save_config, async_config_saver
+                    async_config_saver.schedule(self.config)
+                except Exception:
+                    pass
+                self._show_bubble(f"🔍 {int(new_scale*100)}%", emotion="neutral")
+            event.accept()
+        except Exception as e:
+            logger.debug("wheelEvent 缩放异常: %s", e)
+            event.ignore()
+
+    def _zoom_pet(self, factor: float):
+        """按系数缩放桌宠（供菜单/快捷键调用）"""
+        new_scale = round(max(0.5, min(3.0, self._pet_scale * factor)), 2)
+        if new_scale != self._pet_scale:
+            self._pet_scale = new_scale
+            self._apply_scale()
+            try:
+                self.config["scale"] = new_scale
+                from config import async_config_saver
+                async_config_saver.schedule(self.config)
+            except Exception:
+                pass
+        return self._pet_scale
 
     def _rescale_current_frame(self):
         """把当前帧缩放到 char_label 大小"""
@@ -975,6 +1080,10 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self._menu.addAction("📜 活动流", self._open_activity_feed)
         # M4: 新建对话入口（仅在 Hanako WS 模式下有意义）
         self._new_session_action = self._menu.addAction("🔄 新对话", self._create_new_session)
+        # F4: 切换对话后端助手（动态列服务端 agent，零硬编码）
+        self._agent_submenu = self._menu.addMenu("🤖 切换助手")
+        self._agent_actions = {}  # agent_id -> QAction
+        self._build_agent_submenu()
 
         # 主题子菜单
         self._theme_submenu = self._menu.addMenu("🎨 主题")
@@ -1371,7 +1480,7 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         if not hasattr(self._engine, 'create_new_session'):
             self._show_bubble("当前模式不支持新建对话", emotion="neutral")
             return
-        session = self._engine.create_new_session(agent_id=self._current_char)
+        session = self._engine.create_new_session(agent_id=self._engine.agent_id)
         if session is not None:
             try:
                 self.bubble.hide_bubble()
@@ -1381,6 +1490,100 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
             logger.info("新 Session 创建成功: %s", getattr(session, 'session_id', '?'))
         else:
             self._show_bubble("新对话创建失败", emotion="sad")
+
+    # ── F4: 切换对话后端助手 ──
+
+    def _available_agents(self) -> list[dict]:
+        """动态发现服务端可用 agent（零硬编码）。
+
+        优先用 PetManager 的 discover_agents（含名称/立绘），
+        回退到扫描 ~/.hanako/agents/ 目录。
+        """
+        try:
+            from pet_manager import PetManager
+            mgr = getattr(self, '_pet_manager', None)
+            if mgr is None:
+                # 尝试从模块构建一个仅用于发现的实例
+                mgr = PetManager()
+            return mgr.discover_agents()
+        except Exception as e:
+            logger.warning("discover_agents 失败: %s", e)
+        # 回退：直接扫目录
+        try:
+            from pathlib import Path
+            home = Path.home() / ".hanako" / "agents"
+            if home.exists():
+                return [{"id": d.name, "name": d.name} for d in home.iterdir() if d.is_dir()]
+        except Exception:
+            pass
+        return []
+
+    def _build_agent_submenu(self):
+        """构建切换助手子菜单（动态列服务端 agent）"""
+        self._agent_submenu.clear()
+        self._agent_actions = {}
+        agents = self._available_agents()
+        current = getattr(self._engine, 'agent_id', None) if hasattr(self, "_engine") and self._engine else None
+        if not agents:
+            empty = self._agent_submenu.addAction("（未发现可用助手）")
+            empty.setEnabled(False)
+            return
+        for agent in agents:
+            aid = agent.get("id", "")
+            name = agent.get("name", aid)
+            if not aid:
+                continue
+            a = self._agent_submenu.addAction(name)
+            a.setCheckable(True)
+            a.setChecked(aid == current)
+            a.triggered.connect(lambda checked=False, a_id=aid: self._switch_agent(a_id))
+            self._agent_actions[aid] = a
+
+    def _switch_agent(self, agent_id: str):
+        """切换对话后端 agent（F4）"""
+        self._mark_user_interaction()
+        if not hasattr(self, '_engine') or self._engine is None:
+            self._show_bubble("引擎还没起来", emotion="thinking")
+            return
+        # 持久化到配置（零硬编码：用所选 agent_id）
+        try:
+            from config import load_config, save_config
+            cfg = load_config()
+            cfg.setdefault("dialog", {}).setdefault("agent_id", "")
+            prev = cfg["dialog"]["agent_id"]
+            cfg["dialog"]["agent_id"] = agent_id
+            save_config(cfg)
+            # 同步 self.config 快照，避免退出时 async_config_saver 用旧值覆盖
+            try:
+                self.config = cfg
+            except Exception:
+                pass
+            logger.info("dialog.agent_id: %s -> %s", prev or "(未绑定)", agent_id)
+        except Exception as e:
+            logger.warning("保存 dialog.agent_id 失败: %s", e)
+        # 切换引擎对话后端
+        try:
+            ok = self._engine.switch_agent(agent_id)
+        except Exception as e:
+            logger.error("switch_agent 异常: %s", e)
+            ok = False
+        # 刷新菜单勾选
+        self._refresh_agent_menu()
+        if ok:
+            name = agent_id
+            for ag in self._available_agents():
+                if ag.get("id") == agent_id:
+                    name = ag.get("name", agent_id)
+                    break
+            self._show_bubble(f"🤖 已切换助手：{name}", emotion="happy")
+        else:
+            self._show_bubble("助手切换失败", emotion="sad")
+
+    def _refresh_agent_menu(self):
+        """刷新切换助手子菜单的勾选状态"""
+        current = getattr(self._engine, 'agent_id', None) if hasattr(self, "_engine") and self._engine else None
+        for aid, action in self._agent_actions.items():
+            action.setChecked(aid == current)
 
     # ── 右键菜单 ──
 

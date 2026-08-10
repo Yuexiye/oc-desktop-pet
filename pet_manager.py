@@ -98,7 +98,19 @@ class PetManager:
         """保存 config.json"""
         cfg_path = PROJECT_DIR / "config.json"
         try:
-            cfg_path.write_text(json.dumps(self._config, indent=2, ensure_ascii=False), "utf-8")
+            # 以磁盘最新内容为基础，只覆盖 PetManager 真正管理的 agents 字段，
+            # 其余（如 config.py 的 dialog.agent_id）保留磁盘新值，
+            # 避免用启动时的旧 self._config 整体覆盖把 dialog 冲掉。
+            merged = {}
+            try:
+                if cfg_path.exists():
+                    merged = json.loads(cfg_path.read_text("utf-8"))
+            except Exception:
+                pass
+            # 只覆盖 PetManager 管的字段（agents 等），不碰其他系统字段
+            if "agents" in self._config:
+                merged["agents"] = self._config["agents"]
+            cfg_path.write_text(json.dumps(merged, indent=2, ensure_ascii=False), "utf-8")
         except Exception as e:
             logger.warning("Failed to save config: %s", e)
 

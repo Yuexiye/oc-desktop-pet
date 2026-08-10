@@ -45,9 +45,13 @@ class ConversationEngine:
     生命周期：随 pet 启动而启动，随 pet 关闭而关闭。
     """
 
-    def __init__(self, character_id: str = "yuexinmiao", perception: PerceptionController = None, tts_provider=None, builtin: bool = False, session_manager=None):
+    def __init__(self, character_id: str = "yuexinmiao", perception: PerceptionController = None, tts_provider=None, builtin: bool = False, session_manager=None, agent_id: str = None):
         self._character_id = character_id
         self._builtin = builtin
+        # F2: 对话后端 agent_id——独立于显示角色。
+        # 默认取注入值；未指定时回退到 character_id（保持向后兼容），
+        # 但接入 dialog.agent_id 配置后由 pet.py 显式传入。
+        self._agent_id = agent_id or character_id
         self._adapter = None
         self._tts = tts_provider  # 外部注入，None 时用默认
         self._perception = perception or PerceptionController(character_id)  # 外部注入优先
@@ -74,6 +78,9 @@ class ConversationEngine:
         self._tools: list[dict] = []  # OpenAI 格式工具列表
         self._thread = None
         self._tts_ready = False
+        # B2: 工具进度节流（参考小蕾米插件日志节流）——同 工具+phase 在窗口内合并
+        self._tool_progress_throttle: dict[str, float] = {}
+        self._tool_progress_throttle_ms: float = 500.0
 
         # 能力路由器（快速路径）
         from .capability_registry import CapabilityRouter
@@ -111,9 +118,14 @@ class ConversationEngine:
 
         # 初始化 LLM 适配器
         try:
-            self._adapter = HanakoPetAdapter(agent_id=self._character_id, builtin=self._builtin)
-            logger.info("LLM 适配器就绪 | model=%s | transport_mode=%s",
-                        self._adapter.model_config.get("model", "?"), self._adapter.transport_mode)
+            # builtin 仅当对话 agent == 本地内置角色时成立；
+            # 若 dialog.agent_id 指向服务端 agent（非本地角色），必须 builtin=False
+            # 才读 ~/.hanako/agents/<id>/，否则会误读 characters/<id>/ 导致空设定。
+            _adapter_builtin = self._builtin and (self._agent_id == self._character_id)
+            self._adapter = HanakoPetAdapter(agent_id=self._agent_id, builtin=_adapter_builtin)
+            logger.info("LLM 适配器就绪 | model=%s | transport_mode=%s | agent=%s | builtin=%s",
+                        self._adapter.model_config.get("model", "?"), self._adapter.transport_mode,
+                        self._agent_id, _adapter_builtin)
         except Exception as e:
             logger.error("LLM 适配器初始化失败: %s", e)
             return
@@ -598,14 +610,26 @@ class ConversationEngine:
             logger.warning("SessionManager 不可用，无法创建新 Session")
             return None
         try:
-            aid = agent_id or self._character_id
+            aid = agent_id or self._agent_id
             session = self._session_manager.create_session(agent_id=aid, **kwargs)
             self.set_session(session)
-            logger.info("新 Session 已创建: %s", getattr(session, "session_id", "?"))
+            logger.info("新 Session 已创建: %s (agent=%s)", getattr(session, "session_id", "?"), aid)
             return session
         except Exception as e:
             logger.error("create_session 失败: %s", e)
             return None
+
+    @property
+    def agent_id(self) -> str:
+        """当前对话后端 agent（F2）"""
+        return self._agent_id
+
+    def set_agent(self, agent_id: str) -> bool:
+        """设置对话后端 agent（F2，供 pet.py 从配置注入）"""
+        if not agent_id:
+            return False
+        self._agent_id = str(agent_id).strip()
+        return True
 
     def _is_current_session(self, session: object) -> bool:
         current = getattr(self._adapter, "_current_session", None)
@@ -631,7 +655,11 @@ class ConversationEngine:
         self.on_reply(text or "…", emotion, map_emotion_to_anim(emotion), "")
 
     def _handle_session_tool_progress(self, progress: "object") -> None:
-        """接收 SessionManager 的 ToolProgress 事件，转发给 UI"""
+        """接收 SessionManager 的 ToolProgress 事件，转发给 UI
+
+        参考小蕾米插件的日志节流：同类(工具+phase)事件在节流窗口内合并，
+        避免密集工具流（如 tool_progress 高频上报）把 UI/日志刷爆。
+        """
         try:
             if not self._is_current_session(getattr(progress, "session", None)):
                 return
@@ -639,6 +667,19 @@ class ConversationEngine:
             phase = getattr(progress, "phase", "progress")
             display = getattr(progress, "display_text", "") or self._tool_display(tool_name)
             success = getattr(progress, "success", None)
+            # 节流：同 工具+phase 在窗口(默认 500ms)内只转发一次，
+            # 高频 tool_progress 合并，UI 不闪屏。首条立即转发。
+            try:
+                _tl = getattr(self, "_tool_progress_throttle", {})
+                now = time.time()
+                key = f"{tool_name}|{phase}"
+                last = _tl.get(key, 0)
+                if now - last < self._tool_progress_throttle_ms:
+                    return  # 节流窗口内，跳过（保留最新状态由 UI 自行刷新）
+                _tl[key] = now
+                self._tool_progress_throttle = _tl
+            except Exception:
+                pass
             self.on_tool_progress(tool_name, phase, display, success)
         except Exception as e:
             logger.warning("_handle_session_tool_progress 错误: %s", e)
@@ -663,7 +704,7 @@ class ConversationEngine:
             self._queue.clear()
         self._character_id = character_id
         try:
-            self._adapter = HanakoPetAdapter(agent_id=character_id)
+            self._adapter = HanakoPetAdapter(agent_id=character_id, builtin=self._builtin)
             if self._session_manager is not None:
                 self._adapter.set_session_manager(self._session_manager)
             if hasattr(self._adapter, '_history'):
@@ -671,6 +712,48 @@ class ConversationEngine:
             logger.info("角色切换: %s", character_id)
         except Exception as e:
             logger.error("角色切换失败: %s", e)
+
+    def switch_agent(self, agent_id: str) -> bool:
+        """切换对话后端 agent（F2/F4）。
+
+        与 switch_character 不同：switch_agent 只换对话后端，不动显示角色。
+        - 若 agent 与当前相同时无操作
+        - 更新 adapter.agent_id，并恢复该 agent 的 session（F3 续聊）
+        - 清空本地 history 防串味
+        """
+        if not agent_id or not str(agent_id).strip():
+            return False
+        agent_id = str(agent_id).strip()
+        if agent_id == self._agent_id:
+            return True
+        with self._lock:
+            self._queue.clear()
+        self._agent_id = agent_id
+        try:
+            if self._adapter is not None:
+                ok = self._adapter.switch_agent(agent_id)
+                if ok:
+                    logger.info("对话 agent 切换: %s", agent_id)
+                    return True
+            # adapter 未就绪或切换失败：重建（保留 agent_sessions 缓存）
+            _adapter_builtin = self._builtin and (agent_id == self._character_id)
+            new_adapter = HanakoPetAdapter(agent_id=agent_id, builtin=_adapter_builtin)
+            if self._session_manager is not None:
+                new_adapter.set_session_manager(self._session_manager)
+                # 把旧 adapter 的 per-agent 会话缓存迁移过来
+                old = self._adapter
+                if old is not None:
+                    new_adapter._agent_sessions = getattr(old, '_agent_sessions', {})
+                    new_adapter._agent_pinned = getattr(old, '_agent_pinned', {})
+            self._adapter = new_adapter
+            # 恢复该 agent 的 session（若有）
+            self._adapter._current_session = self._adapter._agent_sessions.get(agent_id)
+            self._adapter._pinned_session_id = self._adapter._agent_pinned.get(agent_id)
+            logger.info("对话 agent 切换(重建): %s", agent_id)
+            return True
+        except Exception as e:
+            logger.error("agent 切换失败: %s", e)
+            return False
 
     # ── M3: 记忆快照导出/导入 ──
 

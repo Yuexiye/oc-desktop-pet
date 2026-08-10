@@ -107,8 +107,12 @@ class HanakoPetAdapter:
         logger.info("Hanako transport configured: %s", self.transport_mode)
 
         # 当前 Session 引用（由 PetManager / ConversationEngine 注入）
-        self._current_session = None  # SessionRef | None
-        self._pinned_session_id = None  # 钉住的 session_id，确保复用同一个 session
+        self._current_session = None  # SessionRef | None (当前 agent 的)
+        self._pinned_session_id = None  # 向后兼容：当前 agent 的 pin
+        # M5: per-agent 会话保留 dict[agent_id -> session_id]（F3）
+        # 切换 agent 时各自记住自己的 session，切回可续聊。
+        self._agent_sessions: dict[str, object] = {}  # agent_id -> SessionRef
+        self._agent_pinned: dict[str, str] = {}  # agent_id -> session_id
 
     def _load_default_from_catalog(self):
         """builtin 角色没有 Hanako agent，从 provider catalog 读默认模型"""
@@ -311,19 +315,24 @@ class HanakoPetAdapter:
             raise HanakoUnavailableBeforeSend("HanakoSessionManager 未实例化")
         if self._current_session is None:
             try:
-                pinned = getattr(self, '_pinned_session_id', None)
+                aid = self.agent_id
+                # F3: 优先复用该 agent 已 pin 的 session（切回续聊）
+                pinned = self._agent_pinned.get(aid)
                 if pinned:
                     # 有钉住的 session，复用
                     self._current_session = sm.ensure_session(
-                        agent_id=self.agent_id,
+                        agent_id=aid,
                         preferred_session_id=pinned
                     )
+                elif aid in self._agent_sessions:
+                    # 内存里已有该 agent 的 session 引用，直接复用
+                    self._current_session = self._agent_sessions[aid]
                 else:
-                    # 首次：为每个桌宠创建专属 session，避免多桌宠互相阻塞
-                    self._current_session = sm.create_session(
-                        agent_id=self.agent_id,
-                    )
-                self._pinned_session_id = getattr(self._current_session, 'session_id', None)
+                    # 首次：为每个桌宠/agent 创建专属 session
+                    self._current_session = sm.create_session(agent_id=aid)
+                self._agent_sessions[aid] = self._current_session
+                self._agent_pinned[aid] = getattr(self._current_session, 'session_id', None)
+                self._pinned_session_id = self._agent_pinned.get(aid)
             except Exception as e:
                 raise HanakoUnavailableBeforeSend("无法准备 Hanako Session") from e
 
@@ -409,7 +418,39 @@ class HanakoPetAdapter:
     def set_session(self, session_ref) -> None:
         """注入当前 Session 引用（PetManager / ConversationEngine 调用）"""
         self._current_session = session_ref
-        self._pinned_session_id = getattr(session_ref, 'session_id', None) if session_ref else None
+        sid = getattr(session_ref, 'session_id', None) if session_ref else None
+        self._pinned_session_id = sid
+        # 按 agent 维度记录，供切回续聊
+        if sid and self.agent_id:
+            self._agent_sessions[self.agent_id] = session_ref
+            self._agent_pinned[self.agent_id] = sid
+
+    def switch_agent(self, agent_id: str) -> bool:
+        """切换对话后端 agent（F2/F4）。
+
+        - 更新 self.agent_id
+        - 尝试恢复该 agent 已 pin 的 session（切回续聊）
+        - 若该 agent 已有历史，清空本地 _history（避免串味）
+        - 不动本地显示角色（立绘/皮肤）
+
+        Returns:
+            True 切换成功；False 参数非法（空 agent_id）
+        """
+        if not agent_id or not str(agent_id).strip():
+            return False
+        agent_id = str(agent_id).strip()
+        if agent_id == self.agent_id:
+            return True  # 已是目标 agent，无需切换
+        self.agent_id = agent_id
+        # 切走时把当前 session 存好（已在 _agent_sessions 里）
+        # 恢复目标 agent 的 session（若有）
+        self._current_session = self._agent_sessions.get(agent_id)
+        self._pinned_session_id = self._agent_pinned.get(agent_id)
+        # 切换后本地历史是上一 agent 的，清空防串味（服务端会话各自独立）
+        self._history.clear()
+        logger.info("adapter 切换 agent: %s (恢复session=%s)",
+                    agent_id, self._pinned_session_id or "无")
+        return True
 
     def set_session_manager(self, manager) -> None:
         """注入 SessionManager 实例（覆盖延迟导入的类引用）"""

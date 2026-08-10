@@ -219,7 +219,8 @@ class Live2DRenderer(AvatarRenderer):
                         if cl is not None:
                             gl_w = cl.width() or 220
                             gl_h = cl.height() or 260
-                    scale = min(gl_w / cw_px, gl_h / ch_px) * 0.9 * self._fit_scale
+                    # T3: 统一为按高度缩放（与 _recompute_fit 一致，避免初始/后续跳变）
+                    scale = (gl_h / ch_px) * 0.98 * self._fit_scale
                     model.SetScale(scale)
                     logger.info("Live2DRenderer: 初始缩放 scale=%.3f", scale)
             except Exception as e:
@@ -236,7 +237,9 @@ class Live2DRenderer(AvatarRenderer):
                 try:
                     if hasattr(model, "GetMotionGroups"):
                         groups = model.GetMotionGroups()
-                        self._motion_groups = {g: [] for g in (groups or [])}
+                        # T4: 过滤空字符串组名（此模型 GetMotionGroups 返回 ['']），
+                        # 空组 StartRandomMotion 无效，导致待机动画不启动。
+                        self._motion_groups = {g: [] for g in (groups or []) if g and str(g).strip()}
                     else:
                         self._motion_groups = dict(model.GetMotions() or {})
                 except Exception:
@@ -277,10 +280,10 @@ class Live2DRenderer(AvatarRenderer):
             if not cw_px or not ch_px:
                 return
             # 让角色尽量大：按窗口高度缩放（模型正方形，窗口竖长）。
-            # 系数 0.92 让角色占满窗口高度约 92%，宽度可能略超窗口(300)被裁
-            # 左右边缘——但角色居中，主体完整，视觉上明显更大。
-            # 用 fit_scale 微调（pet.json live2d.scale）。
-            fit = (self._gl_h / ch_px) * 0.92 * self._fit_scale
+            # T3: 系数从 0.92 提到 0.98——角色更填满窗口高度，
+            # 宽度可能略超窗口被裁，但角色居中主体完整，视觉更大。
+            # fit_scale 来自 pet.json live2d.scale（用户可微调）。
+            fit = (self._gl_h / ch_px) * 0.98 * self._fit_scale
             self._model.SetScale(fit)
             logger.info("Live2DRenderer: 缩放 fit=%.3f (gl=%sx%s, canvas_px=%sx%s)",
                         fit, self._gl_w, self._gl_h, cw_px, ch_px)
