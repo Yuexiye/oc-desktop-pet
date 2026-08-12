@@ -225,7 +225,7 @@ class Live2DRenderer(AvatarRenderer):
                             gl_w = cl.width() or 220
                             gl_h = cl.height() or 260
                     # T3: 统一为按高度缩放（与 _recompute_fit 一致，避免初始/后续跳变）
-                    scale = (gl_h / ch_px) * 1.28 * self._fit_scale
+                    scale = (gl_h / ch_px) * 1.5 * self._fit_scale
                     model.SetScale(scale)
                     logger.info("Live2DRenderer: 初始缩放 scale=%.3f", scale)
             except Exception as e:
@@ -302,10 +302,10 @@ class Live2DRenderer(AvatarRenderer):
                 return
             # 让角色尽量大：按窗口高度缩放（模型正方形，窗口竖长）。
             # fit_scale 来自 pet.json live2d.scale（用户可微调）。
-            # 系数 0.98 → 1.28：Live2D 模型画布（1200x1200）通常含留白，
-            # 角色本体只占画布约 75%。按画布缩放会导致角色视觉偏小、窗口框显得大。
-            # 1.28 ≈ 0.98 / 0.75，补偿留白让角色本体填满窗口。
-            fill = getattr(self, "_fit_fill", 1.28)
+            # 系数 1.5：Live2D 画布（1200x1200）含约 25% 背景留白（建筑/招牌），
+            # 按画布缩放会把背景场景也显示出来。1.5 让角色本体放大填满窗口，
+            # 背景裁出画面，呈现特写效果。
+            fill = getattr(self, "_fit_fill", 1.5)
             fit = (self._gl_h / ch_px) * fill * self._fit_scale
             self._model.SetScale(fit)
             logger.info("Live2DRenderer: 缩放 fit=%.3f (gl=%sx%s, canvas_px=%sx%s)",
@@ -731,7 +731,7 @@ class Live2DRenderer(AvatarRenderer):
                     ppu = self._model.GetPixelsPerUnit() or 1.0
                     cw_log, ch_log = self._model.GetCanvasSize()
                     cw_px, ch_px = cw_log * ppu, ch_log * ppu
-                fit = (self._gl_h / ch_px) * 1.28 * abs(self._fit_scale)
+                fit = (self._gl_h / ch_px) * 1.5 * abs(self._fit_scale)
                 self._model.SetScaleX(fit * (1 if right else -1))
                 self._model.SetScaleY(fit)
             except Exception:
