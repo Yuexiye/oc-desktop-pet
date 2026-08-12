@@ -336,6 +336,7 @@ class HanakoWSClient:
     def _io_loop(self) -> None:
         attempt = 0
         delay = self.reconnect.initial_delay
+        last_warn_ts = 0.0  # 日志节流：相邻 warning 至少间隔 60s，避免脱机时刷屏
         while not self._stop_event.is_set():
             self._set_state(ConnectionState.CONNECTING)
             error_text: str | None = None
@@ -348,8 +349,14 @@ class HanakoWSClient:
                 if self._stop_event.is_set():
                     break
                 error_text = f"{type(exc).__name__}: {exc}"
-                logger.warning("Hanako WebSocket disconnected: %s", error_text)
+                now = time.monotonic()
+                if now - last_warn_ts >= 60.0:
+                    logger.warning("Hanako WebSocket disconnected: %s（每 60s 提醒一次，服务端恢复后自动重连）", error_text)
+                    last_warn_ts = now
                 attempt += 1
+                # 服务端不可达（ticket 失败）时退避直接跳到上限，避免高频空打
+                if isinstance(exc, HanakoTicketError):
+                    delay = self.reconnect.max_delay
             finally:
                 self._ready_event.clear()
                 with self._socket_lock:
