@@ -597,7 +597,10 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         )
         self.setAttribute(Qt.WA_TranslucentBackground)
         self._apply_penetration()
-        self.setFixedSize(300, 520)
+        # 窗口基准适配 Live2D 角色：角色正方形画布按高度缩放后渲染宽 = 高×0.882，
+        # 窗口宽取角色渲染宽（458≈520×0.882），高保留 520 给上下余量/气泡区，
+        # 避免竖长窗口横向裁切角色 + 大片留白。
+        self.setFixedSize(458, 520)
 
         win_cfg = self._init_position or self.config.get("window", {})
         if win_cfg.get("x", -1) >= 0 and win_cfg.get("y", -1) >= 0:
@@ -784,9 +787,9 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
 
     def _recalc_geometry(self):
         """缩放后重算窗口和角色图片尺寸(不改变窗口位置)"""
-        # 基准 300x520（此前误以为放大窗口会闪退，实际闪退是 CCleaner 清理）。
+        # 基准 458x520 贴合 Live2D 角色（正方形渲染，宽 = 高×0.882）。
         # 放大后角色更大更清晰。
-        w = max(300, int(300 * self._pet_scale))
+        w = max(458, int(458 * self._pet_scale))
         h = max(520, int(520 * self._pet_scale))
         self.setFixedSize(w, h)
         # 委托给 SpriteRenderer 处理角色尺寸

@@ -183,11 +183,30 @@ def get_vision_config() -> dict:
     catalog_cfg = _read_catalog_provider("agnes")
     if catalog_cfg and catalog_cfg.get("api_key"):
         models = catalog_cfg.get("models", [])
+        # 屏幕感知需要视觉理解模型，不是视频生成模型。选型优先级：
+        #   1. 显式标 vision=True 的模型
+        #   2. chat 多模态模型（如 agnes-2.5-flash，1M context，支持图像输入）
+        #   3. 兜底 agnes-2.0-flash
         vision_model = "agnes-2.0-flash"
+        vision_flagged = ""
+        chat_fallback = ""
         for m in models:
-            if isinstance(m, dict) and m.get("video"):
-                vision_model = m.get("id", vision_model)
-                break
+            if not isinstance(m, dict):
+                continue
+            mid = m.get("id", "")
+            if m.get("vision"):
+                vision_flagged = mid
+            elif (
+                not chat_fallback
+                and "flash" in mid
+                and m.get("context", 0) >= 100000
+            ):
+                # chat 多模态（大 context 的 flash 模型基本都支持图像输入）
+                chat_fallback = mid
+        if vision_flagged:
+            vision_model = vision_flagged
+        elif chat_fallback:
+            vision_model = chat_fallback
         return {
             "base_url": catalog_cfg["base_url"],
             "api_key": catalog_cfg["api_key"],
