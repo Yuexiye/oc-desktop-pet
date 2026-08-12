@@ -16,6 +16,7 @@ import logging
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from .harness_adapter import HanakoPetAdapter
 from .perception import PerceptionController
@@ -60,7 +61,6 @@ class ConversationEngine:
         self._queue: list[dict] = []
         self._lock = threading.Lock()
         self._running = False
-        self._user_turn_active = False  # 用户对话进行中时阻止主动消息
 
         # ── P1 打断状态机：消息代际（generation）机制 ──
         # 每次 send/interrupt 递增 generation，消息处理时校验代际是否过期：
@@ -78,6 +78,9 @@ class ConversationEngine:
         self._tools: list[dict] = []  # OpenAI 格式工具列表
         self._thread = None
         self._tts_ready = False
+        # P1-4: TTS 专用线程池（max_workers=1 匹配 provider 内部串行锁），
+        # 把合成从 _run 主循环解耦，避免单句 60-150s 卡住整个消息队列。
+        self._tts_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="TTS")
         # B2: 工具进度节流（参考小蕾米插件日志节流）——同 工具+phase 在窗口内合并
         self._tool_progress_throttle: dict[str, float] = {}
         self._tool_progress_throttle_ms: float = 500.0
@@ -192,6 +195,12 @@ class ConversationEngine:
         with self._lock:
             self._queue.clear()
         self._clear_session_subscriptions()
+
+        # 关闭 TTS 线程池（等待在途合成结束，避免回调打到已关闭的引擎）
+        try:
+            self._tts_executor.shutdown(wait=False)
+        except Exception:
+            pass
 
         # 释放 TTS 资源：CosyVoice 在子进程里挂着 4.6GB 模型，不回收就是内存泄漏
         tts = getattr(self, "_tts", None)
@@ -314,11 +323,14 @@ class ConversationEngine:
 
     def _run(self):
         """后台线程主循环"""
-        # 预加载 TTS
+        # 预加载 TTS（读取/写 ready 加锁，preload 锁外）
         self.on_status("正在准备声音...")
-        if self._tts:
-            self._tts.preload()
-            self._tts_ready = self._tts.is_ready
+        with self._lock:
+            tts = self._tts
+        if tts:
+            tts.preload()
+            with self._lock:
+                self._tts_ready = tts.is_ready
         self.on_status("")
         self.on_tts_ready()
 
@@ -369,10 +381,6 @@ class ConversationEngine:
 
         logger.info("处理消息 [%s]: %s", character, text[:50])
 
-        # 用户消息：标记 turn 活跃，阻止主动消息
-        if source == "user":
-            self._user_turn_active = True
-
         # 内置使用说明：当用户问“你能干什么”时，返回桌宠自身的功能说明
         help_keywords = ["你能干什么", "你会什么", "你有什么功能", "你能做什么", "怎么用你", "使用说明", "功能介绍"]
         if any(keyword in text for keyword in help_keywords):
@@ -381,8 +389,6 @@ class ConversationEngine:
             emotion = "happy"
             logger.info("内置使用说明 [emotion:%s]: %s", emotion, help_text)
             # 直接回调，不调用 LLM
-            if source == "user":
-                self._user_turn_active = False
             self.on_reply(help_text, emotion, anim, "")
             return
 
@@ -392,8 +398,6 @@ class ConversationEngine:
         if route_result:
             anim = route_result.anim or "idle"
             logger.info("Capability routed: %s -> %s", route_result.capability, route_result.text[:50])
-            if source == "user":
-                self._user_turn_active = False
             self.on_reply(route_result.text, route_result.emotion, anim, route_result.audio_path)
             return
 
@@ -447,46 +451,47 @@ class ConversationEngine:
         # 2. 动画映射
         anim = map_emotion_to_anim(emotion)
 
-        # 3. TTS 合成（同步，和文字一起回调）
+        # 3. TTS 合成 + 回调：提交到专用线程池，避免同步合成卡住消息队列（P1-4）
+        # 把合成与回传从 _run 主循环解耦，_run 可立即处理下一条消息。
+        instruct_map = {
+            "happy": "开心", "sad": "难过", "angry": "生气",
+            "cute": "可爱", "thinking": "思考",
+        }
+        instruct = instruct_map.get(emotion, "")
+        try:
+            self._tts_executor.submit(
+                self._synth_and_reply, reply, emotion, anim, character,
+                instruct, source, gen,
+            )
+        except RuntimeError:
+            # 线程池已关闭（引擎停止中），直接丢弃本次合成
+            logger.debug("TTS 线程池已关闭，跳过合成: gen=%d", gen)
+
+    def _synth_and_reply(self, reply, emotion, anim, character, instruct, source, gen):
+        """在 TTS 线程池中执行：合成 + 回调（on_reply 仍带 audio_path，口型链路不变）。"""
+        # synth 前检查：已打断则不浪费算力
+        if self._is_stale(gen):
+            logger.debug("TTS 前已打断，丢弃: gen=%d", gen)
+            return
+        # 锁内捕获 tts/ready，避免中途被 TTSReload 换成 None/新实例
+        with self._lock:
+            tts = self._tts
+            tts_ready = self._tts_ready
         audio_path = ""
-        skip_reason = ""
-        if not self._tts:
-            skip_reason = "no tts provider"
-        elif not self._tts_ready:
-            skip_reason = "tts not ready"
-        elif not reply.strip():
-            skip_reason = "empty reply"
-        elif reply.strip() in ("\u2026", "..."):
-            skip_reason = "ellipsis reply"
-        # P1：若在合成前发现已打断，跳过合成（省一次 TTS 算力）
-        elif self._is_stale(gen):
-            skip_reason = "interrupted before synth"
-        
-        if not skip_reason:
+        if tts and tts_ready and reply and reply.strip() and reply.strip() not in ("\u2026", "..."):
             try:
-                instruct_map = {
-                    "happy": "开心", "sad": "难过", "angry": "生气",
-                    "cute": "可爱", "thinking": "思考",
-                }
-                instruct = instruct_map.get(emotion, "")
-                audio_path = self._tts.synthesize(reply, character_id=character, instruct=instruct) or ""
+                audio_path = tts.synthesize(reply, character_id=character, instruct=instruct) or ""
                 if audio_path:
                     logger.info("TTS done: %s", os.path.basename(audio_path))
                 else:
                     logger.warning("TTS failed, no audio")
             except Exception as e:
                 logger.warning("TTS error: %s", e)
-        else:
-            logger.info("TTS skipped: %s", skip_reason or "unknown")
-
-        # P1：合成完成后检查——若已打断，丢弃结果（不播放、不回调）
+        # synth 后检查：已打断则丢弃脏音频
         if self._is_stale(gen):
             logger.debug("TTS 后已打断，丢弃: gen=%d", gen)
             return
-
-        # 4. 回调（文字 + 音频一起）
-        if source == "user":
-            self._user_turn_active = False
+        # 回调（文字 + 音频一起，从池线程 emit 信号 → 主线程播放口型）
         self.on_reply(reply, emotion, anim, audio_path)
 
     def _handle_tool_calls(self, resp: dict, user_text: str, character: str, perception_ctx: str, gen: int = None) -> tuple:

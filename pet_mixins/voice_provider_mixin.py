@@ -42,6 +42,9 @@ class VoiceProviderMixin:
             elif provider == "api":
                 from tts_provider.api_tts import ApiTtsProvider
                 return ApiTtsProvider()
+            elif provider == "aqua":
+                from tts_provider.aqua_tts import AquaTtsProvider
+                return AquaTtsProvider()
             else:
                 from tts_provider.cosyvoice import CosyVoiceProvider
                 return CosyVoiceProvider()
@@ -110,8 +113,10 @@ class VoiceProviderMixin:
                 if gen != self._tts_reload_gen:
                     _discard(provider)
                     return
-                self._engine._tts = provider
-                self._engine._tts_ready = bool(provider is not None and provider.is_ready)
+                # 加锁保护赋值原子性（引擎 worker 线程同时读 _tts/_tts_ready）
+                with self._engine._lock:
+                    self._engine._tts = provider
+                    self._engine._tts_ready = bool(provider is not None and provider.is_ready)
                 logger.info(
                     "TTS provider 已切换: %s (ready=%s)",
                     getattr(provider, "name", None), self._engine._tts_ready,

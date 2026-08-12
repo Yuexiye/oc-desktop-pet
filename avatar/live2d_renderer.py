@@ -612,10 +612,14 @@ class Live2DRenderer(AvatarRenderer):
         self.reset_gaze()
 
     def cleanup(self) -> None:
+        # 注意：这里不调用 self._live2d.glRelease()。self._live2d 是进程级的 live2d.v3 模块，
+        # 其 glRelease() 会释放全局 GL 状态。多宠场景下关闭某个 Live2D 宠就释放全局 GL，
+        # 会导致其它仍在渲染的 Live2D 宠崩坏。GL 上下文由各自的 QOpenGLWidget 自行管理，
+        # 进程退出时系统自动回收，因此单个 renderer 清理时不应释放全局 GL。
         try:
             if self._model is not None:
                 self._model = None
             if self._live2d is not None:
-                self._live2d.glRelease()
+                self._live2d = None
         except Exception:
             pass

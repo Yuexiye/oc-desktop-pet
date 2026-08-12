@@ -24,6 +24,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -33,6 +34,9 @@ logger = logging.getLogger(__name__)
 
 OUTPUT_DIR = Path.home() / ".hanako" / "pets" / "tts_cache"
 MODEL_NAME = "CosyVoice2-0.5B"
+
+CACHE_TTL = 24 * 3600        # 超过 1 天视为可清理
+_SWEEP_INTERVAL = 600        # 每 10 分钟最多扫一次缓存目录，避免每次合成都遍历
 
 
 def _resolve_cosyvoice_dir() -> Path:
@@ -170,6 +174,7 @@ class CosyVoiceProvider(TTSProvider):
         self._lock = threading.Lock()   # 串行化请求/响应配对
         self._req_id = 0
         self._closing = False
+        self._last_sweep = 0.0          # 上次清理缓存目录的时间（节流）
 
     # ── 基本属性 ────────────────────────────────────────────────
 
@@ -420,6 +425,12 @@ class CosyVoiceProvider(TTSProvider):
         text = text.strip()[:500]
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+        # 节流式 TTL 清理：>1 天的 wav 删除，封顶磁盘增长（缓存键含完整文本，命中率≈0）
+        now = time.monotonic()
+        if now - self._last_sweep > _SWEEP_INTERVAL:
+            self._last_sweep = now
+            self._sweep_cache(CACHE_TTL)
+
         # 音色进缓存键：换了嗓子必须重新合成，否则一直放旧声音
         spk_info, voice_id = self._resolve_voice(character_id)
         text_hash = hashlib.md5(
@@ -453,6 +464,23 @@ class CosyVoiceProvider(TTSProvider):
                     f", spk={resp['spk']}" if resp.get("spk") else "",
                     output_path.name)
         return resp.get("path") or str(output_path)
+
+    def _sweep_cache(self, max_age: float) -> None:
+        """删除超过 max_age 秒的缓存 wav（只在 synthesize 节流调用）。"""
+        try:
+            cutoff = time.time() - max_age
+            removed = 0
+            for f in OUTPUT_DIR.glob("*.wav"):
+                try:
+                    if f.is_file() and f.stat().st_mtime < cutoff:
+                        f.unlink()
+                        removed += 1
+                except FileNotFoundError:
+                    pass  # 已被并发/别处删除
+            if removed:
+                logger.info("TTS 缓存清理: 删除 %d 个过期 wav", removed)
+        except Exception:
+            pass  # 清理失败不影响合成
 
     def cleanup(self):
         self._closing = True
