@@ -10,7 +10,7 @@ QOpenGLWidget 作为真正的渲染表面，同时提供一组 QLabel 兼容的�
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtGui import QSurfaceFormat
 
@@ -39,6 +39,19 @@ class GLCharWidget(QOpenGLWidget):
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setMouseTracking(True)
 
+        # 关键：QOpenGLWidget 的 paintGL 只在初始化/resize/显式 update() 时调用。
+        # 没有持续重绘的话，Live2D motion 参数即使每帧在变，画面也不会刷新——
+        # 表现为“只有静态图片、没有动画”。这里用 QTimer 每帧触发 update()，
+        # 让 paintGL 持续调用 renderer.draw()，动画才能显示。
+        self._anim_timer = QTimer(self)
+        self._anim_timer.timeout.connect(self._tick)
+        self._anim_timer.setInterval(33)  # ~30fps
+
+    def _tick(self):
+        """每帧触发重绘（仅当有 renderer 且可见时）"""
+        if self._renderer is not None and self.isVisible():
+            self.update()
+
     # ── 与 Live2DRenderer 对接 ──
 
     def set_renderer(self, renderer) -> None:
@@ -50,6 +63,8 @@ class GLCharWidget(QOpenGLWidget):
             self.makeCurrent()
             self._renderer.on_gl_initialized()
             self.doneCurrent()
+            # 模型就绪后启动持续重绘
+            self._anim_timer.start()
 
     def paintGL(self) -> None:
         if self._renderer is not None:

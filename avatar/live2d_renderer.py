@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import time
 from typing import Optional
 
 from PySide6.QtCore import Qt, QPoint
@@ -340,14 +341,6 @@ class Live2DRenderer(AvatarRenderer):
 
         # 参数驱动每步独立 try：即使某个参数调用报错，也不阻塞模型绘制
         if not self._debug_minimal:
-            try:
-                self._update_gaze_params()
-            except Exception as e:
-                logger.warning("Live2DRenderer.gaze 异常: %s", e)
-            try:
-                self._update_mouth()
-            except Exception as e:
-                logger.warning("Live2DRenderer.mouth 异常: %s", e)
             # 每帧检测：待机动作播完则重新启动，实现持续循环
             try:
                 if self._model.IsMotionFinished():
@@ -357,18 +350,89 @@ class Live2DRenderer(AvatarRenderer):
             except Exception as e:
                 logger.warning("Live2DRenderer.idle 循环异常: %s", e)
 
-        # 与验证可行的最小测试保持完全一致的绘制路径：
-        #   clearBuffer -> Update -> Draw
-        # 不手动设置 GL 混合（live2d shader 自行管理），不设投影。
+        # 完整帧更新：绕过 live2d-py 0.7.0.4 wrapper 残缺的 Update()（motion/blink/呼吸全被注释），
+        # 直接驱动 C++ Model 的完整更新序列（UpdateMotion → Blink → Breath → Physics → Pose）。
         try:
-            # LAppModel.Update 无参（内部自算 dt + 管理眨眼/呼吸）
-            self._model.Update()
+            self._frame_update()
         except Exception as e:
-            logger.warning("Live2DRenderer.Update 异常: %s", e)
+            logger.warning("Live2DRenderer._frame_update 异常: %s", e)
+
+        # 手动参数叠加（gaze/mouth）必须在 motion 更新之后、SaveParameters 之前设置，
+        # 否则会被 motion 曲线覆盖。weight<1 实现混合（motion 为主，手动为辅）。
+        if not self._debug_minimal:
+            try:
+                self._update_gaze_params()
+            except Exception as e:
+                logger.warning("Live2DRenderer.gaze 异常: %s", e)
+            try:
+                self._update_mouth()
+            except Exception as e:
+                logger.warning("Live2DRenderer.mouth 异常: %s", e)
+
         try:
             self._model.Draw()
         except Exception as e:
             logger.warning("Live2DRenderer.Draw 异常: %s", e)
+
+    def _frame_update(self) -> None:
+        """完整 Live2D 帧更新：直接驱动 C++ Model（绕过 wrapper 残缺 Update）。
+
+        官方 LAppModel::Update 的标准序列（live2d-py 0.7.0.4 的 Python Update() 把它们全注释了）：
+          Update(dt) → LoadParameters → UpdateMotion(dt) → [无 motion 时 UpdateBlink]
+          → UpdateExpression → UpdateDrag → UpdateBreath → UpdatePhysics → UpdatePose
+          → SaveParameters
+        """
+        mm = getattr(self._model, "_model", None)
+        if mm is None:
+            # 回退：wrapper 的 Update（虽然残缺，至少不崩）
+            self._model.Update()
+            return
+        now = time.monotonic()
+        dt = min(now - getattr(self, "_frame_last_t", now), 0.1)
+        self._frame_last_t = now
+
+        try:
+            mm.Update(dt)
+        except Exception:
+            pass
+        try:
+            mm.LoadParameters()
+        except Exception:
+            pass
+        motion_updated = False
+        try:
+            motion_updated = bool(mm.UpdateMotion(dt))
+        except Exception:
+            pass
+        if not motion_updated:
+            try:
+                mm.UpdateBlink(dt)
+            except Exception:
+                pass
+        try:
+            mm.UpdateExpression(dt)
+        except Exception:
+            pass
+        try:
+            mm.UpdateDrag(dt)
+        except Exception:
+            pass
+        try:
+            mm.UpdateBreath(dt)
+        except Exception:
+            pass
+        try:
+            mm.UpdatePhysics(dt)
+        except Exception:
+            pass
+        try:
+            mm.UpdatePose(dt)
+        except Exception:
+            pass
+        try:
+            mm.SaveParameters()
+        except Exception:
+            pass
 
     # ── 内部：参数驱动 ──
 
