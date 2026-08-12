@@ -10,6 +10,7 @@ import 链会阻塞 Qt 事件循环几十秒），因此重建用代际号保证
 """
 import logging
 import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -125,9 +126,24 @@ class VoiceProviderMixin:
                 logger.warning("TTS provider 重建失败: %s", e)
                 _discard(provider)
             finally:
-                # 旧实例只有确实被换下来时才释放
+                # 旧实例只有确实被换下来时才释放。
+                # 若 worker 正在用 old 合成（_tts_in_use>0），立即 cleanup 会破坏在途合成
+                # （use-after-cleanup 竞态）。这里延迟到引用计数归零再清理，最多等 180s（单句合成上限）。
                 if old is not None and old is not getattr(self._engine, "_tts", None):
-                    _discard(old)
+                    _defer_cleanup(old)
+
+        def _defer_cleanup(old_provider):
+            """延迟清理旧 provider：等引擎的 _tts_in_use 归零（或超时）再 cleanup。"""
+            def _wait_and_cleanup():
+                engine = self._engine
+                deadline = time.monotonic() + 180
+                while time.monotonic() < deadline:
+                    with engine._lock:
+                        if getattr(engine, "_tts_in_use", 0) <= 0:
+                            break
+                    time.sleep(0.5)
+                _discard(old_provider)
+            threading.Thread(target=_wait_and_cleanup, name="TTSOldCleanup", daemon=True).start()
 
         threading.Thread(target=_rebuild, name="TTSReload", daemon=True).start()
 

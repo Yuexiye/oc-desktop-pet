@@ -81,6 +81,8 @@ class ConversationEngine:
         # P1-4: TTS 专用线程池（max_workers=1 匹配 provider 内部串行锁），
         # 把合成从 _run 主循环解耦，避免单句 60-150s 卡住整个消息队列。
         self._tts_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="TTS")
+        # 引用计数：正在合成中的 provider 数（用于 TTSReload 安全清理旧实例）
+        self._tts_in_use = 0
         # B2: 工具进度节流（参考小蕾米插件日志节流）——同 工具+phase 在窗口内合并
         self._tool_progress_throttle: dict[str, float] = {}
         self._tool_progress_throttle_ms: float = 500.0
@@ -477,16 +479,23 @@ class ConversationEngine:
         with self._lock:
             tts = self._tts
             tts_ready = self._tts_ready
+            if tts is not None:
+                self._tts_in_use += 1  # 引用计数：让 TTSReload 知道此实例正在使用
         audio_path = ""
-        if tts and tts_ready and reply and reply.strip() and reply.strip() not in ("\u2026", "..."):
-            try:
-                audio_path = tts.synthesize(reply, character_id=character, instruct=instruct) or ""
-                if audio_path:
-                    logger.info("TTS done: %s", os.path.basename(audio_path))
-                else:
-                    logger.warning("TTS failed, no audio")
-            except Exception as e:
-                logger.warning("TTS error: %s", e)
+        try:
+            if tts and tts_ready and reply and reply.strip() and reply.strip() not in ("\u2026", "..."):
+                try:
+                    audio_path = tts.synthesize(reply, character_id=character, instruct=instruct) or ""
+                    if audio_path:
+                        logger.info("TTS done: %s", os.path.basename(audio_path))
+                    else:
+                        logger.warning("TTS failed, no audio")
+                except Exception as e:
+                    logger.warning("TTS error: %s", e)
+        finally:
+            with self._lock:
+                if self._tts_in_use > 0:
+                    self._tts_in_use -= 1
         # synth 后检查：已打断则丢弃脏音频
         if self._is_stale(gen):
             logger.debug("TTS 后已打断，丢弃: gen=%d", gen)
