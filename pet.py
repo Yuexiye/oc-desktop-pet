@@ -1481,25 +1481,6 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         except Exception as e:
             logger.warning("_do_tool_progress error: %s", e)
 
-        """右键菜单：创建新 Session"""
-        self._mark_user_interaction()
-        if not hasattr(self, '_engine') or self._engine is None:
-            self._show_bubble("引擎还没起来", emotion="thinking")
-            return
-        if not hasattr(self._engine, 'create_new_session'):
-            self._show_bubble("当前模式不支持新建对话", emotion="neutral")
-            return
-        session = self._engine.create_new_session(agent_id=self._engine.agent_id)
-        if session is not None:
-            try:
-                self.bubble.hide_bubble()
-            except Exception:
-                pass
-            self._show_bubble("🔄 新对话已创建", emotion="happy")
-            logger.info("新 Session 创建成功: %s", getattr(session, 'session_id', '?'))
-        else:
-            self._show_bubble("新对话创建失败", emotion="sad")
-
     # ── F4: 切换对话后端助手 ──
 
     def _available_agents(self) -> list[dict]:
