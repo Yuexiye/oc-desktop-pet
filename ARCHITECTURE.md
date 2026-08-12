@@ -130,6 +130,20 @@ oc-pet/
 - `factory.detect_format` 按 `pet.json format → 目录结构 → 回退 sprite` 选择渲染器。
 - Live2D 走 QOpenGLWidget + live2d-py；Sprite 走 QLabel + 帧动画；VRM 为占位。
 
+### ⚠️ Live2D SetScale 语义（2026-08-12 血泪教训）
+**`SetScale(1.0)` = 角色画布适配窗口**，不是“1200px 画布的缩放倍率”。
+实测（HitDrawable 命中检测，窗口 400x600）：
+- scale=1.00 → 角色占窗口 95.8%（上 10px + 下 15px 留白）
+- scale=1.05 → 99.2%（顶部贴齐，底部 5px）
+- scale=1.06 → 100%（上下左右全贴齐，窗口完全贴合模型）
+- scale=1.08+ → 100% 但可能裁发尖
+
+**结论**：
+- fit 直接 = pet.json `live2d.scale`（1.0=填满，1.06=贴合，>1.1=特写裁剪），**与窗口大小无关**。
+- 之前的 `fit=(gl_h/1200)*coef` 公式是叠床架屋——窗口放大角色跟着放大，导致“窗口和角色绑死”。
+- 窗口大小（config.window）与贴合度（live2d.scale）是**两个独立参数**，解耦。
+- 调贴合度用 HitDrawable 网格扫描实测，不要盲调系数。
+
 ### 语音流程（voice_input.py + chat_mixin.py）
 - 按键模式：点按开始/停止 → ASR → 发送。
 - 持续监听模式：VAD 能量检测（RMS > 0.02），静音 1.3s 切分语音段，Semaphore(2) 限流并发 ASR。
