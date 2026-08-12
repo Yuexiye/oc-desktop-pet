@@ -597,10 +597,13 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         )
         self.setAttribute(Qt.WA_TranslucentBackground)
         self._apply_penetration()
-        # 窗口基准适配 Live2D 角色：角色正方形画布按高度缩放后渲染宽 = 高×0.882，
-        # 窗口宽取角色渲染宽（458≈520×0.882），高保留 520 给上下余量/气泡区，
-        # 避免竖长窗口横向裁切角色 + 大片留白。
-        self.setFixedSize(458, 520)
+        # 窗口基准适配 Live2D 角色：优先读 config.json 的 window 宽高（用户可配），
+        # 默认 458x520（角色正方形画布按高度缩放后渲染宽 = 高×0.882）
+        self._base_w = int(self.config.get("window", {}).get("width", 458))
+        self._base_h = int(self.config.get("window", {}).get("height", 520))
+        self._base_w = max(120, self._base_w)
+        self._base_h = max(160, self._base_h)
+        self.setFixedSize(self._base_w, self._base_h)
 
         win_cfg = self._init_position or self.config.get("window", {})
         if win_cfg.get("x", -1) >= 0 and win_cfg.get("y", -1) >= 0:
@@ -787,10 +790,10 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
 
     def _recalc_geometry(self):
         """缩放后重算窗口和角色图片尺寸(不改变窗口位置)"""
-        # 基准 458x520 贴合 Live2D 角色（正方形渲染，宽 = 高×0.882）。
+        # 基准尺寸来自 _setup_window 读的 config.window（默认 458x520）。
         # 放大后角色更大更清晰。
-        w = max(458, int(458 * self._pet_scale))
-        h = max(520, int(520 * self._pet_scale))
+        w = max(self._base_w, int(self._base_w * self._pet_scale))
+        h = max(self._base_h, int(self._base_h * self._pet_scale))
         self.setFixedSize(w, h)
         # 委托给 SpriteRenderer 处理角色尺寸
         self._renderer.set_scale(self._pet_scale)
