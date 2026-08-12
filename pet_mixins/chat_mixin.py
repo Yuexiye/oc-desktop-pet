@@ -93,6 +93,8 @@ class ChatMixin:
             # 开启持续监听
             if self._voice_input.start():
                 self._voice_continuous = True
+                self._voice_buffer_lock = getattr(self, "_voice_buffer_lock", None) or threading.Lock()
+                self._continuous_asr_sem = getattr(self, "_continuous_asr_sem", None) or threading.Semaphore(2)
                 self._voice_continuous_buffer = []
                 self._voice_continuous_silence = 0
                 self._voice_continuous_started = False
@@ -104,7 +106,8 @@ class ChatMixin:
         else:
             # 关闭持续监听
             self._voice_continuous = False
-            self._voice_continuous_buffer = []
+            with self._voice_buffer_lock:
+                self._voice_continuous_buffer = []
             self._voice_continuous_silence = 0
             self._voice_continuous_started = False
             self._voice_input.cancel()
@@ -129,7 +132,8 @@ class ChatMixin:
 
         if rms > THRESHOLD:
             # 有人说话：累积音频，重置静音计数
-            self._voice_continuous_buffer.append(chunk.copy())
+            with self._voice_buffer_lock:
+                self._voice_continuous_buffer.append(chunk.copy())
             self._voice_continuous_silence = 0
             if not self._voice_continuous_started:
                 self._voice_continuous_started = True
@@ -139,8 +143,9 @@ class ChatMixin:
                 self._voice_continuous_silence += 1
                 if self._voice_continuous_silence >= SILENCE_FRAMES_LIMIT:
                     # 静音超时 → 语音段结束
-                    audio = np.concatenate(self._voice_continuous_buffer, axis=0).flatten()
-                    self._voice_continuous_buffer = []
+                    with self._voice_buffer_lock:
+                        audio = np.concatenate(self._voice_continuous_buffer, axis=0).flatten()
+                        self._voice_continuous_buffer = []
                     self._voice_continuous_silence = 0
                     self._voice_continuous_started = False
 
@@ -148,20 +153,28 @@ class ChatMixin:
                     if len(audio) < int(self._voice_input.SAMPLE_RATE * 0.5):
                         return
 
-                    # 后台线程 ASR 识别并发送
+                    # 后台线程 ASR 识别并发送（Semaphore 限制并发，避免线程堆积）
                     vi = self._voice_input
                     engine = self._engine
+                    sem = self._continuous_asr_sem
+                    if not sem.acquire(blocking=False):
+                        logger.debug("Continuous ASR 已达上限，丢弃本句")
+                        return
 
-                    def _do_continuous_asr(audio_data=audio, vi_ref=vi, eng=engine):
-                        text = vi_ref.transcribe_audio(audio_data)
-                        if text and eng:
-                            eng.send(text, character=self._current_char)
-                            logger.info("Continuous voice sent: %s", text[:30])
+                    def _do_continuous_asr(audio_data=audio, vi_ref=vi, eng=engine, sem=sem):
+                        try:
+                            text = vi_ref.transcribe_audio(audio_data)
+                            if text and eng:
+                                eng.send(text, character=self._current_char)
+                                logger.info("Continuous voice sent: %s", text[:30])
+                        finally:
+                            sem.release()
                     t = threading.Thread(target=_do_continuous_asr, daemon=True)
                     t.start()
             else:
                 # 静音且无语音段：清空 buffer 防累积
-                self._voice_continuous_buffer = []
+                with self._voice_buffer_lock:
+                    self._voice_continuous_buffer = []
 
     def _do_voice_status(self, msg: str):
         """在主线程处理语音状态"""

@@ -60,6 +60,8 @@ class VRMRenderer(AvatarRenderer):
             "VRMRenderer.load('%s'): VRM 渲染尚未实现（规划走 QWebEngineView + three.js）。"
             "请在设置中改用 Sprite 或 Live2D 角色。", character_id)
         self._character_id = character_id
+        self.unsupported = True
+        self.unsupported_reason = "VRM 渲染尚未实现，请改用 Q6 / Live2D 角色"
         self.char_label.setText(f"[VRM 未实现]\n{character_id}")
         self.char_label.setStyleSheet("color: #e6e6f0; font-size: 14px;")
         return False

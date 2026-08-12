@@ -32,6 +32,8 @@ from avatar.gl_char_widget import GLCharWidget
 
 logger = logging.getLogger(__name__)
 
+_global_l2d_inited: bool = False  # live2d.v3.init() 进程级只调一次（多宠不重复初始化）
+
 
 class Live2DRenderer(AvatarRenderer):
     """Live2D (Cubism) 渲染器。"""
@@ -156,14 +158,16 @@ class Live2DRenderer(AvatarRenderer):
         # 调试二分：环境变量 L2D_DEBUG_MINIMAL=1 时跳过所有附加逻辑，
         # 只保留纯测试路径（init->glInit->LAppModel->Load->Resize->SetScale->Draw）
         self._debug_minimal = os.environ.get("L2D_DEBUG_MINIMAL") == "1"
+        self._debug = os.environ.get("L2D_DEBUG") == "1"  # 调试诊断输出总开关
         if self._ready or not self._model_path:
             return
         try:
             import live2d.v3 as l2d
             self._live2d = l2d
-            if not getattr(self, "_global_inited", False):
+            global _global_l2d_inited
+            if not _global_l2d_inited:
                 l2d.init()
-                self._global_inited = True
+                _global_l2d_inited = True
 
             # GL 可用性检查：不 import PyOpenGL 的 GL（它与 live2d-py 的 glad 加载的
             # GL 函数可能冲突，污染函数指针导致模型绘制失败——纯测试从不 import
@@ -315,15 +319,16 @@ class Live2DRenderer(AvatarRenderer):
                     self._ready, cw, ch, cw_px, ch_px,
                     getattr(self, "_gl_w", "?"), getattr(self, "_gl_h", "?"), self._fit_scale,
                 )
-                # 离屏截图诊断：保存 GL 内容，确认模型是否真的画出来
-                try:
-                    from PySide6.QtWidgets import QApplication
-                    self.char_label.grabFramebuffer().save(
-                        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                     "logs", "l2d_diag.png"))
-                    logger.info("Live2DRenderer: 已保存离屏截图 logs/l2d_diag.png")
-                except Exception as e:
-                    logger.warning("Live2DRenderer: 离屏截图失败: %s", e)
+                # 离屏截图诊断（L2D_DEBUG=1 才启用）：保存 GL 内容，确认模型是否真的画出来
+                if getattr(self, "_debug", False):
+                    try:
+                        from PySide6.QtWidgets import QApplication
+                        self.char_label.grabFramebuffer().save(
+                            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                         "logs", "l2d_diag.png"))
+                        logger.info("Live2DRenderer: 已保存离屏截图 logs/l2d_diag.png")
+                    except Exception as e:
+                        logger.warning("Live2DRenderer: 离屏截图失败: %s", e)
             except Exception:
                 pass
         try:
@@ -346,7 +351,8 @@ class Live2DRenderer(AvatarRenderer):
             # 每帧检测：待机动作播完则重新启动，实现持续循环
             try:
                 if self._model.IsMotionFinished():
-                    logger.info("Live2DRenderer: idle 动作播完，重新触发")
+                    if getattr(self, "_debug", False):
+                        logger.info("Live2DRenderer: idle 动作播完，重新触发")
                     self._start_idle()
             except Exception as e:
                 logger.warning("Live2DRenderer.idle 循环异常: %s", e)

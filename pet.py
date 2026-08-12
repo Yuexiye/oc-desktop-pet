@@ -1281,6 +1281,11 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
 
         # 委托给渲染器加载帧序列，优先使用 sprite_dir
         self._renderer.load(char_id, sprite_dir=self._sprite_dir)
+        # 渲染器不支持时明确提示用户（如 VRM 占位）
+        if getattr(self._renderer, "unsupported", False):
+            self._show_bubble(
+                getattr(self._renderer, "unsupported_reason", "该角色格式暂不支持"),
+                emotion="sad")
         # 同步状态别名
         self._anim_frames = self._renderer._frames
         self._anim_frame_tops = self._renderer._frame_tops

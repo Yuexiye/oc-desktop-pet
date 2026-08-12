@@ -105,6 +105,9 @@ def create_renderer(character_id: str, parent) -> AvatarRenderer:
     if fmt == "vrm":
         # 未来 3D 扩展钩子：当前 VRMRenderer 为占位，load() 返回 False。
         # 若需要立即可用的角色，请改用 Q6 / Live2D 格式。
+        logger.warning(
+            "create_renderer('%s'): VRM 格式尚未实现，将显示占位（空白/未实现提示）。"
+            "请改用 Q6 或 Live2D 角色。", character_id)
         from avatar.vrm_renderer import VRMRenderer
         return VRMRenderer(parent)
 

@@ -50,7 +50,7 @@ class ToolExecutor:
 
         # 构建执行脚本
         script = self._build_runner_script(source_path, tool.plugin_id, arguments)
-
+        tmp_path = None
         try:
             # 写入临时文件
             with tempfile.NamedTemporaryFile(
@@ -71,12 +71,6 @@ class ToolExecutor:
                 env={**os.environ, 'LANG': 'en_US.UTF-8', 'PYTHONIOENCODING': 'utf-8'},
             )
 
-            # 清理
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
-
             if result.returncode == 0:
                 # 解析输出（期望 JSON 格式的 MCP result）
                 output = result.stdout.strip()
@@ -93,6 +87,13 @@ class ToolExecutor:
         except Exception as e:
             logger.warning("Tool execution error: %s", e)
             return f"工具执行异常: {e}"
+        finally:
+            # 无论正常/超时/异常都清理临时文件，避免 .mjs 泄漏
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
 
     def _build_runner_script(self, source_path: Path, plugin_id: str, arguments: dict) -> str:
         """生成 Node.js 执行脚本"""

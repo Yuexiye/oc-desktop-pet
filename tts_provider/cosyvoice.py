@@ -66,6 +66,11 @@ def _resolve_cosyvoice_dir() -> Path:
     if adjacent.exists():
         return adjacent
 
+    # 兜底硬编码路径（仅本机可用）：正常应通过 env/配置/相邻目录命中，
+    # 走到这里说明三处都未配置，换机器必然失效。
+    logger.warning(
+        "CosyVoice 目录未通过 env/配置/相邻目录定位，回退到硬编码路径 "
+        "W:/Games/Hanako/Work/projects/cosyvoice-tts（仅限本机，换机器请配置 OC_PET_COSYVOICE_DIR）")
     return Path("W:/Games/Hanako/Work/projects/cosyvoice-tts")
 
 

@@ -1,53 +1,85 @@
 # 架构索引
 
 > 给新对话的助手看：读完这份文档就能理解代码结构，不用逐文件扫描。
+> 最后更新：2026-08-12（对照真实代码结构重写）
 
 ## 目录结构
 
 ```
 oc-pet/
-├── pet.py                    # 主窗口（1517 行），UI + 事件循环 + 所有交互
-├── main.py                   # 入口
-├── config.py                 # 配置加载/保存
-├── env_config.py             # .env 环境变量读取
+├── main.py                   # 入口：日志 + 配置 + PetManager.launch_all + Qt 事件循环
+├── pet.py                    # 主窗口（1516 行）：PetWindow 多重继承 10 个 mixin + QWidget
+├── pet_manager.py            # 多宠管理器：Agent 发现 / 窗口生命周期 / 托盘 / WS 注入
+├── config.py                 # 配置加载/保存（含异步写盘 async_config_saver）
+├── env_config.py             # .env 环境变量读取（API key 等敏感信息）
+├── paths.py                  # 路径解析
+├── voice_input.py            # 麦克风录音 + Whisper ASR（含持续监听 VAD 支持）
 │
 ├── core/                     # 核心逻辑（无 UI 依赖）
-│   ├── conversation_engine.py  # 对话引擎：LLM + TTS + 工具调用一体化
+│   ├── conversation_engine.py  # 对话引擎（728 行）：LLM + TTS + 工具调用一体化，后台线程 + 代际打断
+│   ├── harness_adapter.py      # LLM 适配器（读 Hanako 配置 → API/WS 调用）
 │   ├── capability_registry.py  # 能力路由器：关键词→直接执行，跳过 LLM
-│   ├── perception.py           # 感知控制器：时间/情绪/屏幕/日报/Session/权限
 │   ├── hanako_context.py       # Hanako 配置读取器：身份/记忆/模型/Session
-│   ├── hanako_monitor.py       # Hanako 状态监控（TODO/通知/对话）
-│   ├── narrative_engine.py     # 叙述引擎：空闲时微事件生成
-│   ├── enhanced_environment.py # 增强环境扫描（窗口→结构化快照）
+│   ├── hanako_ws_client.py     # Hanako WebSocket 客户端
+│   ├── hanako_session_manager.py # Hanako 会话管理（工具事件转发）
+│   ├── hanako_monitor.py       # Hanako 状态监控（会话/事件过滤）
+│   ├── idle_chatter.py         # 空闲自言自语生成
+│   ├── perception/             # 感知控制器（情绪/屏幕/日程/主动消息）
+│   ├── event_bus.py            # 轻量事件总线（发布/订阅，解耦任务系统）
+│   ├── pet_audio_bridge.py     # 桌宠音频事件桥接（TTS 口型分发）
+│   ├── emotion_transitions.py  # 情绪→动画过渡
 │   ├── memory_snapshot.py      # 记忆快照导出/导入
 │   ├── tool_registry.py        # 插件工具注册表（扫描 manifest.json）
-│   ├── tool_executor.py        # 插件工具执行器（Node.js subprocess）
-│   ├── harness_adapter.py      # LLM 适配器（读 Hanako 配置 → API 调用）
+│   ├── tool_executor.py        # 插件工具执行器（Node.js subprocess，无 shell）
+│   ├── multi_pet_bridge.py     # 多桌宠协作桥接（社交事件）
+│   ├── character_package.py    # 角色包管理
+│   ├── enhanced_environment.py # 增强环境扫描（窗口→结构化快照）
+│   ├── window_interaction.py   # 窗口互动（桌宠靠近当前窗口）
 │   ├── phone_activity.py       # 手机活动感知（MacroDroid HTTP 上报）
 │   ├── phone_receiver.py       # 手机数据 HTTP 接收器
-│   ├── multi_pet_bridge.py     # 多桌宠协作桥接
-│   ├── window_interaction.py   # 窗口互动（桌宠靠近当前窗口）
-│   ├── event_bus.py            # 轻量事件总线（发布/订阅，解耦任务系统）
-│   ├── pet_state.py             # 养成状态管理器（衰减/挂起池回流/模式；发 attribute_changed）
+│   ├── pet_state.py            # 养成状态管理器（衰减/挂起池/模式）
 │   ├── work/                   # 工作系统（WorkTimer + 注册表）
 │   ├── items/                  # 物品系统
 │   ├── save/                   # 存档（PetSaveManager）
 │   ├── mission/                # 任务系统（池/追踪/生成/奖励/模板/编排）
 │   └── gacha/                  # 盲盒系统（奖池/引擎）
 │
+├── pet_mixins/               # PetWindow 行为拆分（10 个 mixin，鸭子类型共享 self）
+│   ├── interaction_mixin.py    # 鼠标事件过滤（拖拽/摸头/双击）
+│   ├── animation_mixin.py      # 动画状态机
+│   ├── audio_mixin.py          # 音频回调（TTS 口型）
+│   ├── bubble_mixin.py         # 气泡显示/节流/右键菜单
+│   ├── chat_mixin.py           # 对话入口（输入框/语音/发送/持续监听 VAD）
+│   ├── behavior_mixin.py       # 行为模式（idle/proactive/拖拽跟随）
+│   ├── voice_provider_mixin.py # TTS/ASR provider 构建与热切换
+│   ├── nurturing_mixin.py      # 养成接入
+│   ├── gacha_mixin.py          # 盲盒接入
+│   └── status_hud_mixin.py     # 状态 HUD
+│
 ├── ui/                       # UI 组件
-│   ├── tts_player.py           # TTS 播放器（PySide6 QMediaPlayer）
-│   ├── bubble.py               # 对话气泡
+│   ├── bubble.py               # 对话气泡（富文本/emoji/打字机/换行）
+│   ├── tts_player.py           # TTS 播放器（QMediaPlayer）
 │   ├── settings_dialog.py      # 设置对话框
 │   ├── plugin_panel.py         # 插件面板
-│   └── startup_screen.py       # 启动画面
+│   ├── startup_screen.py       # 启动画面
+│   ├── onboarding.py           # 新手引导
+│   ├── status_hud.py           # 状态 HUD
+│   ├── emotion_face.py         # 情绪脸
+│   ├── activity_feed.py        # 活动流
+│   ├── crt_window.py           # CRT 特效窗口
+│   ├── crt_effects.py / crt_overlay.py / scene_background.py  # 视觉特效
+│   ├── heart_particles.py      # 爱心粒子
+│   ├── gacha_reveal.py / gacha_sound.py  # 盲盒动画/音效
+│   ├── ink_subtitle.py / sfx.py / amadeus_hud.py / collection_book.py # 其他 UI
+│   └── theme/                  # 主题管理器
 │
-├── avatar/                   # 渲染系统
+├── avatar/                   # 渲染系统（AvatarRenderer 抽象）
 │   ├── base.py                 # AvatarRenderer 抽象接口
-│   ├── sprite_renderer.py      # 2D 帧精灵渲染器（自动扫描帧目录）
-│   ├── live2d_renderer.py      # Live2D (Cubism) 渲染器（live2d-py，透明 QOpenGLWidget）
-│   └── gl_char_widget.py       # 承载 Live2D 的透明 QOpenGLWidget
-│   └── factory.py              # 按角色目录自动选择渲染器（live2d / sprite）
+│   ├── factory.py              # 按角色目录选择渲染器（live2d / vrm / sprite）
+│   ├── sprite_renderer.py      # 2D 帧精灵渲染器（QLabel + QTimer 帧动画）
+│   ├── live2d_renderer.py      # Live2D (Cubism) 渲染器（live2d-py，QOpenGLWidget）
+│   ├── gl_char_widget.py       # 承载 Live2D 的透明 QOpenGLWidget
+│   └── vrm_renderer.py         # VRM 占位（未实现，显示提示）
 │
 ├── motion/                   # 运动系统
 │   ├── physics.py              # 物理引擎（重力/弹跳/惯性）
@@ -56,265 +88,63 @@ oc-pet/
 │   ├── foreground_watcher.py   # 前台窗口检测（ctypes Win32 API）
 │   └── action_linker.py        # 动作联动
 │
-├── tts_provider/             # TTS 引擎
-│   ├── base.py                 # TTSProvider 抽象接口
-│   ├── cosyvoice.py            # CosyVoice2 本地模型
-│   ├── api_tts.py              # OpenAI 兼容 API
-│   └── mimo_tts.py             # 小米 MiMo TTS
+├── tts_provider/             # TTS 引擎（TTSProvider 抽象）
+│   ├── base.py                 # TTSProvider 抽象
+│   ├── cosyvoice.py            # CosyVoice 本地 TTS（子进程 worker + 缓存 TTL）
+│   ├── cosyvoice_worker.py     # CosyVoice 子进程（patch_torchaudio + 模型加载）
+│   ├── api_tts.py              # API TTS
+│   └── mimo_tts.py             # Mimo TTS
 │
-├── asr_provider/             # ASR 引擎（语音输入）
-├── plugins/                  # 桌宠本地插件
-├── characters/               # 内置角色资源
-├── docs/                     # 文档
-│   ├── hatch-pet-guide.md      # 精灵生成指南（atlas 格式）
-│   ├── pet-creation-mouth-frames.md  # 嘴型帧规范
-│   └── pet-creation-mouth-frames.docx # 嘴型帧规范（Word）
+├── asr_provider/             # ASR 引擎（ASRProvider 抽象）
+│   ├── base.py                 # ASRProvider 抽象
+│   ├── whisper_local.py        # 本地 Whisper
+│   ├── mimo_asr.py             # Mimo ASR
+│   └── api_asr.py              # API ASR
 │
-└── tests/                    # 测试
+├── scripts/                  # 工具脚本
+│   ├── setup_tts_env.py        # TTS 环境搭建
+│   ├── download_cosyvoice_model.py  # CosyVoice 模型下载
+│   └── procedural_emotion_frames.py # 程序化情绪帧生成
+│
+├── characters/yuexinmiao/    # 内置角色（live2d 模型 + 配置）
+├── docs/                     # 文档（v1-plan / agent-binding-plan / 评审报告等）
+├── tests/                    # 集成测试
+├── test_core.py / test_agent_binding.py / test_live2d_smoke.py / test_session_loop_repro.py  # 单元测试（61 例）
+└── data/                     # 运行时数据（gitignore）
 ```
 
-## 核心数据流
+## 关键机制
 
+### 对话流水线（conversation_engine.py）
 ```
-用户输入
-  ↓
-pet.py._on_user_submit()
-  ↓
-ConversationEngine.send()
-  ↓
-后台线程._process_message()
-  ├── 1. 帮助关键词？ → 直接返回
-  ├── 2. 能力路由器匹配？ → CapabilityRouter.route() → 直接执行
-  └── 3. LLM + 工具调用 → HanakoPetAdapter.chat()
-                               ↓
-                         on_reply(text, emotion, anim, audio_path)
-                               ↓
-                         pet.py._on_engine_reply()
-                           ├── 气泡显示
-                           ├── TTS 播放（on_start → 嘴型，on_end → idle）
-                           └── 动画切换
+用户消息 → engine.send(新代际) → 后台线程 _run 出队 → _process_message
+  → 内置帮助/能力路由（跳过 LLM）→ LLM(HanakoPetAdapter) → 工具调用(可选)
+  → 动画映射 → TTS 合成(线程池 _synth_and_reply) → on_reply 信号 → 主线程气泡+播放
 ```
+- **代际打断（P1）**：每次 send/interrupt 递增 generation，LLM 后 / TTS 前 / TTS 后三处 `_is_stale` 检查，作废旧回复。
+- **TTS 异步化（P1-4）**：合成移入 `ThreadPoolExecutor(max_workers=1)`，不阻塞消息队列。
+- **TTS 竞态保护（P1-3）**：`_tts`/`_tts_ready` 读写均持 `_lock`。
 
-## 感知系统数据流
+### 渲染器抽象（avatar/）
+- `AvatarRenderer` 定义统一接口（load/play_anim/set_emotion/draw/cleanup）。
+- `factory.detect_format` 按 `pet.json format → 目录结构 → 回退 sprite` 选择渲染器。
+- Live2D 走 QOpenGLWidget + live2d-py；Sprite 走 QLabel + 帧动画；VRM 为占位。
 
-```
-PerceptionController（统一入口）
-  ├── TimePerception        → 时段/周末
-  ├── EmotionStateMachine   → 情绪（自动衰减）
-  ├── SchedulePerception    → 日程
-  ├── ScreenPerception      → 截图 + 视觉分析 + ActivityEvent
-  │     ├── ForegroundWatcher.on_change → 事件触发截图
-  │     ├── 黑名单过滤
-  │     └── VISION_PROMPT → JSON → ActivityEvent
-  ├── ProactiveScheduler    → 主动对话触发
-  ├── PetPermissions        → 权限开关
-  └── HanakoContext         → Session/记忆读取
+### 语音流程（voice_input.py + chat_mixin.py）
+- 按键模式：点按开始/停止 → ASR → 发送。
+- 持续监听模式：VAD 能量检测（RMS > 0.02），静音 1.3s 切分语音段，Semaphore(2) 限流并发 ASR。
 
-build_context() → 注入 LLM prompt
-```
+### 多宠（pet_manager.py）
+- 扫描 `~/.hanako/agents/` 发现所有 agent，每个一个独立窗口（PetWindow 实例）。
+- 每个窗口绑定自己的 Hanako WS 会话（set_agent_context）。
+- 多宠 Live2D：`l2d.init()` 进程级只调一次（模块级 `_global_l2d_inited`），关闭单个宠不释放全局 GL（P1-1）。
 
-## 关键类速查
+## 配置与安全
+- API key 全部来自 `.env` / `~/.hanako/provider-catalog.json`，无硬编码密钥。
+- `.env`、`config.json`、`data/`、`logs/` 均在 `.gitignore`。
+- 插件工具执行无 shell（`['node', tmp]`），无命令注入面。
 
-| 类 | 文件 | 职责 |
-|---|---|---|
-| `MainWindow` (pet.py) | pet.py | 主窗口，UI + 事件循环 |
-| `ConversationEngine` | conversation_engine.py | LLM + TTS + 工具调用 |
-| `CapabilityRouter` | capability_registry.py | 关键词→能力快速路由 |
-| `PerceptionController` | perception.py | 统一感知入口 |
-| `ScreenPerception` | perception.py | 截图 + 视觉分析 |
-| `ActivityEvent` | perception.py | 结构化活动事件 |
-| `ScreenEvent` | perception.py | 截图元数据 |
-| `PetPermissions` | perception.py | 权限开关 |
-| `HanakoContext` | hanako_context.py | Hanako 配置读取 |
-| `HanakoPetAdapter` | harness_adapter.py | LLM API 适配 |
-| `ToolRegistry` | tool_registry.py | 插件工具发现 |
-| `ToolExecutor` | tool_executor.py | 插件工具执行 |
-| `SpriteRenderer` | sprite_renderer.py | 2D 帧精灵渲染 |
-| `Live2DRenderer` | live2d_renderer.py | Live2D (Cubism) 透明渲染（live2d-py） |
-| `TTSTtsPlayer` | tts_player.py | TTS 音频播放 |
-| `ForegroundWatcher` | foreground_watcher.py | 前台窗口检测 |
-| `EmotionStateMachine` | perception.py | 情绪状态机 |
-| `PhysicsEngine` | physics.py | 物理引擎 |
-
-## 外部依赖
-
-| 依赖 | 用途 |
-|---|---|
-| PySide6 | GUI、音频播放 |
-| PIL/Pillow | 截图、图像处理 |
-| requests | API 调用 |
-| Hanako 本体 | 配置、插件、模型、Session |
-
-## Hanako 集成点
-
-```
-~/.hanako/
-├── provider-catalog.json     → 模型配置
-├── agents/<agent>/
-│   ├── identity.md           → 角色身份
-│   ├── ishiki.md             → 行为规则
-│   ├── description.md        → 描述
-│   ├── pinned.md             → 置顶规则
-│   ├── memory/               → 记忆文件
-│   ├── sessions/*.jsonl      → Session 历史
-│   ├── config.yaml           → Agent 配置
-│   └── pet/frames/           → 精灵帧资源
-├── plugins/                  → 插件（ToolRegistry 扫描）
-└── pets/tts_cache/           → TTS 缓存
-```
-
-## 任务系统 / 事件总线 / 盲盒（2026-07-27 新增，依据 03-成长计划）
-
-设计原则：**任务系统只监听现有系统的事件，不修改感知/工作/对话的内部逻辑与数据流（零侵入）**。
-事件总线 `core/event_bus.py` 解耦发布者与订阅者；`MissionManager` 在 `set_nurturing()` 注入并订阅全部事件。
-
-事件源（emit 点，均零侵入现有数据流）：
-- `pet.py`：`chat_completed` / `work_completed` / `item_used`(喂食) / `window_interacted` / `screen_analyzed` / `proactive_triggered` / `level_up`(经 `QTimer.singleShot(0)` 延迟发射，避免奖励结算重入 `add_exp` 递归)
-- `core/phone_activity.py`：`phone_event`（每次手机活动上报）
-- `core/multi_pet_bridge.py`：`multi_pet_event`（子总线事件转发到全局总线）
-- `core/mission/mission_manager.py`：`item_collected`（盲盒抽中虚拟物品）/ `gacha_opened`
-- `core/pet_state.py`：`attribute_changed`（属性按 5 点桶变化才发，避免每秒刷屏）
-
-```
-事件总线事件 ──▶ MissionTracker.on_event ──▶ 匹配 active 任务条件 ──▶ 完成 ──▶ MissionRewardGrantor 结算
-                                                                                    │
-                                                                                    └─▶ EventBus.emit("mission_completed") ─▶ pet.py 气泡
-双货币：通用货币复用 PetSave.money（03 的 credits）；盲盒能量为新增 gacha_energy（封顶 gacha_energy_max）。
-盲盒：MissionManager.open_gacha() 消耗 gacha_energy/券，GachaEngine 按权重+保底抽取（见 core/gacha/）。
-物品均为虚拟 token（GachaItem: id/name/icon/稀有度），抽中 item_type=="item" 即发 item_collected，
-任务系统按 item_id 去重统计"不同物品"（成就/周常收集类）。无物理库存需求。
-```
-
-| 类 | 文件 | 职责 |
-|---|---|---|
-| `EventBus` | event_bus.py | 进程级发布/订阅，类方法风格 |
-| `MissionManager` | mission/mission_manager.py | 编排：池+追踪+结算+盲盒，订阅事件总线 |
-| `MissionPool` | mission/mission_pool.py | 激活任务、每日/每周 04:00 刷新、进度持久化 |
-| `MissionTracker` | mission/mission_tracker.py | 事件→条件推进→完成判定 |
-| `MissionRewardGrantor` | mission/mission_reward.py | 奖励结算（money/gacha_energy/exp/徽章） |
-| `MissionGenerator` | mission/mission_generator.py | 按等级从模板抽样 |
-| `GachaEngine` | gacha/gacha_engine.py | 权重抽奖 + 各池独立保底 |
-
-> 注：早期"感知/渲染/运动"等章节仍沿用较早描述（如 perception.py 现含多个子模块、pet.py 行数等），
-> 与本次新增的"任务系统/事件总线/盲盒"章节并列阅读即可。整体深度校对待排期。
-
-## Live2D 渲染（2026-08-05 接入）
-
-桌宠角色默认走 **Live2D (Cubism)** 精致形象，模型按角色放在 `characters/<角色>/live2d/<model>.model3.json`。
-
-**渲染链路**：`factory` → `Live2DRenderer` → `GLCharWidget`（透明 QOpenGLWidget）→ `live2d-py`（LAppModel）
-
-**关键实现点（踩坑沉淀）**：
-- **必须用 `LAppModel`**（高层封装，内部管理 dt/投影/自动眨眼/呼吸），底层 `Model` 画不出来。
-- **QLAppModel.Update() 无参**（内部自算 dt），传参反而会报错。
-- **GL 用 Compatibility Profile 3.3**（live2d 用固定管线，Core Profile 移除了 glMatrixMode）。
-- **缩放用像素画布** `GetCanvasSizePixel()`（如 1200px），不用逻辑单位（13.6），否则放大 ~88 倍。
-- **`char_label` 必须 addWidget 进布局**，否则 QOpenGLWidget 不显示。
-- **⚠️ 不要 import PyOpenGL 的 `GL`**：它与 live2d-py 的 glad 加载的 GL 函数冲突，污染函数指针导致模型绘制失败（全黑）。GL 可用性直接用 `l2d.glInit()` 探测即可。
-- **不要调用 `SetOffset`**（偏移单位不明确，算错把模型移出视野）；只 `SetScale` 即可居中。
-
-**调试方法论**：headless 无法验证 GL（需真实 GPU+显示器），用「二分测试」定位——
-纯 LAppModel → GLCharWidget+纯 LAppModel → Live2DRenderer+GLCharWidget 逐级隔离，找出画不出的一层。
-
-## 近期变更
-
-| 变更 | 内容 |
-|---|---|
-| PET-02 | TTS 口型回调 + 帧目录自动扫描 |
-| PET-03 | 三种截图模式 + 隐私黑名单 |
-| PET-04 | JSON 结构化活动事件 |
-| PET-05 | 日报生成（Obsidian） |
-| PET-06 | Session 识别（只读） |
-| PET-07 | 跨 Session 协作（列表） |
-| PET-08 | PetPermissions 权限开关 |
-| 能力路由器 | 关键词→直接执行，跳过 LLM |
-| 清理 | 删除 hanako_bridge.py 死代码 |
-| 2026-07-27 | 新增事件总线 + 任务系统（core/mission）+ 盲盒（core/gacha）+ PetSave 双货币字段（gacha_energy 等）；事件源覆盖 pet.py / phone_activity / multi_pet_bridge / mission_manager / pet_state 共 10+ 处，零侵入现有数据流 |
-| 2026-07-27 | attribute_changed 实质化：PetStateManager 按 5 点桶发属性变化事件；追踪器 attribute 条件改 `<attr>:<阈值>` 格式；新增 mood/hunger/energy/health 类任务 |
-| 2026-08-03 | P1 打断状态机：conversation_engine 引入消息代际（generation），用户打断时 LLM/TTS/回调全链路作废旧结果；interrupt() 区分 interrupted/cancelled/completed；pet.py 三入口接入（新消息/语音开始/停止） |
-| 2026-08-03 | 一桌宠一助手：HanakoMonitor 按 agent 过滤 WS 事件，只观测本桌宠对应助手会话 |
-| 2026-08-03 | 拖拽/渲染/感知优化：异步防抖保存、fps 读角色定义、嵌套 JSON 解析、前台冷却修复 |
-| 2026-08-03 | PetWindow 拆分：拆出 AnimationMixin / InteractionMixin / ChatMixin，pet.py 2749→2193 行，清理死代码 |
-| 2026-08-03 | PetWindow 继续拆分：Behavior/VoiceProvider/Nurturing/Bubble 四个 mixin，pet.py 2193→1316 行，测试扩至 42 |
-| 2026-08-05 | Live2D 接入：纯 LAppModel → GLCharWidget → Live2DRenderer 逐级隔离，避 PyOpenGL 污染、用像素画布、Compatibility 3.3（本表上文 Live2D 章节） |
-| 2026-08-05 | 注册表防误清理：CCleaner 智能清理 Monitoring=1 + FinderInclude4 含 W 盘，删启动项/关监控/W 盘移出扫描列表（对应 T2） |
-| 2026-08-06 | 窗口放大 200x360→300x520 + 角色按高度缩放填满（fit=0.359），踩坑：直接放大曾致 LIve2D 闪退，回退后改按高度缩放适配 |
-| 2026-08-07 | T1 排查：对话反复新建 Session（无回复）。定位裂缝在 harness_adapter.chat_via_hanako + hanako_session_manager.ensure_session 的 fallback——服务端列表查不到 pinned session 时静默 create_session；本地 _current_session 无运行中重置路径（仅 init/switch_character），疑服务端侧新建。无头复现测试 test_session_loop_repro.py 已钉死机制 |
-
----
-
-## 打断状态机（P1，2026-08-03）
-
-**目标**：实现全链路打断——用户插话/发消息/点停止时，同时中断 LLM 生成、TTS 合成、音频播放，并区分打断状态，不粗暴丢弃。
-
-**机制**：消息代际（generation）
-- `conversation_engine` 维护 `_generation` 计数器，每次 `send(user)` / `interrupt()` 递增
-- 每条消息带 `gen`，处理时用 `_is_stale(gen)` 检查是否过期（`gen < 当前`）
-- 检查点：LLM 调用后 / TTS 合成前 / TTS 合成后 / 工具执行循环中
-- 过期 → 丢弃该消息的 LLM/TTS/回调结果（不播放、不回调）
-
-**打断状态**（`interrupt(reason)` → state）：
-| reason | state | 行为 |
-|---|---|---|
-| `new_message` | `cancelled` | 旧回复作废，转入新对话 |
-| `voice_start` | `interrupted` | 进入聆听，旧回复让位（barge-in） |
-| `user_stop` | `interrupted` | 停止，保留待恢复 |
-
-**LLM 层打断**：
-- Hanako WS：`session_manager.abort()` 真正取消 LLM 思考（`chat_via_hanako` 返回 aborted → 代际检查丢弃）
-- 直连 API：requests 无法真正取消，但代际检查会在 LLM 返回后丢弃结果（不播放）
-
-**入口**（pet.py）：`_send_message`（new_message）、`_toggle_voice` 录音开始（voice_start）、`_tts_player.stop()`（播放层）
-
-详见 `core/P1_INTERRUPT_PLAN.md`（实时进度）。
-
-## PetWindow 功能索引（2026-08-03，按 mixin 定位）
-
-> pet.py 1316 行，PetWindow 自身 70 个方法。大部分职责已拆到 pet_mixins/。
-> 看代码时按此索引定位到对应 mixin 文件，不要整文件扫描。
-
-| 功能域 | 定位文件 |
-|---|---|
-| 动画（呼吸/视线/序列/帧） | `pet_mixins/animation_mixin.py` |
-| 交互（鼠标/拖拽/抚摸/坐下/喂食） | `pet_mixins/interaction_mixin.py` |
-| 对话入口（输入/语音/发送/新建会话） | `pet_mixins/chat_mixin.py` |
-| 行为（用户标记/空闲/前台/鼠标反应/屏幕感知） | `pet_mixins/behavior_mixin.py` |
-| TTS/ASR provider 管理 | `pet_mixins/voice_provider_mixin.py` |
-| 养成（喂食/工作/任务/状态） | `pet_mixins/nurturing_mixin.py` |
-| 气泡/右键菜单/Hanako 状态 | `pet_mixins/bubble_mixin.py` |
-| 音频回调 | `pet_mixins/audio_mixin.py` |
-| 盲盒/图鉴 | `pet_mixins/gacha_mixin.py` |
-| 状态 HUD/主题 | `pet_mixins/status_hud_mixin.py` |
-| 窗口装配/信号/物理回调/公共接口 | `pet.py`（PetWindow 自身） |
-
-**已知问题**：拆分时删除死代码 `_gaze_tick`（原 pet.py 852/2619 重复定义，现统一在 AnimationMixin）。
-
-## PetWindow 拆分计划（已完成，2026-08-03）
-
-**现状**：`pet.py` 1316 行（原 2749 行），1 个 PetWindow 类 + 10 个 mixin。
-
-**已完成拆分**（从 pet.py 迁移到 pet_mixins/）：
-| mixin | 职责 | 行数 |
-|---|---|---|
-| `AnimationMixin` | 呼吸浮动/视线/动画序列/帧推进 | 74 |
-| `InteractionMixin` | 鼠标事件/拖拽/抚摸/边缘坐下/喂食 | 306 |
-| `ChatMixin` | 输入框/语音/发送/新建会话 | 155 |
-| `BehaviorMixin` | 用户交互标记/空闲/前台/鼠标反应/屏幕感知 | 366 |
-| `VoiceProviderMixin` | TTS/ASR provider 创建/重建/签名 | 128 |
-| `NurturingMixin` | 喂食/工作/任务菜单/状态摘要 | 289 |
-| `BubbleMixin` | 气泡/右键菜单/Hanako 状态呈现 | 149 |
-| `AudioMixin`（已有） | 音频 | 61 |
-| `GachaMixin`（已有） | 盲盒 | 101 |
-| `StatusHudMixin`（已有） | 状态 HUD | 134 |
-
-**约定**：mixin 用鸭子类型访问 PetWindow 属性（`self._xxx`），不显式 import pet；
-跨域方法（如 `_unified_tick` 聚合物理/养成/待机、`_setup_ui`/`_setup_window` 装配）保留在 PetWindow。
-
-**清理**：拆分时删除死代码 `_gaze_tick`（原在 pet.py 852 与 2619 重复定义，后者覆盖前者，现统一在 AnimationMixin）。
-
-**效果**：PetWindow 自身方法 145 → 70，非私有公共接口仅剩初始化/信号/物理回调/公开方法。
-拆后测试扩展至 42 个（新增气泡节流 + TTS 签名）。
-
----
-
-*最后更新：2026-08-03*
+## 已知技术债（2026-08-12 评审）
+- `pet.py` 仍是 god-object：10 个 mixin 只搬方法，`__init__` 约 300 行集中接线。
+- `_rebuild` 的 `old.cleanup()` 与 worker 正在合成的 use-after-cleanup 残留（需引用计数）。
+- 详细见 `docs/code-review-2026-08-12.md`。
