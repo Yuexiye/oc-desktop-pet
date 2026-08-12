@@ -41,6 +41,13 @@ class BubbleMixin:
             return
         self._show_bubble_impl(text, emotion, priority)
 
+    def _bubble_duration(self, text: str) -> int:
+        """根据文本长度计算气泡显示时长（base 10s + 字数系数，封顶 30s）。"""
+        base = 10000
+        n = len(text or '')
+        extra = int(n / 8) * 1000   # 每 8 字加 1s
+        return min(base + extra, 30000)
+
     def _show_bubble_impl(self, text: str, emotion: str = "neutral", priority: int = 0):
         """气泡实现体（仅限主线程调用；相同内容不重复刷新，高优先级不被低优先级覆盖）"""
         if not text or not hasattr(self, 'bubble'):
@@ -48,7 +55,7 @@ class BubbleMixin:
         # 节流：相同内容且气泡可见时不重复设置
         if text == self._bubble_message and self.bubble.isVisible():
             logger.debug("Bubble throttle: same text still visible")
-            self._bubble_timer.start(6000)  # 只续期
+            self._bubble_timer.start(self._bubble_duration(text))  # 只续期
             return
         # 高优先级正在显示时，低优先级先排队
         if self.bubble.isVisible() and self._bubble_priority > priority:
@@ -65,7 +72,7 @@ class BubbleMixin:
             self._reposition_bubble()
             self.bubble.show()
             self.bubble.raise_()
-            self._bubble_timer.start(6000)
+            self._bubble_timer.start(self._bubble_duration(text))
         except Exception:
             logger.exception("Show bubble failed")
 

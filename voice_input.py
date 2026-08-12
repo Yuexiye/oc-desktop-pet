@@ -84,6 +84,13 @@ class VoiceInput:
         self._audio_data: list[np.ndarray] = []
         self._stream = None
         self._on_status: callable = lambda msg: None  # 状态回调
+        # 持续监听模式
+        self._silent_energy_threshold = 0.012  # RMS 能量阈值（低于此视为静音）
+        self._latest_energy = 0.0  # 最近音频块的 RMS 能量
+        self._vad_speech_started = False  # 持续监听下是否检测到语音开始
+        self._vad_speech_audio: list = []  # 语音段缓存
+        self._vad_silent_frames = 0  # 连续静音帧计数
+        self._vad_callback: callable = None  # 语音段结束回调
 
     @property
     def is_recording(self) -> bool:
@@ -185,6 +192,37 @@ class VoiceInput:
             self._cleanup(tmp_path)
             return ""
 
+    def transcribe_audio(self, audio: np.ndarray) -> str:
+        """对给定的音频数据做 ASR（持续监听模式用，不依赖录音状态）。
+
+        Args:
+            audio: 1D float32 音频（16kHz 单声道）
+
+        Returns:
+            识别文本，失败返回空字符串
+        """
+        audio = np.asarray(audio).flatten()
+        if len(audio) < int(self.SAMPLE_RATE * 0.3):
+            self._on_status("录音太短")
+            return ""
+        tmp_path = os.path.join(tempfile.gettempdir(), f"pet_voice_cont_{int(time.time() * 1000)}.wav")
+        self._save_wav(audio, tmp_path)
+        self._on_status("语音识别中...")
+        if not self._asr:
+            self._on_status("ASR 模型未加载")
+            self._cleanup(tmp_path)
+            return ""
+        try:
+            text = self._asr.transcribe(tmp_path, language="zh")
+            self._on_status("")
+            self._cleanup(tmp_path)
+            return text or ""
+        except Exception as e:
+            logger.error("ASR failed: %s", e, exc_info=True)
+            self._on_status("识别失败")
+            self._cleanup(tmp_path)
+            return ""
+
     def cancel(self):
         """取消录音（不识别）"""
         self._recording = False
@@ -202,6 +240,20 @@ class VoiceInput:
         """sounddevice 回调"""
         if self._recording:
             self._audio_data.append(indata.copy())
+        # 持续监听：计算能量 + VAD 检测
+        chunk = indata.copy()
+        rms = np.sqrt(np.mean(chunk ** 2))
+        self._latest_energy = rms
+        if self._vad_callback is not None:
+            self._vad_callback(chunk, rms)
+
+    def peek_energy(self) -> float:
+        """返回最近音频块的 RMS 能量（用于持续监听检测）。"""
+        return self._latest_energy
+
+    def set_vad_callback(self, cb):
+        """设置持续监听模式下的 VAD 回调（每帧收到音频数据时调用）。"""
+        self._vad_callback = cb
 
     def _save_wav(self, audio: np.ndarray, path: str):
         """保存为 wav 文件"""

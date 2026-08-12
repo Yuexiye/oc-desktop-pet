@@ -237,9 +237,11 @@ class Live2DRenderer(AvatarRenderer):
                 try:
                     if hasattr(model, "GetMotionGroups"):
                         groups = model.GetMotionGroups()
-                        # T4: 过滤空字符串组名（此模型 GetMotionGroups 返回 ['']），
-                        # 空组 StartRandomMotion 无效，导致待机动画不启动。
-                        self._motion_groups = {g: [] for g in (groups or []) if g and str(g).strip()}
+                        # 保留所有组名（含空串）。此模型 lafei.model3.json 把动作都放在
+                        # 空字符串组 "" 下（idle/login/touch_* 等 14 个），空串是合法组名。
+                        # 之前过滤空串导致 _motion_groups 为空，_start_idle 退回用 "Idle"
+                        # 却找不到，待机动画不启动。这里保留空串组。
+                        self._motion_groups = {g: [] for g in (groups or []) if g is not None}
                     else:
                         self._motion_groups = dict(model.GetMotions() or {})
                 except Exception:
@@ -341,6 +343,13 @@ class Live2DRenderer(AvatarRenderer):
                 self._update_mouth()
             except Exception as e:
                 logger.warning("Live2DRenderer.mouth 异常: %s", e)
+            # 每帧检测：待机动作播完则重新启动，实现持续循环
+            try:
+                if self._model.IsMotionFinished():
+                    logger.info("Live2DRenderer: idle 动作播完，重新触发")
+                    self._start_idle()
+            except Exception as e:
+                logger.warning("Live2DRenderer.idle 循环异常: %s", e)
 
         # 与验证可行的最小测试保持完全一致的绘制路径：
         #   clearBuffer -> Update -> Draw
@@ -368,10 +377,10 @@ class Live2DRenderer(AvatarRenderer):
         self._gaze_cur_ball_x += (self._gaze_target_ball_x - self._gaze_cur_ball_x) * s
         self._gaze_cur_ball_y += (self._gaze_target_ball_y - self._gaze_cur_ball_y) * s
         try:
-            self._model.SetParameterValue(P.ParamAngleX, self._gaze_cur_angle_x, 1.0)
-            self._model.SetParameterValue(P.ParamAngleY, self._gaze_cur_angle_y, 1.0)
-            self._model.SetParameterValue(P.ParamEyeBallX, self._gaze_cur_ball_x, 1.0)
-            self._model.SetParameterValue(P.ParamEyeBallY, self._gaze_cur_ball_y, 1.0)
+            self._model.SetParameterValue(P.ParamAngleX, self._gaze_cur_angle_x, 0.3)
+            self._model.SetParameterValue(P.ParamAngleY, self._gaze_cur_angle_y, 0.3)
+            self._model.SetParameterValue(P.ParamEyeBallX, self._gaze_cur_ball_x, 0.3)
+            self._model.SetParameterValue(P.ParamEyeBallY, self._gaze_cur_ball_y, 0.3)
         except Exception:
             pass
 
@@ -394,8 +403,25 @@ class Live2DRenderer(AvatarRenderer):
         if not self._model:
             return
         try:
-            # 从模型实际的 motion 组挑一个（此模型组名为空字符串 ''），
-            # 避免硬编码 MotionGroup.IDLE 找不到组
+            # 优先用 GetMotions() 取具体 motion 列表，按索引播放，避免 StartRandomMotion
+            # 对空串组名可能静默失败的问题。
+            motions = self._model.GetMotions()
+            if motions:
+                # 优先取空串组（此模型所有动作都在 "" 组），否则取第一个非空组
+                group = next((g for g in motions if g), next(iter(motions), ""))
+                motion_list = motions.get(group, [])
+                logger.info("Live2DRenderer: _start_idle motions=%s group=%r count=%d",
+                            list(motions.keys()), group, len(motion_list))
+                if motion_list:
+                    # 选包含 "idle" 的 motion（优先），否则播第 0 个
+                    idx = 0
+                    for i, m in enumerate(motion_list):
+                        if isinstance(m, dict) and "idle" in m.get("File", "").lower():
+                            idx = i
+                            break
+                    self._model.StartMotion(group, idx, self._live2d.MotionPriority.IDLE)
+                    return
+            # fallback：StartRandomMotion（组名非空时有效）
             if self._motion_groups:
                 group = next(iter(self._motion_groups))
                 self._model.StartRandomMotion(group, self._live2d.MotionPriority.IDLE)
@@ -526,8 +552,10 @@ class Live2DRenderer(AvatarRenderer):
         # 用窗口尺寸设置角色 label（不再用固定 220x260 基准——那比 200 宽的窗口还宽，
         # 导致角色宽度溢出被窗口裁切、显示不完整）。
         # 模型是正方形(1200px)，label 用窗口宽，角色按高度填满。
-        w = int(window_w * self._scale)
-        h = int(window_h * self._scale)
+        # 注意：window_w/window_h 已是缩放后的最终尺寸（pet.py _recalc_geometry 传入），
+        # 这里不再乘 _scale，避免双重缩放导致 label 尺寸异常（窗口框远超模型）。
+        w = int(window_w)
+        h = int(window_h)
         self.char_label.setFixedSize(w, h)
         self._base_label_pos = QPoint(0, 0)
         self._recompute_fit()

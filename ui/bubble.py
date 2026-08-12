@@ -313,7 +313,7 @@ class ChatBubble(QWidget):
         return tokens
 
     def _layout(self, text: str, max_w: int):
-        """计算富文本分行（emoji 1.5x 尺寸，按词换行）"""
+        """计算富文本分行（emoji 1.5x 尺寸，按词换行，中文按字符换行）"""
         base = self._font
         emo_font = self._emoji_font(1.5)
         base_m = QFontMetrics(base)
@@ -329,13 +329,31 @@ class ChatBubble(QWidget):
             if not is_emoji:
                 words = tok.split(" ")
                 for wi, word in enumerate(words):
-                    w_w = m.horizontalAdvance(word)
-                    if cur_w > 0 and cur_w + w_w > max_w:
-                        lines.append((cur, cur_w, cur_h))
-                        cur, cur_w, cur_h = [], 0, 0
-                    cur.append({"text": word, "font": font, "w": w_w, "h": m.height()})
-                    cur_w += w_w
-                    cur_h = max(cur_h, m.height())
+                    # 中文无空格，单字可能仍超宽，按字符进一步拆分
+                    chars = list(word)
+                    buf = ""
+                    for ch in chars:
+                        test_w = m.horizontalAdvance(buf + ch)
+                        if buf and test_w > max_w:
+                            # 当前行已满，换行
+                            if cur_w > 0:
+                                lines.append((cur, cur_w, cur_h))
+                                cur, cur_w, cur_h = [], 0, 0
+                            w_w = m.horizontalAdvance(buf)
+                            cur.append({"text": buf, "font": font, "w": w_w, "h": m.height()})
+                            cur_w += w_w
+                            cur_h = max(cur_h, m.height())
+                            buf = ch
+                        else:
+                            buf += ch
+                    if buf:
+                        w_w = m.horizontalAdvance(buf)
+                        if cur_w > 0 and cur_w + w_w > max_w:
+                            lines.append((cur, cur_w, cur_h))
+                            cur, cur_w, cur_h = [], 0, 0
+                        cur.append({"text": buf, "font": font, "w": w_w, "h": m.height()})
+                        cur_w += w_w
+                        cur_h = max(cur_h, m.height())
                     if wi < len(words) - 1:
                         sp_w = m.horizontalAdvance(" ")
                         cur.append({"text": " ", "font": font, "w": sp_w, "h": m.height()})

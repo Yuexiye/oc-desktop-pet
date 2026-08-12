@@ -12,6 +12,8 @@ self._set_anim_seq / self._mark_user_interaction 等，均由 PetWindow 提供�
 import logging
 import threading
 
+import numpy as np
+
 from config import get_transition_style
 
 logger = logging.getLogger(__name__)
@@ -79,6 +81,87 @@ class ChatMixin:
     def _on_voice_status(self, msg: str):
         """语音输入状态 - 从后台线程，通过信号转主线程"""
         self.voice_status_signal.emit(msg)
+
+    def _toggle_voice_continuous(self):
+        """切换持续监听模式（无需按键，自动检测语音并识别）"""
+        self._mark_user_interaction()
+        if not self._voice_input:
+            self._show_bubble("语音输入不可用", emotion="neutral")
+            return
+
+        if not self._voice_continuous:
+            # 开启持续监听
+            if self._voice_input.start():
+                self._voice_continuous = True
+                self._voice_continuous_buffer = []
+                self._voice_continuous_silence = 0
+                self._voice_continuous_started = False
+                self._voice_continuous_action.setChecked(True)
+                self._voice_continuous_action.setText("🎤 监听中")
+                self._show_bubble("👂 持续监听已开启", emotion="happy")
+            else:
+                self._show_bubble("录音启动失败", emotion="neutral")
+        else:
+            # 关闭持续监听
+            self._voice_continuous = False
+            self._voice_continuous_buffer = []
+            self._voice_continuous_silence = 0
+            self._voice_continuous_started = False
+            self._voice_input.cancel()
+            self._voice_continuous_action.setChecked(False)
+            self._voice_continuous_action.setText("🎤 持续监听")
+            self._show_bubble("持续监听已关闭", emotion="neutral")
+
+    def _on_voice_vad(self, chunk: np.ndarray, rms: float):
+        """VAD 回调（音频线程调用）：检测语音活动，自动切分语音段。
+
+        设计：
+        - rms > 0.02 视为有人说话，累积音频
+        - rms <= 0.02 视为静音，计数静音帧
+        - 静音超过 40 帧（约 1.3s）视为语音段结束，自动识别发送
+        - 语音段太短（< 0.5s）则丢弃
+        """
+        if not self._voice_continuous:
+            return
+
+        THRESHOLD = 0.02
+        SILENCE_FRAMES_LIMIT = 40  # 约 1.3s（512 帧/帧）
+
+        if rms > THRESHOLD:
+            # 有人说话：累积音频，重置静音计数
+            self._voice_continuous_buffer.append(chunk.copy())
+            self._voice_continuous_silence = 0
+            if not self._voice_continuous_started:
+                self._voice_continuous_started = True
+        else:
+            if self._voice_continuous_started:
+                # 静音中，但之前有语音
+                self._voice_continuous_silence += 1
+                if self._voice_continuous_silence >= SILENCE_FRAMES_LIMIT:
+                    # 静音超时 → 语音段结束
+                    audio = np.concatenate(self._voice_continuous_buffer, axis=0).flatten()
+                    self._voice_continuous_buffer = []
+                    self._voice_continuous_silence = 0
+                    self._voice_continuous_started = False
+
+                    # 太短丢弃
+                    if len(audio) < int(self._voice_input.SAMPLE_RATE * 0.5):
+                        return
+
+                    # 后台线程 ASR 识别并发送
+                    vi = self._voice_input
+                    engine = self._engine
+
+                    def _do_continuous_asr(audio_data=audio, vi_ref=vi, eng=engine):
+                        text = vi_ref.transcribe_audio(audio_data)
+                        if text and eng:
+                            eng.send(text, character=self._current_char)
+                            logger.info("Continuous voice sent: %s", text[:30])
+                    t = threading.Thread(target=_do_continuous_asr, daemon=True)
+                    t.start()
+            else:
+                # 静音且无语音段：清空 buffer 防累积
+                self._voice_continuous_buffer = []
 
     def _do_voice_status(self, msg: str):
         """在主线程处理语音状态"""

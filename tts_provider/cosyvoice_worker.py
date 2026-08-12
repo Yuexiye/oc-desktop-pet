@@ -81,6 +81,11 @@ def _load() -> dict:
         for d in (src, matcha):
             if d not in sys.path:
                 sys.path.insert(0, d)
+        # torchaudio.load 依赖 torchcodec（本环境 DLL 失败），用 soundfile 替代
+        if COSYVOICE_DIR not in sys.path:
+            sys.path.insert(0, COSYVOICE_DIR)
+        import patch_torchaudio
+        patch_torchaudio.apply()
 
         model_path = os.path.join(COSYVOICE_DIR, "models", MODEL_NAME)
         if not os.path.isdir(model_path):

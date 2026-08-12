@@ -330,9 +330,15 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         asr_provider = self._create_asr_provider()
         self._voice_input = None
         self._voice_recording = False
+        self._voice_continuous = False          # 持续监听模式
+        self._voice_continuous_buffer = []      # 持续监听下的语音段缓存
+        self._voice_continuous_silence = 0      # 连续静音帧计数
+        self._voice_continuous_started = False  # 是否已检测到语音开始
         if _voice_available:
             self._voice_input = VoiceInput(asr_provider=asr_provider)
             self._voice_input._on_status = self._on_voice_status
+            # 持续监听：VAD 回调（每帧音频数据到达时触发）
+            self._voice_input.set_vad_callback(self._on_voice_vad)
             # 仅当 ASR 使用本地 Whisper 时才预加载本地模型；
             # 远程(mimo/api)走 API，不需要本地大模型，避免无意义地加载
             # torch/whisper 及下游依赖（funasr/wetext 等），造成启动卡顿与运行时下载
@@ -1050,6 +1056,9 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         # 基础操作
         self._menu.addAction("💬 对话", self._toggle_input)
         self._voice_action = self._menu.addAction("🎤 说话", self._toggle_voice)
+        self._voice_continuous_action = self._menu.addAction("🎤 持续监听", self._toggle_voice_continuous)
+        self._voice_continuous_action.setCheckable(True)
+        self._voice_continuous_action.setChecked(False)
         self._menu.addAction("🍙 喂一口", self._quick_feed)
 
         # 行为模式子菜单
