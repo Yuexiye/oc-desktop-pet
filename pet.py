@@ -601,8 +601,9 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         # 默认 458x520（角色正方形画布按高度缩放后渲染宽 = 高×0.882）
         self._base_w = int(self.config.get("window", {}).get("width", 458))
         self._base_h = int(self.config.get("window", {}).get("height", 520))
-        self._base_w = max(120, self._base_w)
-        self._base_h = max(160, self._base_h)
+        # 不设下限：用户配置完全生效（小尺寸也允许，如 93x138 ≈ 物理 116x173）
+        self._base_w = max(40, self._base_w)
+        self._base_h = max(40, self._base_h)
         self.setFixedSize(self._base_w, self._base_h)
 
         win_cfg = self._init_position or self.config.get("window", {})

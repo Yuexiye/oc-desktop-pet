@@ -54,8 +54,8 @@ def test_recompute_fit_fills_height(renderer):
     # 制造 canvas 像素 1200x1200，窗口 300x520
     renderer._model.GetCanvasSizePixel.return_value = (1200.0, 1200.0)
     Live2DRenderer._recompute_fit(renderer)
-    # fit = (520/1200) * 1.5 * 1.0 = 0.65（1.5 放大角色到特写，背景裁出画面）
-    expected = (520 / 1200) * 1.5 * 1.0
+    # fit = (520/1200) * 2.8 * 1.0 = 0.65（1.5 放大角色到特写，背景裁出画面）
+    expected = (520 / 1200) * 2.8 * 1.0
     args = renderer._model.SetScale.call_args[0]
     assert args[0] == expected, f"期望 {expected:.4f}, 实际 {args[0]:.4f}"
 
@@ -65,7 +65,7 @@ def test_recompute_fit_respects_fit_scale(renderer):
     from avatar.live2d_renderer import Live2DRenderer
     renderer._fit_scale = 0.9
     Live2DRenderer._recompute_fit(renderer)
-    expected = (520 / 1200) * 1.5 * 0.9
+    expected = (520 / 1200) * 2.8 * 0.9
     args = renderer._model.SetScale.call_args[0]
     assert args[0] == pytest.approx(expected, rel=1e-6)
 
