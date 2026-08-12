@@ -274,10 +274,76 @@ class Live2DRenderer(AvatarRenderer):
                 "Live2DRenderer: 模型加载成功 (expressions=%d, motion_groups=%s)",
                 len(self._expression_names), list(self._motion_groups.keys()),
             )
+            # 模型就绪后延迟测量角色 bbox，请求窗口自动贴合模型大小
+            # （等 draw 首帧跑完，HitDrawable 才有有效状态）
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(300, self._fit_window_to_model)
         except Exception as e:
             logger.error("Live2DRenderer: 模型加载失败（角色区域将透明）: %s", e)
             self._ready = False
             self._model = None
+
+    def _fit_window_to_model(self) -> None:
+        """测量角色本体 bbox，请求窗口 resize 到模型大小（去掉多余透明边距）。
+
+        HitDrawable 在 draw 后才有有效状态；用 2px 步长扫描窗口坐标，
+        找非透明像素的最小外接矩形。窗口尺寸 = bbox + 1px 安全边距。
+        """
+        if not self._model or not self._ready:
+            return
+        try:
+            mm = getattr(self._model, "_model", None) or self._model
+            if not hasattr(mm, "HitDrawable"):
+                return
+            gl_w = int(getattr(self, "_gl_w", 0) or self._renderer_w() or 0)
+            gl_h = int(getattr(self, "_gl_h", 0) or self._renderer_h() or 0)
+            if gl_w <= 0 or gl_h <= 0:
+                return
+            self._model.Update()
+            self._model.Draw()
+            STEP = 2
+            min_x, min_y, max_x, max_y = gl_w, gl_h, -1, -1
+            for x in range(0, gl_w + 1, STEP):
+                for y in range(0, gl_h + 1, STEP):
+                    try:
+                        if mm.HitDrawable(float(x), float(y)):
+                            if x < min_x: min_x = x
+                            if x > max_x: max_x = x
+                            if y < min_y: min_y = y
+                            if y > max_y: max_y = y
+                    except Exception:
+                        pass
+            if max_x < 0:
+                logger.info("Live2DRenderer: 未命中角色像素，跳过窗口贴合")
+                return
+            bw = max_x - min_x + 1
+            bh = max_y - min_y + 1
+            target_w = max(40, bw + 1)
+            target_h = max(40, bh + 1)
+            logger.info(
+                "Live2DRenderer: 角色 bbox=%dx%d (偏移 %d,%d)，窗口贴合到 %dx%d",
+                bw, bh, min_x, min_y, target_w, target_h,
+            )
+            parent = getattr(self, "_parent", None)
+            fit_win = getattr(parent, "fit_window_to_model", None)
+            if callable(fit_win):
+                fit_win(target_w, target_h)
+        except Exception as e:
+            logger.warning("Live2DRenderer: 窗口贴合失败: %s", e)
+
+    def _renderer_w(self):
+        try:
+            cl = getattr(self, "char_label", None)
+            return cl.width() if cl is not None else 0
+        except Exception:
+            return 0
+
+    def _renderer_h(self):
+        try:
+            cl = getattr(self, "char_label", None)
+            return cl.height() if cl is not None else 0
+        except Exception:
+            return 0
 
     def on_resize(self, w: int, h: int) -> None:
         self._gl_w = w

@@ -789,6 +789,32 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self._action_linker.trigger_action(basedir, action_id)
         self._show_bubble(f"{action_id}!", emotion="happy")
 
+    def fit_window_to_model(self, w: int, h: int):
+        """窗口贴合到模型实际大小（Live2D 渲染器测量后回调）。
+
+        更新基准尺寸并 setFixedSize，同时让渲染器按新尺寸重算 fit。
+        保留用户缩放（_pet_scale）语义：贴合后仍可滚轮缩放。
+        """
+        try:
+            self._base_w = max(40, int(w))
+            self._base_h = max(40, int(h))
+            base_w = self._base_w
+            base_h = self._base_h
+            w_final = max(base_w, int(base_w * self._pet_scale))
+            h_final = max(base_h, int(base_h * self._pet_scale))
+            self.setFixedSize(w_final, h_final)
+            if hasattr(self._renderer, "set_scale"):
+                self._renderer.set_scale(self._pet_scale)
+            if hasattr(self._renderer, "recalc_geometry"):
+                self._renderer.recalc_geometry(w_final, h_final)
+            logger.info("PetWindow: 窗口贴合模型 %dx%d (缩放 %.2f → %dx%d)",
+                        self._base_w, self._base_h, self._pet_scale, w_final, h_final)
+            QTimer.singleShot(50, self._store_label_pos)
+            QTimer.singleShot(50, self._reposition_status_label)
+            QTimer.singleShot(50, self._reposition_bubble)
+        except Exception as e:
+            logger.warning("PetWindow: 窗口贴合失败: %s", e)
+
     def _recalc_geometry(self):
         """缩放后重算窗口和角色图片尺寸(不改变窗口位置)"""
         # 基准尺寸来自 _setup_window 读的 config.window（默认 458x520）。
