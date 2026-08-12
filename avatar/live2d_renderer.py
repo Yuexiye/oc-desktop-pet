@@ -234,6 +234,8 @@ class Live2DRenderer(AvatarRenderer):
             # 收集可用表情/动作组，用于情绪映射
             self._expression_names = []
             self._motion_groups = {}
+            self._motion_files: list[str] = []      # 空组下的 motion 文件名列表
+            self._motion_group_name: str = ""       # 实际使用的 motion 组名
             if not self._debug_minimal:
                 try:
                     self._expression_names = list(model.GetExpressions() or [])
@@ -251,6 +253,18 @@ class Live2DRenderer(AvatarRenderer):
                         self._motion_groups = dict(model.GetMotions() or {})
                 except Exception:
                     self._motion_groups = {}
+
+                # 建 motion 文件索引（按文件名关键词匹配播放，因为组名是空串匹配不上）
+                try:
+                    motions = model.GetMotions()
+                    self._motion_group_name = next(
+                        (g for g in motions if g), next(iter(motions), ""))
+                    self._motion_files = [
+                        (m.get("File", "") if isinstance(m, dict) else "")
+                        for m in motions.get(self._motion_group_name, [])
+                    ]
+                except Exception:
+                    self._motion_files = []
 
                 # 起始待机动作
                 self._start_idle()
@@ -480,8 +494,6 @@ class Live2DRenderer(AvatarRenderer):
                 # 优先取空串组（此模型所有动作都在 "" 组），否则取第一个非空组
                 group = next((g for g in motions if g), next(iter(motions), ""))
                 motion_list = motions.get(group, [])
-                logger.info("Live2DRenderer: _start_idle motions=%s group=%r count=%d",
-                            list(motions.keys()), group, len(motion_list))
                 if motion_list:
                     # 选包含 "idle" 的 motion（优先），否则播第 0 个
                     idx = 0
@@ -500,6 +512,41 @@ class Live2DRenderer(AvatarRenderer):
                                               self._live2d.MotionPriority.IDLE)
         except Exception as e:
             logger.warning("Live2DRenderer: 起始待机动作失败: %s", e)
+
+    def _play_motion_kw(self, *keywords, priority=None) -> bool:
+        """按文件名关键词从 motion 列表找第一个匹配并播放。
+
+        模型所有动作都在一个组（如空串 ""），组名匹配不上任何关键词，
+        所以按 GetMotions() 的 File 文件名匹配（如 touch_head → "touch"+"head"）。
+
+        Returns:
+            True 表示找到了并播放；False 表示无匹配（调用方可回退）。
+        """
+        if not self._model or not self._motion_files:
+            return False
+        try:
+            idx = None
+            kws = [k.lower() for k in keywords if k]
+            for i, f in enumerate(self._motion_files):
+                low = f.lower()
+                if all(k in low for k in kws):
+                    idx = i
+                    break
+            if idx is None:
+                # 宽松：任一关键词命中即可
+                for i, f in enumerate(self._motion_files):
+                    low = f.lower()
+                    if any(k in low for k in kws):
+                        idx = i
+                        break
+            if idx is None:
+                return False
+            prio = priority if priority is not None else self._live2d.MotionPriority.NORMAL
+            self._model.StartMotion(self._motion_group_name, idx, prio)
+            return True
+        except Exception as e:
+            logger.warning("Live2DRenderer._play_motion_kw 异常: %s", e)
+            return False
 
     def _match_expression(self, emotion: str):
         """返回情绪对应的 Live2D 表情名（无匹配返回 None）。"""
@@ -524,11 +571,40 @@ class Live2DRenderer(AvatarRenderer):
 
     # ── 动画控制 ──
 
+    # 精灵动画名/情绪 → Live2D motion 文件名关键词（模型动作全在空组，按文件名匹配）
+    _ANIM_TO_MOTION_KW = {
+        "idle": ("idle",),
+        "waving": ("main", "1"),
+        "happy": ("main", "1"),
+        "walk": ("main", "2"),
+        "sleep": ("home",),
+        "working": ("main", "3"),
+        "thinking": ("main", "3"),
+        "failed": ("mission",),
+        "sad": ("mission",),
+        "surprised": ("login",),
+        "angry": ("mission_complete",),
+        "touch": ("touch_head",),
+        "pat": ("touch_head",),
+        "stroke": ("touch_body",),
+        "pet": ("touch_body",),
+        "special": ("touch_special",),
+        "wedding": ("wedding",),
+        "login": ("login",),
+        "mail": ("mail",),
+        "complete": ("complete",),
+    }
+
     def play_anim(self, anim: str, emotion: str = "", frame_range=None) -> None:
         self._current_anim = anim
         if emotion:
             self.set_emotion(emotion)
-        # 尝试用动作名播放 Live2D motion 组
+        # Live2D：按精灵动画名映射到 motion 文件名播放（组名是空串匹配不上）
+        kws = self._ANIM_TO_MOTION_KW.get(anim) or self._ANIM_TO_MOTION_KW.get(emotion)
+        if kws:
+            if self._play_motion_kw(*kws):
+                return
+        # fallback：老逻辑（组名匹配）
         if self._model and anim in self._motion_groups:
             try:
                 self._model.StartRandomMotion(anim, self._live2d.MotionPriority.NORMAL)
@@ -540,14 +616,27 @@ class Live2DRenderer(AvatarRenderer):
         self._emotion_target = emotion
         if not self._model:
             return
-        # 优先：情绪对应的 motion 组
-        motion = self._match_motion(emotion)
-        if motion:
-            try:
-                self._model.StartRandomMotion(motion, self._live2d.MotionPriority.FORCE)
-            except Exception:
-                pass
-        # 其次：表情
+        # 优先：情绪 → motion 文件关键词（NORMAL 优先级，不打断主要动作）
+        kws = self._ANIM_TO_MOTION_KW.get(emotion)
+        if kws:
+            played = self._play_motion_kw(*kws)
+            if not played:
+                # 回退：情绪 → motion 组
+                motion = self._match_motion(emotion)
+                if motion:
+                    try:
+                        self._model.StartRandomMotion(motion, self._live2d.MotionPriority.FORCE)
+                    except Exception:
+                        pass
+        else:
+            # 无映射：情绪 → motion 组
+            motion = self._match_motion(emotion)
+            if motion:
+                try:
+                    self._model.StartRandomMotion(motion, self._live2d.MotionPriority.FORCE)
+                except Exception:
+                    pass
+        # 表情
         expr = self._match_expression(emotion)
         try:
             if expr is None:

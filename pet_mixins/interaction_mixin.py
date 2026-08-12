@@ -356,6 +356,12 @@ class InteractionMixin:
                 self._state_mgr.apply_item_effect({"mood": 6, "likability": 3})
             else:
                 self._state_mgr.apply_item_effect({"mood": 2, "likability": 1})
+        # 摸头反馈：先触发 Live2D touch_head 动画（若有），再放开心反应
+        try:
+            if hasattr(self._renderer, "play_anim"):
+                self._renderer.play_anim("touch")
+        except Exception:
+            pass
         self._pet_play_happy(big=big)
         head = self._head_local_point()
         self._heart_overlay.burst(count=6 if big else 2, x=head.x(), y=head.y())
