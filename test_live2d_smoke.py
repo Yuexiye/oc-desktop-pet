@@ -49,29 +49,29 @@ def renderer():
 # ── T3: 缩放公式 ──
 
 def test_recompute_fit_fills_height(renderer):
-    """角色按窗口高度缩放，占满约 92% 高度（T3 根因）"""
+    """SetScale 语义：1.0 = 画布适配窗口，本体填满（实测 scale=1.0 占满 100%×95%）"""
     from avatar.live2d_renderer import Live2DRenderer
     # 制造 canvas 像素 1200x1200，窗口 300x520
     renderer._model.GetCanvasSizePixel.return_value = (1200.0, 1200.0)
     Live2DRenderer._recompute_fit(renderer)
-    # fit = (520/1200) * 2.8 * 1.0 = 0.65（1.5 放大角色到特写，背景裁出画面）
-    expected = (520 / 1200) * 2.8 * 1.0
+    # fit = _fit_scale = 1.0（默认），本体填满窗口
+    expected = 1.0
     args = renderer._model.SetScale.call_args[0]
     assert args[0] == expected, f"期望 {expected:.4f}, 实际 {args[0]:.4f}"
 
 
 def test_recompute_fit_respects_fit_scale(renderer):
-    """pet.json live2d.scale (fit_scale) 参与缩放"""
+    """pet.json live2d.scale (fit_scale) 直接作为 fit（1.0 填满，<1 缩小，>1 特写）"""
     from avatar.live2d_renderer import Live2DRenderer
     renderer._fit_scale = 0.9
     Live2DRenderer._recompute_fit(renderer)
-    expected = (520 / 1200) * 2.8 * 0.9
+    expected = 0.9
     args = renderer._model.SetScale.call_args[0]
     assert args[0] == pytest.approx(expected, rel=1e-6)
 
 
 def test_recompute_fit_larger_window_larger_scale(renderer):
-    """窗口放大 → 角色缩放系数更大（T3 期望行为）"""
+    """新语义：fit 与窗口无关（SetScale 1.0 已适配窗口），窗口变化不影响 fit"""
     from avatar.live2d_renderer import Live2DRenderer
     renderer._gl_h = 520
     Live2DRenderer._recompute_fit(renderer)
@@ -80,7 +80,7 @@ def test_recompute_fit_larger_window_larger_scale(renderer):
     renderer._gl_h = 700  # 更大窗口
     Live2DRenderer._recompute_fit(renderer)
     s2 = renderer._model.SetScale.call_args[0][0]
-    assert s2 > s1, "窗口放大后角色应更大"
+    assert s1 == s2, "fit 只取决于 live2d.scale 配置，与窗口大小无关"
 
 
 # ── T4: 动效开关 ──

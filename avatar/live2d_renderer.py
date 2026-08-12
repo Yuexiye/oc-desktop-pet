@@ -224,8 +224,8 @@ class Live2DRenderer(AvatarRenderer):
                         if cl is not None:
                             gl_w = cl.width() or 220
                             gl_h = cl.height() or 260
-                    # T3: 统一为按高度缩放（与 _recompute_fit 一致，避免初始/后续跳变）
-                    scale = (gl_h / ch_px) * 2.8 * self._fit_scale
+                    # SetScale 语义：1.0=画布适配窗口。fit 直接取用户缩放系数。
+                    scale = self._fit_scale
                     model.SetScale(scale)
                     logger.info("Live2DRenderer: 初始缩放 scale=%.3f", scale)
             except Exception as e:
@@ -300,13 +300,12 @@ class Live2DRenderer(AvatarRenderer):
                 cw_px, ch_px = cw_log * ppu, ch_log * ppu
             if not cw_px or not ch_px:
                 return
-            # 让角色尽量大：按窗口高度缩放（模型正方形，窗口竖长）。
-            # fit_scale 来自 pet.json live2d.scale（用户可微调）。
-            # 系数 2.8：Live2D 画布（1200x1200）含约 25% 背景留白（建筑/招牌），
-            # 按画布缩放会把背景场景也显示出来。2.8 让角色本体放大到半身特写，
-            # 背景裁出画面，窗口只显示角色上半身（fit≈0.3 时 900px 本体→270px）。
-            fill = getattr(self, "_fit_fill", 2.8)
-            fit = (self._gl_h / ch_px) * fill * self._fit_scale
+            # SetScale 语义：1.0 = 角色画布适配窗口（实测 scale=1.0 时角色占满窗口 100%×95%）。
+            # 所以 fit 直接取用户配置的缩放系数（pet.json live2d.scale）：
+            #   1.0 = 本体填满窗口（无背景）
+            #   <1  = 缩小留白
+            #   >1  = 放大裁剪（特写）
+            fit = self._fit_scale
             self._model.SetScale(fit)
             logger.info("Live2DRenderer: 缩放 fit=%.3f (gl=%sx%s, canvas_px=%sx%s)",
                         fit, self._gl_w, self._gl_h, cw_px, ch_px)
@@ -731,7 +730,7 @@ class Live2DRenderer(AvatarRenderer):
                     ppu = self._model.GetPixelsPerUnit() or 1.0
                     cw_log, ch_log = self._model.GetCanvasSize()
                     cw_px, ch_px = cw_log * ppu, ch_log * ppu
-                fit = (self._gl_h / ch_px) * 2.8 * abs(self._fit_scale)
+                fit = abs(self._fit_scale)
                 self._model.SetScaleX(fit * (1 if right else -1))
                 self._model.SetScaleY(fit)
             except Exception:
