@@ -2,6 +2,14 @@
 
 ![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)
 
+## ⚠️ Live2D Model Copyright Notice
+
+This project does **not** distribute any Live2D model files (`characters/*/live2d/` is excluded via `.gitignore`).
+
+- The built-in character 「月薪喵」 uses **sprite frames** (`frames/`), which can be distributed with the project.
+- The Live2D renderer code is fully included, but **you must provide your own model** — use a model with a redistribution license (e.g. [Live2D official samples](https://www.live2d.com/en/learn/sample/)), or run `python tools/fetch_free_live2d_sample.py` to download the official Haru sample.
+- Do NOT put models without redistribution rights (e.g. game-ripped models) into the repository.
+
 An AI desktop companion built on PySide6, deeply integrated with the Hanako ecosystem. Supports running multiple desktop pets in parallel, where each Hanako agent can independently own its own pet window.
 
 <details>
