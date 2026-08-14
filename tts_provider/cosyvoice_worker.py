@@ -76,8 +76,8 @@ def _load() -> dict:
     """加载模型，返回 speakers / sample_rate。已加载则直接返回。"""
     global _model
     if _model is None:
-        src = os.path.join(COSYVOICE_DIR, "src")
-        matcha = os.path.join(COSYVOICE_DIR, "src", "third_party", "Matcha-TTS")
+        src = COSYVOICE_DIR
+        matcha = os.path.join(COSYVOICE_DIR, "third_party", "Matcha-TTS")
         for d in (src, matcha):
             if d not in sys.path:
                 sys.path.insert(0, d)
@@ -145,7 +145,18 @@ def _synth(req: dict) -> dict:
     instruct = req.get("instruct") or ""
     spk = req.get("spk") or ""
 
-    # ① 零样本克隆（有参考音频时优先）
+    # ① 指令+零样本（有 instruct + 参考音频）：v2 的 inference_instruct2 是唯一
+    #    支持指令的 v2 路径（v1 的 inference_instruct 有 assert，CosyVoice2 会崩）。
+    if instruct and ref_audio and os.path.exists(ref_audio):
+        try:
+            result = _model.inference_instruct2(text, instruct, ref_audio, stream=False)
+            if _emit(result, out_path):
+                return {"ok": True, "path": out_path, "mode": "instruct_zs"}
+            _log("instruct2 produced no audio, falling back to zero_shot")
+        except Exception as e:
+            _log(f"instruct2 failed ({e}), falling back to zero_shot")
+
+    # ② 零样本克隆（有参考音频）
     if ref_audio and ref_text and os.path.exists(ref_audio):
         try:
             result = _model.inference_zero_shot(text, ref_text, ref_audio, stream=False)
@@ -155,19 +166,17 @@ def _synth(req: dict) -> dict:
         except Exception as e:
             _log(f"zero-shot failed ({e}), falling back to SFT")
 
-    # ② SFT / Instruct
+    # ③ SFT 兑底（仅模型原生说话人；zero-shot 注册的音色在这里会 KeyError，
+    #    因为 spk2info 存的是 llm_embedding/flow_embedding 而非 embedding）
+    #    所以统一走 ①②，只有完全没有参考音频的调用才会落到这里。
     spk_list = list(_model.frontend.spk2info.keys())
     if not spk_list:
         return {"ok": False, "error": "no SFT speakers available"}
     if spk not in spk_list:
         spk = spk_list[0]
 
-    if instruct:
-        result = _model.inference_instruct(text, spk, instruct, stream=False)
-        mode = "instruct"
-    else:
-        result = _model.inference_sft(text, spk, stream=False)
-        mode = "sft"
+    result = _model.inference_sft(text, spk, stream=False)
+    mode = "sft"
 
     if _emit(result, out_path):
         return {"ok": True, "path": out_path, "mode": mode, "spk": spk}
@@ -193,6 +202,14 @@ def main() -> None:
         if cmd == "quit":
             _send({"id": rid, "ok": True})
             break
+        
+        if cmd == "save_spkinfo":
+            try:
+                _model.save_spkinfo()
+                _send({"id": rid, "ok": True})
+            except Exception as e:
+                _send({"id": rid, "ok": False, "error": str(e)})
+            break
 
         try:
             if cmd == "ping":
@@ -201,6 +218,12 @@ def main() -> None:
                 resp = {"ok": True, **_load()}
             elif cmd == "synth":
                 resp = _synth(req)
+            elif cmd == "add_spk":
+                try:
+                    _model.add_zero_shot_spk(req.get("text", ""), req.get("ref_audio", ""), req.get("spk_id", ""))
+                    _send({"id": rid, "ok": True})
+                except Exception as e:
+                    _send({"id": rid, "ok": False, "error": str(e)})
             else:
                 resp = {"ok": False, "error": f"unknown cmd: {cmd}"}
         except Exception as e:

@@ -30,6 +30,17 @@ class WhisperLocalProvider(ASRProvider):
     _model = None
     _loading = False
     _loaded = False
+    _MODEL_SIZE = "small"  # whisper 模型尺寸：base≈中文差, small≈可用, medium≈好（更重）
+
+    @classmethod
+    def _resolve_model_size(cls) -> str:
+        """从配置读取模型尺寸（asr.model），默认 small。"""
+        try:
+            from config import load_config
+            cfg = load_config()
+            return cfg.get("asr", {}).get("model", cls._MODEL_SIZE) or cls._MODEL_SIZE
+        except Exception:
+            return cls._MODEL_SIZE
 
     @property
     def name(self) -> str:
@@ -47,16 +58,26 @@ class WhisperLocalProvider(ASRProvider):
         WhisperLocalProvider._loading = True
         try:
             import whisper
-            logger.info("Whisper 模型加载中... (base)")
-            WhisperLocalProvider._model = whisper.load_model("base")
+            size = WhisperLocalProvider._resolve_model_size()
+            logger.info("Whisper 模型加载中... (%s)", size)
+            WhisperLocalProvider._model = whisper.load_model(size)
             WhisperLocalProvider._loaded = True
-            logger.info("Whisper 模型就绪")
+            logger.info("Whisper 模型就绪 (%s)", size)
         except Exception as e:
             logger.error("Whisper 加载失败: %s", e)
         finally:
             WhisperLocalProvider._loading = False
 
     def transcribe(self, audio_path: str, language: str = "zh") -> Optional[str]:
+        """识别音频文件
+
+        Args:
+            audio_path: WAV 文件路径
+            language: 语言代码（空=自动，传给 whisper 时 None 触发自动检测）
+        """
+        # 空/未传时支持自动语言检测（Whisper 可识别 90+ 语言，不限于中文）
+        if language == "auto":
+            language = None
         if not WhisperLocalProvider._model:
             # 尝试复用 voice_input 已加载的全局模型
             try:
@@ -79,7 +100,17 @@ class WhisperLocalProvider(ASRProvider):
             logger.warning("WhisperLocal: model still None after preload")
             return None
         try:
-            result = WhisperLocalProvider._model.transcribe(audio_path, language=language)
+            # initial_prompt：给模型一个中文语境提示，显著改善中文识别（
+            # 之前“那天到說我媽”这类错字就是 base 模型+无语境提示的通病）。
+            # 自动语言模式（language=None）下不注入，避免偏置。
+            _kw = {}
+            if language is not None:
+                _kw["initial_prompt"] = "以下是普通话的句子，请用简体中文转写。"
+            result = WhisperLocalProvider._model.transcribe(
+                audio_path,
+                language=language,
+                **_kw,
+            )
             text = result.get("text", "").strip()
             logger.info("ASR result: %s", text[:50])
             return text if text else None

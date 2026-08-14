@@ -81,6 +81,7 @@ COSYVOICE_DIR = _resolve_cosyvoice_dir()
 # 这里写死一个合理默认，config.tts.voices 仍可逐角色覆盖。
 _DEFAULT_VOICE_MAP = {
     "yuexinmiao": "luoqixi",
+    "miku": "ophelia",
 }
 SPEAKER_REFS = COSYVOICE_DIR / "speaker_refs.json"
 _WORKER = Path(__file__).with_name("cosyvoice_worker.py")
@@ -409,12 +410,16 @@ class CosyVoiceProvider(TTSProvider):
         """
         alias = (self._voice_map.get(character_id) or "").strip() or character_id
 
-        if alias in self._speakers:
-            return {"spk": alias}, alias
-
+        # 优先零样本克隆：只要角色有参考音频就用 ref（我们注册的 8 个音色全有参考音频，
+        # 且它们被 add_zero_shot_spk 写进 spk2info 后，键是 llm_embedding/flow_embedding，
+        # 不是 SFT 用的 embedding——当成 SFT 说话人会让 frontend_sft 抛 KeyError: 'embedding'。
         ref = self._speaker_refs.get(alias)
         if ref:
             return dict(ref), alias
+
+        # 只有模型原生 SFT 说话人才走 spk 分支（CosyVoice2 0.5B 通常为空）
+        if alias in self._speakers:
+            return {"spk": alias}, alias
 
         if alias != character_id:
             logger.warning(

@@ -38,6 +38,26 @@ _whisper_model = None
 _whisper_loading = False
 
 
+def _get_asr_model_name() -> str:
+    """读取配置中的 whisper 模型尺寸（默认 small，中文识别明显好于 base）。"""
+    try:
+        from config import load_config
+        cfg = load_config()
+        return cfg.get("asr", {}).get("model", "small") or "small"
+    except Exception:
+        return "small"
+
+
+def _asr_language() -> str:
+    """读取配置中的 ASR 语言（默认 zh；设 auto 则 Whisper 自动检测多语言）。"""
+    try:
+        from config import load_config
+        cfg = load_config()
+        return cfg.get("asr", {}).get("language", "zh") or "zh"
+    except Exception:
+        return "zh"
+
+
 def _get_whisper_model():
     """懒加载 Whisper 模型"""
     global _whisper_model, _whisper_loading
@@ -48,8 +68,9 @@ def _get_whisper_model():
     _whisper_loading = True
     try:
         import whisper
-        logger.info("Whisper 模型加载中... (base)")
-        _whisper_model = whisper.load_model("base")
+        size = _get_asr_model_name()
+        logger.info("Whisper 模型加载中... (%s)", size)
+        _whisper_model = whisper.load_model(size)
         logger.info("Whisper 模型就绪")
     except Exception as e:
             # Whisper 是可选依赖，缺失时静默降级
@@ -181,7 +202,7 @@ class VoiceInput:
 
         try:
             logger.info("Calling ASR transcribe: %s", tmp_path)
-            text = self._asr.transcribe(tmp_path, language="zh")
+            text = self._asr.transcribe(tmp_path, language=_asr_language())
             logger.info("ASR returned: '%s'", text[:50] if text else '(empty)')
             self._on_status("")
             self._cleanup(tmp_path)
@@ -213,7 +234,7 @@ class VoiceInput:
             self._cleanup(tmp_path)
             return ""
         try:
-            text = self._asr.transcribe(tmp_path, language="zh")
+            text = self._asr.transcribe(tmp_path, language=_asr_language())
             self._on_status("")
             self._cleanup(tmp_path)
             return text or ""
