@@ -376,13 +376,25 @@ class PetManager:
 
         # 获取 agent 配置
         agent_cfg = self._get_agent_cfg(agent_id)
+        # scale 优先级：顶层 config.scale（滚轮/设置面板写入的权威值）> agent 级 > 1.0
+        # （agents 列表里首次自动生成的 scale=1.0 是初始占位，滚轮缩放只写顶层；
+        #   若顶层缺失回退 agent 级，再回退 1.0）
+        _agent_scale = agent_cfg.get("scale")
+        _global_scale = None
+        try:
+            from config import load_config
+            _global_scale = load_config().get("scale")
+        except Exception:
+            _global_scale = None
+        _scale = _global_scale if _global_scale is not None else (_agent_scale if _agent_scale is not None else 1.0)
+        _scale = max(0.5, min(3.0, float(_scale)))
 
         try:
             window = PetWindow(
                 agent_id=agent_id,
                 sprite_dir=sprite_dir,
                 position=agent_cfg.get("position"),
-                scale=agent_cfg.get("scale", 1.0),
+                scale=_scale,
                 on_position_change=lambda x, y, aid=agent_id: self.update_agent_cfg(aid, position={"x": x, "y": y}),
                 pet_manager=self,
             )

@@ -88,6 +88,7 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
     voice_status_signal = Signal(str)  # voice input status
     screen_emotion_signal = Signal(str, float)  # emotion, intensity
     screen_proactive_signal = Signal(str)  # prompt
+    screen_update_signal = Signal(str)  # screen analysis update (description)
     hanako_state_signal = Signal(str, str, str, str, str)  # anim, msg, emotion, state, audio_path
     idle_chatter_signal = Signal(str, str)  # text, emotion
     # M4: 工具进度（Hanako WS 模式下从 SessionManager.on_tool 转发过来）
@@ -199,9 +200,16 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
 
         # ── Proactive 主动对话调度器(P1)──
         proactive_cfg = self.config.get("proactive", {})
+        # 活动感知（打字/划水/空闲）：零成本，给 Proactive 提供打扰成本维度
+        try:
+            from motion.activity_tracker import ActivityTracker
+            self._activity_tracker = ActivityTracker()
+        except Exception:
+            self._activity_tracker = None
         self._proactive = ProactiveScheduler(
             foreground_watcher=self._foreground_watcher,
             on_proactive=self._on_proactive_trigger,
+            activity_tracker=self._activity_tracker,
         )
         self._proactive.load_config(proactive_cfg)
         self._proactive_grace = time.time() + 120  # 启动后 2 分钟内不触发主动对话
@@ -211,6 +219,7 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         # 屏幕内容→情绪回调
         self._perception.screen.on_emotion = self._on_screen_emotion
         self._perception.screen.on_screen_proactive = self._on_screen_proactive
+        self._perception.screen.on_update = self._on_screen_update
         
         # ── 屏幕感知开关（从配置读取）──
         screen_cfg = self.config.get("screen", {})
@@ -224,6 +233,17 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
             self._perception.screen.set_blacklist(True)
         if not screen_cfg.get("compress", True):
             self._perception.screen.set_compress(False)
+        # 截屏间隔（随机范围优先，缺省 interval±30%）
+        try:
+            _iv = int(screen_cfg.get("interval", 120) or 120)
+            _lo = screen_cfg.get("interval_min")
+            _hi = screen_cfg.get("interval_max")
+            if _lo and _hi:
+                self._perception.screen.set_interval_range(int(_lo), int(_hi))
+            else:
+                self._perception.screen.set_interval(_iv)
+        except Exception:
+            self._perception.screen.set_interval(120)
 
         # ── 鼠标交互追踪器 ──
         self._mouse_tracker = MouseTracker(self._get_window_rect)
@@ -323,6 +343,7 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self.voice_status_signal.connect(self._do_voice_status)
         self.screen_emotion_signal.connect(self._do_screen_emotion)
         self.screen_proactive_signal.connect(self._do_screen_proactive)
+        self.screen_update_signal.connect(self._do_screen_update)
         self.hanako_state_signal.connect(self._do_hanako_state)
         self._engine.start()
 
@@ -803,8 +824,7 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
             w_final = max(base_w, int(base_w * self._pet_scale))
             h_final = max(base_h, int(base_h * self._pet_scale))
             self.setFixedSize(w_final, h_final)
-            if hasattr(self._renderer, "set_scale"):
-                self._renderer.set_scale(self._pet_scale)
+            # P0-2: 一次性调用 recalc_geometry，避免 set_scale 和 recalc_geometry 分别触发 _recompute_fit
             if hasattr(self._renderer, "recalc_geometry"):
                 self._renderer.recalc_geometry(w_final, h_final)
             logger.info("PetWindow: 窗口贴合模型 %dx%d (缩放 %.2f → %dx%d)",
@@ -857,7 +877,15 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
                     async_config_saver.schedule(self.config)
                 except Exception:
                     pass
-                self._show_bubble(f"🔍 {int(new_scale*100)}%", emotion="neutral")
+                # 缩放反馈：不占用对话气泡。
+                # 直接 set_text 会覆盖正在显示的对话回复（用户以为“没气泡”）。
+                # 窗口尺寸变化本身就是缩放反馈；若气泡正空闲才弹一次 🔍。
+                _now = time.time()
+                if (_now - getattr(self, "_last_zoom_bubble_ts", 0) > 1.2
+                        and not getattr(self, "_is_thinking", False)
+                        and not (hasattr(self, "bubble") and self.bubble.isVisible())):
+                    self._show_bubble(f"🔍 {int(new_scale*100)}%", emotion="neutral", priority=0)
+                    self._last_zoom_bubble_ts = _now
             event.accept()
         except Exception as e:
             logger.debug("wheelEvent 缩放异常: %s", e)
@@ -913,7 +941,7 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self.main_layout.setAlignment(Qt.AlignCenter)
 
         # 角色渲染器(帧精灵 / Live2D / 未来 VRM) — 按角色目录格式自动选择
-        self._renderer = create_renderer(self._current_char, self)
+        self._renderer = create_renderer(self._current_char, self, override_format=self.config.get("render_format"))
         # 兼容别名(供 pet.py 其他部分使用)
         self.char_label = self._renderer.label
         self.char_label.installEventFilter(self)
@@ -1141,6 +1169,16 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self._menu.addAction("🔌 插件", self._open_plugin_panel)
 
         self._menu.addSeparator()
+        
+        # FrameBaker 集成
+        try:
+            from ui.framebaker import get_framebaker_menu_items
+            for label, callback in get_framebaker_menu_items():
+                self._menu.addAction(label, callback)
+            self._menu.addSeparator()
+        except Exception as e:
+            logger.debug("FrameBaker 菜单加载失败: %s", e)
+        
         self._menu.addAction("❌ 退出", self.close)
 
     # ── 养成接入（set_nurturing 后才填充） ──
@@ -1305,6 +1343,17 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
             screen.set_blur(screen_cfg.get("blur", False))
             screen.set_blacklist(screen_cfg.get("blacklist", False))
             screen.set_compress(screen_cfg.get("compress", True))
+            # 截屏间隔（支持随机范围：interval_jitter_min/max，缺省用 interval±30%）
+            try:
+                iv = int(screen_cfg.get("interval", 120) or 120)
+                lo = screen_cfg.get("interval_min")
+                hi = screen_cfg.get("interval_max")
+                if lo and hi:
+                    screen.set_interval_range(int(lo), int(hi))
+                else:
+                    screen.set_interval(iv)
+            except Exception:
+                screen.set_interval(120)
 
     # ── 角色加载 ──
 

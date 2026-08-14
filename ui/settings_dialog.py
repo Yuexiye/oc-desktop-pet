@@ -65,58 +65,40 @@ class SettingsDialog(QDialog):
         page_hint.setStyleSheet("color: rgb(%s); font-size: 11px; margin-bottom: 2px;" % rgb(self._ui_theme, "text_muted"))
         basic_layout.addWidget(page_hint)
 
-        # Agent 管理
+        # 角色包选择（桌宠角色唯一入口；agents 增删/启停已并入角色包体系）
         if pet_manager:
-            agent_group = QGroupBox("桌宠管理")
-            agent_layout = QVBoxLayout(agent_group)
+            pkg_group = QGroupBox("桌宠角色")
+            pkg_layout_g = QVBoxLayout(pkg_group)
+            pkg_hint = QLabel("切换当前桌宠使用的角色包。改动保存后立即生效。")
+            pkg_hint.setWordWrap(True)
+            pkg_hint.setStyleSheet("color: rgb(%s); font-size: 11px;" % rgb(self._ui_theme, "text_muted"))
+            pkg_layout_g.addWidget(pkg_hint)
 
-            self._agent_list = QListWidget()
-            self._agent_list.setMinimumHeight(120)
-            # 列表在 showEvent 中异步刷新，避免构造时阻塞主线程
-            agent_layout.addWidget(self._agent_list)
-
-            agent_btns = QHBoxLayout()
-            self._add_agent_btn = QPushButton("+ 添加")
-            self._add_agent_btn.clicked.connect(self._add_agent)
-            agent_btns.addWidget(self._add_agent_btn)
-
-            self._remove_agent_btn = QPushButton("- 移除")
-            self._remove_agent_btn.setObjectName("danger")
-            self._remove_agent_btn.clicked.connect(self._remove_agent)
-            agent_btns.addWidget(self._remove_agent_btn)
-
-            self._toggle_agent_btn = QPushButton("启用/禁用")
-            self._toggle_agent_btn.clicked.connect(self._toggle_agent)
-            agent_btns.addWidget(self._toggle_agent_btn)
-
-            agent_layout.addLayout(agent_btns)
-            
-            # ── 角色包选择（自由搭配）──
             pkg_select_layout = QHBoxLayout()
             pkg_select_layout.addWidget(QLabel("角色包:"))
-            
+
             self._pkg_select = QComboBox()
             self._pkg_select.addItem("默认", "default")
             # 加载已安装的角色包
             try:
                 from core.character_package import CharacterPackageManager
                 pkg_mgr = CharacterPackageManager()
-                installed = pkg_mgr.list_installed()
+                installed = pkg_mgr.list_installed_packages()
                 for pkg in installed:
-                    self._pkg_select.addItem(pkg.get("name", "未知"), pkg.get("id", ""))
+                    self._pkg_select.addItem(pkg.name or "未知", pkg.agent_id)
             except Exception:
                 pass
-            
+
             # 设置当前选中
             current_pkg = self._config.get("character_package", "default")
             idx = self._pkg_select.findData(current_pkg)
             if idx >= 0:
                 self._pkg_select.setCurrentIndex(idx)
-            
-            pkg_select_layout.addWidget(self._pkg_select)
-            agent_layout.addLayout(pkg_select_layout)
-            
-            basic_layout.addWidget(agent_group)
+
+            pkg_select_layout.addWidget(self._pkg_select, 1)
+            pkg_layout_g.addLayout(pkg_select_layout)
+
+            basic_layout.addWidget(pkg_group)
 
         # 行为模式
         beh_group = QGroupBox("行为模式")
@@ -179,6 +161,31 @@ class SettingsDialog(QDialog):
         sfx_layout.addRow("音量", sfx_vol_row)
 
         basic_layout.addWidget(sfx_group)
+        
+        # ── 渲染格式切换（Live2D / 精灵图）──
+        render_group = QGroupBox("渲染格式")
+        render_layout = QFormLayout(render_group)
+        
+        self.render_format_select = QComboBox()
+        self.render_format_select.addItem("自动检测", "auto")
+        self.render_format_select.addItem("精灵图 (Sprite)", "sprite")
+        self.render_format_select.addItem("Live2D", "live2d")
+        # 读取当前角色格式
+        try:
+            from avatar.factory import detect_format
+            current_format = detect_format(self._config.get("agent_id", "yuexinmiao"))
+            fmt_map = {"sprite": 1, "live2d": 2, "auto": 0}
+            self.render_format_select.setCurrentIndex(fmt_map.get(current_format, 0))
+        except Exception:
+            pass
+        render_layout.addRow("格式", self.render_format_select)
+        
+        render_hint = QLabel("<i>切换后重启桌宠生效。精灵图适合静态角色，Live2D 支持更丰富的表情和动作。</i>")
+        render_hint.setWordWrap(True)
+        render_hint.setStyleSheet("color: rgb(%s); font-size: 10px;" % rgb(self._ui_theme, "text_muted"))
+        render_layout.addRow("", render_hint)
+        
+        basic_layout.addWidget(render_group)
 
         basic_layout.addStretch()
         self._main_tabs.addTab(basic_tab, "基础")
@@ -291,6 +298,39 @@ class SettingsDialog(QDialog):
         self.screen_interval.setSuffix(" 秒")
         self.screen_interval.setValue(self._config.get("screen", {}).get("interval", 120))
         screen_layout.addRow("截屏间隔", self.screen_interval)
+
+        # 随机间隔范围（可选）：勾选后每次截屏在下限~上限间随机，避免固定节奏
+        self.screen_rand = QCheckBox("随机截屏间隔（更自然）")
+        self.screen_rand.setChecked(bool(
+            self._config.get("screen", {}).get("interval_min")
+            and self._config.get("screen", {}).get("interval_max")
+        ))
+        screen_layout.addRow(self.screen_rand)
+        self.screen_interval_min = QSpinBox()
+        self.screen_interval_min.setRange(30, 600)
+        self.screen_interval_min.setSuffix(" 秒")
+        self.screen_interval_min.setValue(
+            self._config.get("screen", {}).get("interval_min")
+            or max(30, int(self._config.get("screen", {}).get("interval", 120) * 0.7))
+        )
+        self.screen_interval_max = QSpinBox()
+        self.screen_interval_max.setRange(30, 600)
+        self.screen_interval_max.setSuffix(" 秒")
+        self.screen_interval_max.setValue(
+            self._config.get("screen", {}).get("interval_max")
+            or max(31, int(self._config.get("screen", {}).get("interval", 120) * 1.3))
+        )
+        rand_row = QHBoxLayout()
+        rand_row.addWidget(QLabel("范围:"))
+        rand_row.addWidget(self.screen_interval_min)
+        rand_row.addWidget(QLabel(" 至 "))
+        rand_row.addWidget(self.screen_interval_max)
+        # 随机范围仅在勾选时启用
+        self.screen_interval_min.setEnabled(self.screen_rand.isChecked())
+        self.screen_interval_max.setEnabled(self.screen_rand.isChecked())
+        self.screen_rand.toggled.connect(self.screen_interval_min.setEnabled)
+        self.screen_rand.toggled.connect(self.screen_interval_max.setEnabled)
+        screen_layout.addRow("", rand_row)
 
         interact_layout.addWidget(screen_group)
 
@@ -600,91 +640,15 @@ class SettingsDialog(QDialog):
         QTimer.singleShot(0, self._load_deferred_data)
 
     def _load_deferred_data(self):
-        """延迟加载 agent/角色包/环境变量，失败也不阻塞 UI"""
+        """延迟加载 角色包/环境变量，失败也不阻塞 UI"""
         try:
             self._load_env_to_ui()
-        except Exception:
-            pass
-        try:
-            self._refresh_agent_list()
         except Exception:
             pass
         try:
             self._refresh_package_list()
         except Exception:
             pass
-
-    # ── Agent 管理 ──
-
-    def _refresh_agent_list(self):
-        """刷新 agent 列表"""
-        if not self._pet_manager:
-            return
-        try:
-            self._agent_list.clear()
-            discovered = self._pet_manager.discover_agents()
-            name_map = {d["id"]: d.get("name", d["id"]) for d in discovered}
-            for agent in self._pet_manager.agents:
-                agent_id = agent["id"]
-                enabled = agent.get("enabled", True)
-                status = "✅" if enabled else "❌"
-                has_sprites = self._pet_manager._has_sprites(agent_id)
-                sprite_tag = "🎨" if has_sprites else "⬜"
-                name = name_map.get(agent_id, agent_id)
-                self._agent_list.addItem(f"{status} {sprite_tag} {name} ({agent_id})")
-        except Exception as e:
-            logger = __import__('logging').getLogger(__name__)
-            logger.warning("刷新 agent 列表失败: %s", e)
-            self._agent_list.addItem(f"加载失败: {e}")
-
-    def _add_agent(self):
-        """新增 agent"""
-        if not self._pet_manager:
-            return
-        discovered = self._pet_manager.discover_agents()
-        existing_ids = {a["id"] for a in self._pet_manager.agents}
-        available = [d for d in discovered if d["id"] not in existing_ids]
-        if not available:
-            QMessageBox.information(self, "提示", "所有 agent 都已添加")
-            return
-
-        # 简单选择对话框
-        from PySide6.QtWidgets import QInputDialog
-        items = [f"{d['name']} ({d['id']})" for d in available]
-        item, ok = QInputDialog.getItem(self, "添加桌宠", "选择 Agent:", items, 0, False)
-        if ok and item:
-            idx = items.index(item)
-            agent_id = available[idx]["id"]
-            self._pet_manager.add_agent(agent_id)
-            self._refresh_agent_list()
-
-    def _remove_agent(self):
-        """移除选中的 agent"""
-        if not self._pet_manager:
-            return
-        row = self._agent_list.currentRow()
-        if row < 0:
-            return
-        agent = self._pet_manager.agents[row]
-        reply = QMessageBox.question(
-            self, "确认", f"移除 {agent['id']} 的桌宠？\n（不会删除 Hanako agent 本身）",
-            QMessageBox.Yes | QMessageBox.No
-        )
-        if reply == QMessageBox.Yes:
-            self._pet_manager.remove_agent(agent["id"])
-            self._refresh_agent_list()
-
-    def _toggle_agent(self):
-        """切换 agent 启用状态"""
-        if not self._pet_manager:
-            return
-        row = self._agent_list.currentRow()
-        if row < 0:
-            return
-        agent = self._pet_manager.agents[row]
-        new_state = not agent.get("enabled", True)
-        self._pet_manager.set_enabled(agent["id"], new_state)
-        self._refresh_agent_list()
 
     # ── M5: 角色包管理 ──
 
@@ -1172,6 +1136,14 @@ class SettingsDialog(QDialog):
         c["screen"]["blur"] = self.screen_blur.isChecked()
         c["screen"]["blacklist"] = self.screen_blacklist.isChecked()
         c["screen"]["compress"] = self.screen_compress.isChecked()
+        # 随机截屏间隔：勾选才写范围，不勾则清掉（回退到基准±30%）
+        if self.screen_rand.isChecked():
+            lo, hi = self.screen_interval_min.value(), self.screen_interval_max.value()
+            c["screen"]["interval_min"] = min(lo, hi)
+            c["screen"]["interval_max"] = max(lo, hi)
+        else:
+            c["screen"].pop("interval_min", None)
+            c["screen"].pop("interval_max", None)
 
         # 窗口互动
         c.setdefault("window_interaction", {})["enabled"] = self.wi_enabled.isChecked()
@@ -1197,6 +1169,14 @@ class SettingsDialog(QDialog):
             pkg_data = self._pkg_select.currentData()
             if pkg_data:
                 c["character_package"] = pkg_data
+        
+        # 渲染格式切换
+        if hasattr(self, 'render_format_select'):
+            fmt_data = self.render_format_select.currentData()
+            if fmt_data and fmt_data != "auto":
+                c["render_format"] = fmt_data
+            else:
+                c.pop("render_format", None)
 
         self.accept()
 
