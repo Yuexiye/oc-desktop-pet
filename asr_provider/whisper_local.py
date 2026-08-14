@@ -30,6 +30,7 @@ class WhisperLocalProvider(ASRProvider):
     _model = None
     _loading = False
     _loaded = False
+    _backend = "whisper"   # whisper | faster_whisper
     _MODEL_SIZE = "small"  # whisper 模型尺寸：base≈中文差, small≈可用, medium≈好（更重）
 
     @classmethod
@@ -57,16 +58,56 @@ class WhisperLocalProvider(ASRProvider):
             return
         WhisperLocalProvider._loading = True
         try:
-            import whisper
+            backend = WhisperLocalProvider._resolve_backend()
             size = WhisperLocalProvider._resolve_model_size()
-            logger.info("Whisper 模型加载中... (%s)", size)
-            WhisperLocalProvider._model = whisper.load_model(size)
+            logger.info("Whisper 模型加载中... (%s, backend=%s)", size, backend)
+            if backend == "faster_whisper":
+                # faster-whisper: CTranslate2 引擎，同精度快 4 倍、省一半内存，
+                # 中英混合识别更准；模型仍叫 small/medium/large-v3 等
+                try:
+                    from faster_whisper import WhisperModel
+                except ImportError:
+                    logger.warning(
+                        "faster-whisper 未安装，回退 openai-whisper。"
+                        "如想启用请手动安装: pip install faster-whisper"
+                    )
+                    backend = "whisper"
+                else:
+                    compute = "int8" if not WhisperLocalProvider._has_cuda() else "int8_float16"
+                    WhisperLocalProvider._model = WhisperModel(
+                        size, device="auto", compute_type=compute,
+                    )
+                    WhisperLocalProvider._backend = "faster_whisper"
+                    logger.info("faster-whisper 初始化完成 (compute=%s)", compute)
+            if WhisperLocalProvider._model is None:
+                import whisper
+                WhisperLocalProvider._model = whisper.load_model(size)
+                WhisperLocalProvider._backend = "whisper"
             WhisperLocalProvider._loaded = True
-            logger.info("Whisper 模型就绪 (%s)", size)
+            logger.info("Whisper 模型就绪 (%s, backend=%s)", size, backend)
         except Exception as e:
             logger.error("Whisper 加载失败: %s", e)
+            WhisperLocalProvider._model = None
         finally:
             WhisperLocalProvider._loading = False
+
+    @staticmethod
+    def _has_cuda() -> bool:
+        try:
+            import torch
+            return torch.cuda.is_available()
+        except Exception:
+            return False
+
+    @classmethod
+    def _resolve_backend(cls) -> str:
+        """读取配置中的本地 ASR 后端（whisper / faster_whisper），默认 whisper。"""
+        try:
+            from config import load_config
+            cfg = load_config()
+            return (cfg.get("asr", {}).get("backend") or "whisper").lower()
+        except Exception:
+            return "whisper"
 
     def transcribe(self, audio_path: str, language: str = "zh") -> Optional[str]:
         """识别音频文件
@@ -106,12 +147,32 @@ class WhisperLocalProvider(ASRProvider):
             _kw = {}
             if language is not None:
                 _kw["initial_prompt"] = "以下是普通话的句子，请用简体中文转写。"
-            result = WhisperLocalProvider._model.transcribe(
-                audio_path,
-                language=language,
-                **_kw,
-            )
-            text = result.get("text", "").strip()
+            backend = WhisperLocalProvider._backend
+            if backend == "faster_whisper":
+                # faster-whisper: transcribe 返回 (segments生成器, info)，需拼接
+                segments, info = WhisperLocalProvider._model.transcribe(
+                    audio_path,
+                    language=language,
+                    beam_size=5,
+                    vad_filter=False,
+                    **_kw,
+                )
+                parts = [s.text.strip() for s in segments]
+                text = "".join(parts).strip()
+                try:
+                    logger.info("ASR backend=faster_whisper lang=%s conf=%.2f",
+                                getattr(info, "language", "?"),
+                                getattr(info, "language_probability", 0.0) or 0.0)
+                except Exception:
+                    pass
+            else:
+                # openai-whisper: 直接返回 dict
+                result = WhisperLocalProvider._model.transcribe(
+                    audio_path,
+                    language=language,
+                    **_kw,
+                )
+                text = result.get("text", "").strip()
             logger.info("ASR result: %s", text[:50])
             return text if text else None
         except Exception as e:
