@@ -234,7 +234,16 @@ def save_config(cfg):
     try:
         with os.fdopen(tmp_fd, 'w', encoding='utf-8') as f:
             json.dump(merged, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, CONFIG_PATH)  # 原子替换
+        # Windows 下目标文件可能被瞬时占用（杀软扫描/编辑器锁/其他进程），
+        # os.replace 直接抛 PermissionError 会让设置保存崩溃。加短重试。
+        for attempt in range(5):
+            try:
+                os.replace(tmp_path, CONFIG_PATH)  # 原子替换
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
     except Exception:
         try:
             os.unlink(tmp_path)

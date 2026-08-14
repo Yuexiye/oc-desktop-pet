@@ -131,7 +131,7 @@ def get_hanako_config() -> dict:
             "mirror_external_replies": bool,
         }
     """
-    base_url = os.environ.get("HANAKO_BASE_URL", "http://127.0.0.1:14500").strip()
+    base_url = os.environ.get("HANAKO_BASE_URL", "http://127.0.0.1:20099").strip()
     api_token = os.environ.get("HANAKO_API_TOKEN", "").strip()
     # 自动从 server-info.json 读取 token（如果环境变量为空）
     if not api_token:

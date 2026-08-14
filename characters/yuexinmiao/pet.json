@@ -63,7 +63,7 @@
       "anim": "waving"
     },
     "surprised": {
-      "anim": "surprise"
+      "anim": "jumping"
     },
     "thinking": {
       "anim": "running"
@@ -72,7 +72,7 @@
       "anim": "failed"
     },
     "angry": {
-      "anim": "angry"
+      "anim": "running"
     },
     "neutral": {
       "anim": "idle"
