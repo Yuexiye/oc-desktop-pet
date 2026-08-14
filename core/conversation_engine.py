@@ -563,6 +563,17 @@ class ConversationEngine:
         # 2. 动画映射
         anim = map_emotion_to_anim(emotion)
 
+        # M5-ACT: 解析回复里的 JSON 动作指令，如 `{"action":"wave"}`。
+        # - 命中 → 覆盖 anim（AI 主动指定动作），并从回复文本中剥掉标记，气泡只显示正文
+        # - 未命中 → 维持情绪映射的 anim
+        try:
+            _act_re, _act_anim = self._parse_action_directive(reply)
+            if _act_re is not None:
+                reply = _act_re
+                anim = _act_anim or anim
+        except Exception:
+            pass
+
         # P1-6: 文字先行——LLM 回复立即上气泡，不等 TTS 合成
         # （本地 CosyVoice 合成需数秒；若等音频做好才回调，用户看到的是
         #  长时间只有“思考中”气泡甚至无气泡，像“没回话”。
@@ -588,6 +599,40 @@ class ConversationEngine:
         except RuntimeError:
             # 线程池已关闭（引擎停止中），直接丢弃本次合成
             logger.debug("TTS 线程池已关闭，跳过合成: gen=%d", gen)
+
+    def _parse_action_directive(self, reply: str):
+        """从回复中解析 JSON 动作指令。
+
+        格式：正文末尾或任意位置附带 `{"action":"wave"}`（LLM 友好的轻量标记）。
+        返回 (去标记后的正文, 动作名)；无指令返回 (None, None)。
+
+        安全：只接受白名单动作名（避免任意字符串直接进 play_anim，
+        也防止 LLM 幻觉出不存在的动作）。
+        """
+        if not reply or "action" not in reply:
+            return None, None
+        import re as _re
+        # 匹配 {..., "action": "xxx", ...} / {"action":"xxx"}
+        m = _re.search(r'\{\s*"action"\s*:\s*"([a-z_]+)"\s*\}', reply)
+        if not m:
+            return None, None
+        act = m.group(1)
+        if act not in self._ACTION_WHITELIST:
+            logger.debug("动作指令不在白名单，忽略: %s", act)
+            return None, None
+        cleaned = _re.sub(r'\{\s*"action"\s*:\s*"[a-z_]+"\s*\}', "", reply).strip()
+        # 剥掉标记后可能留下尾巴标点/空格；全标记则正文为空
+        cleaned = (cleaned
+                   .replace("\n\n", "\n")
+                   .rstrip("，。,.。!！ "))
+        return (cleaned, act)
+
+    # AI 可调用的动作白名单（对应 live2d renderer / 精灵动画名）
+    _ACTION_WHITELIST = frozenset({
+        "wave", "happy", "thinking", "working", "sleep", "surprised",
+        "sad", "angry", "waving", "walk", "mail", "complete", "special",
+        "login", "wedding", "touch", "pat", "stroke", "cute", "idle",
+    })
 
     def _synth_and_reply(self, reply, emotion, anim, character, instruct, source, gen):
         """在 TTS 线程池中执行：合成 + 回调（on_reply 仍带 audio_path，口型链路不变）。"""

@@ -295,6 +295,9 @@ class BehaviorMixin:
             if ef is not None and self._idle_face_cd <= 0 and random.random() < 0.25:
                 ef.flash("heh", 1100)  # 伸懒腰后的小得意
                 self._idle_face_cd = random.uniform(10, 18)
+        elif roll < 0.88:
+            # Live2D 微动作：待机时偶发播放低优先级 motion（比心/挥手/唱歌等）
+            self._do_live2d_mini_action()
         else:
             mood = 50
             mgr = getattr(self, '_state_mgr', None)
@@ -311,6 +314,48 @@ class BehaviorMixin:
                     self._idle_face_cd = random.uniform(14, 24)
             else:
                 self._do_look_around()
+
+    def _do_live2d_mini_action(self):
+        """Live2D 待机微动作：偶发播放弱优先级 motion（比心/挥手/唱歌/思考）。
+
+        合理性约束（避免“神经质”）:
+        - 仅 idle/rest 且非说话/非思考/非拖拽时触发
+        - 行为模式调制概率: quiet 0.4 / normal 0.7 / active 1.0 / cling 1.0
+        - 触发后由 revert 定时器在动作结束后回 idle
+        """
+        if getattr(self, '_is_dragging', False) or self._is_thinking:
+            return
+        if getattr(self, '_chasing', False) or self._physics.is_active:
+            return
+        if getattr(self, '_motion_state', 'idle') not in ('idle', 'rest'):
+            return
+        # 说话/思考中不播（避免打断口型与气泡）
+        if getattr(self, '_tts_player', None) is not None:
+            try:
+                if self._tts_player.is_playing():
+                    return
+            except Exception:
+                pass
+        if getattr(self, 'bubble', None) and self.bubble.isVisible():
+            return
+
+        mode = getattr(self, '_behavior_mode', 'normal')
+        mode_mult = {"quiet": 0.4, "normal": 0.7, "active": 1.0, "cling": 1.0}.get(mode, 0.7)
+        if random.random() > mode_mult:
+            return
+
+        # 候选微动作（对应 renderer._ANIM_TO_MOTION_KW 存在的键）
+        acts = ["waving", "thinking", "mail", "complete", "special"]
+        act = random.choice(acts)
+        renderer = getattr(self, '_renderer', None)
+        if renderer is not None and hasattr(renderer, 'play_anim'):
+            try:
+                renderer.play_anim(act, emotion="")
+                self._pet_revert_timer.stop()
+                self._pet_revert_timer.start(2200)
+                logger.debug("Live2D 微动作: %s", act)
+            except Exception:
+                pass
 
     def _do_look_around(self):
         """张望：先左后右再回正（复用视线平滑）"""

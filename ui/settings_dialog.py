@@ -244,6 +244,24 @@ class SettingsDialog(QDialog):
         self.asr_provider.setCurrentIndex(asr_prov_map.get(self._config.get("asr", {}).get("provider", "whisper_local"), 0))
         asr_layout.addRow("ASR 引擎", self.asr_provider)
 
+        # 本地 Whisper 后端（faster-whisper 需用户手动 pip install，不自动下载）
+        self.asr_backend = QComboBox()
+        self.asr_backend.addItems(["whisper (默认)", "faster-whisper (需手动安装)"])
+        asr_backend_map = {"whisper": 0, "faster_whisper": 1}
+        self.asr_backend.setCurrentIndex(
+            asr_backend_map.get(self._config.get("asr", {}).get("backend", "whisper"), 0)
+        )
+        asr_layout.addRow("本地后端", self.asr_backend)
+
+        # 语言：中文优化 / 自动检测（中英混合）
+        self.asr_lang = QComboBox()
+        self.asr_lang.addItems(["中文优化", "自动检测 (中英混合)"])
+        asr_lang_map = {"zh": 0, "auto": 1}
+        self.asr_lang.setCurrentIndex(
+            asr_lang_map.get(self._config.get("asr", {}).get("language", "auto"), 1)
+        )
+        asr_layout.addRow("识别语言", self.asr_lang)
+
         voice_layout.addWidget(asr_group)
         voice_layout.addStretch()
 
@@ -1156,6 +1174,10 @@ class SettingsDialog(QDialog):
 
         # ASR
         c.setdefault("asr", {})["provider"] = ["whisper_local", "mimo", "api"][self.asr_provider.currentIndex()]
+        if hasattr(self, "asr_backend"):
+            c["asr"]["backend"] = ["whisper", "faster_whisper"][self.asr_backend.currentIndex()]
+        if hasattr(self, "asr_lang"):
+            c["asr"]["language"] = ["zh", "auto"][self.asr_lang.currentIndex()]
 
         # 记忆注入
         c.setdefault("memory", {})["budget_mode"] = "auto" if self.mem_mode.currentIndex() == 0 else "manual"
