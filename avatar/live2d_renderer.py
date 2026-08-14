@@ -429,7 +429,20 @@ class Live2DRenderer(AvatarRenderer):
             #   <1  = 缩小留白
             #   >1  = 放大裁剪（特写）
             fit = self._fit_scale
+            # 横向比例系数：
+            # - pet.json 显式配置 scale_x 时用它（用户可调）
+            # - 否则自动补偿：画布宽高比低于参考比（~0.7，接近人体比例）时
+            #   说明模型是“超高画布”（如 miku 3500x8888），等比缩放会导致角色
+            #   横向偏细。此时按画布比例反推横向放大倍数，让任何模型默认都不窄。
             sx = getattr(self, "_fit_scale_x", 1.0)
+            if sx == 1.0 and cw_px and ch_px and cw_px / ch_px < 0.7:
+                try:
+                    ratio = cw_px / ch_px
+                    # 补到参考比 0.55（接近人类体型）：sx = 参考比 / 实际比
+                    sx = round(max(1.0, min(0.55 / ratio, 2.2)), 3)
+                    self._fit_scale_x = sx
+                except Exception:
+                    sx = 1.0
             if sx != 1.0:
                 try:
                     self._model.SetScaleX(fit * sx)
