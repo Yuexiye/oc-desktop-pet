@@ -90,7 +90,7 @@ def detect_format(character_id: str) -> str:
     return "sprite"
 
 
-def create_renderer(character_id: str, parent) -> AvatarRenderer:
+def create_renderer(character_id: str, parent, override_format: str = None) -> AvatarRenderer:
     """为角色创建合适的渲染器实例（不调用 load）。"""
     fmt = detect_format(character_id)
     logger.info("create_renderer('%s') -> format=%s", character_id, fmt)

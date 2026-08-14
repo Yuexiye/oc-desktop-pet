@@ -41,13 +41,16 @@ class Live2DRenderer(AvatarRenderer):
 
     # 情绪 -> 表情名关键词（模型有语义表情时匹配；否则用 motion 或忽略）
     _EMOTION_KEYWORDS = {
-        "happy": ("happy", "joy", "smile", "fun", "usui"),
+        "happy": ("happy", "joy", "smile", "fun", "usui", "唱歌", "比心"),
         "angry": ("angry", "ikari", "mad"),
         "sad": ("sad", "kanashii", "cry"),
-        "surprised": ("surprise", "odoroki", "shock"),
-        "thinking": ("think", "thinking", "doubt", "kangaeru"),
+        "surprised": ("surprise", "odoroki", "shock", "圈圈", "前倾"),
+        "thinking": ("think", "thinking", "doubt", "kangaeru", "圈圈", "前倾"),
+        "cute": ("cute", "脸红"),
         "neutral": (),
     }
+    # 自动排除的表情名关键词（作者水印/版权声明等，桌宠不展示）
+    _IGNORED_EXPRESSIONS = ("水印", "watermark", "版权", "author", "credit", "logo")
     # 情绪 -> motion 组名（模型有对应动作组时播放）
     _EMOTION_MOTION = {
         "happy": ("happy", "joy", "fun"),
@@ -66,6 +69,7 @@ class Live2DRenderer(AvatarRenderer):
         self._model = None          # live2d.v3.Model 实例（GL 就绪后加载）
         self._ready: bool = False   # 模型是否成功加载并可在 draw 中渲染
         self._fit_scale: float = 1.0
+        self._fit_scale_x: float = 1.0  # 横向比例系数（超高画布模型微调用）
         self._offset_scale: tuple[float, float] = (0.0, 0.0)
 
         # 视线/朝向目标（draw 中平滑插值）
@@ -149,6 +153,9 @@ class Live2DRenderer(AvatarRenderer):
             l2d = meta.get("live2d", {})
             if "scale" in l2d:
                 self._fit_scale = float(l2d["scale"])
+            # 横向比例系数：对超高画布（如 3500x8888）模型横向偏窄，
+            # 用 SetScaleX(fit*sx)/SetScaleY(fit) 分开设，让角色更“方正”。
+            self._fit_scale_x = float(l2d.get("scale_x", 1.0))
             if "offset" in l2d and isinstance(l2d["offset"], (list, tuple)):
                 self._offset_scale = (float(l2d["offset"][0]), float(l2d["offset"][1]))
         except Exception as e:
@@ -168,6 +175,20 @@ class Live2DRenderer(AvatarRenderer):
             global _global_l2d_inited
             if not _global_l2d_inited:
                 l2d.init()
+                # 压住原生 C 库的 Info 刷屏（`motion priority is too low.`、`[CSM][I]`、
+                # `Clear all expressions` 直接写 stderr，不走 Python logging，拦不住只能降级）。
+                # setLogLevel 只按级别过滤，拦不住全部 Info；enableLog(False) 是真正总开关。
+                try:
+                    l2d.enableLog(False)
+                    _l2d_log=True
+                except Exception:
+                    _l2d_log=False
+                finally:
+                    try:
+                        l2d.setLogLevel(1)
+                    except Exception:
+                        pass
+                logger.info("Live2DRenderer: enableLog(False) → 原生库日志已关闭%s", "" if _l2d_log else "(API 不可用，跳过)")
                 _global_l2d_inited = True
 
             # GL 可用性检查：不 import PyOpenGL 的 GL（它与 live2d-py 的 glad 加载的
@@ -237,10 +258,35 @@ class Live2DRenderer(AvatarRenderer):
             self._motion_files: list[str] = []      # 空组下的 motion 文件名列表
             self._motion_group_name: str = ""       # 实际使用的 motion 组名
             if not self._debug_minimal:
+                # wrapper 0.7.0.4 的真实 API 是 GetExpressionIds（pyi 写的 GetExpressions 不存在），
+                # 且 GetExpressionIds 在初始化早期可能抛异常——都 fallback 到 model3.json 解析。
+                self._expression_names = []
                 try:
-                    self._expression_names = list(model.GetExpressions() or [])
+                    ids = model.GetExpressionIds()
+                    if ids:
+                        self._expression_names = [
+                            n for n in ids
+                            if not any(k in str(n).lower() for k in self._IGNORED_EXPRESSIONS)
+                        ]
                 except Exception:
-                    self._expression_names = []
+                    pass
+                if not self._expression_names:
+                    import json as _json
+                    try:
+                        with open(self._model_path, encoding="utf-8") as _f:
+                            _m3 = _json.load(_f)
+                        exprs = _m3.get("FileReferences", {}).get("Expressions", []) or []
+                        names = []
+                        for _e in exprs:
+                            nm = _e.get("Name") or os.path.splitext(os.path.basename(_e.get("File", "")))[0]
+                            if nm and not any(k in str(nm).lower() for k in self._IGNORED_EXPRESSIONS):
+                                names.append(nm)
+                        # 去重保序
+                        self._expression_names = list(dict.fromkeys(names))
+                        if names:
+                            logger.info("Live2DRenderer: 从 model3.json 解析 %d 个表情名: %s", len(names), names)
+                    except Exception as _e:
+                        logger.warning("Live2DRenderer: 解析表情失败: %s", _e)
                 try:
                     if hasattr(model, "GetMotionGroups"):
                         groups = model.GetMotionGroups()
@@ -266,6 +312,13 @@ class Live2DRenderer(AvatarRenderer):
                 except Exception:
                     self._motion_files = []
 
+                # 清除默认表情（模型常带作者水印/LOGO 表情，默认显示会遮挡角色）
+                try:
+                    model.ResetExpressions()
+                except Exception:
+                    pass
+                # 缓存水印参数索引，每帧强制关闭（Param137=水印）
+                self._cache_watermark_index()
                 # 起始待机动作
                 self._start_idle()
 
@@ -318,11 +371,15 @@ class Live2DRenderer(AvatarRenderer):
                 return
             bw = max_x - min_x + 1
             bh = max_y - min_y + 1
-            target_w = max(40, bw + 1)
-            target_h = max(40, bh + 1)
+            # 留一点呼吸边距：bbox 直接贴合会让角色顶满窗口显得“挤”。
+            # 简单按 6% 扩充宽高（下限 +2px），不改变角色实际大小。
+            pad_w = max(2, int(bw * 0.06))
+            pad_h = max(2, int(bh * 0.06))
+            target_w = max(40, bw + pad_w)
+            target_h = max(40, bh + pad_h)
             logger.info(
-                "Live2DRenderer: 角色 bbox=%dx%d (偏移 %d,%d)，窗口贴合到 %dx%d",
-                bw, bh, min_x, min_y, target_w, target_h,
+                "Live2DRenderer: 角色 bbox=%dx%d (偏移 %d,%d)，窗口贴合到 %dx%d (+%dpx 边距)",
+                bw, bh, min_x, min_y, target_w, target_h, pad_w,
             )
             parent = getattr(self, "_parent", None)
             fit_win = getattr(parent, "fit_window_to_model", None)
@@ -372,9 +429,18 @@ class Live2DRenderer(AvatarRenderer):
             #   <1  = 缩小留白
             #   >1  = 放大裁剪（特写）
             fit = self._fit_scale
-            self._model.SetScale(fit)
-            logger.info("Live2DRenderer: 缩放 fit=%.3f (gl=%sx%s, canvas_px=%sx%s)",
-                        fit, self._gl_w, self._gl_h, cw_px, ch_px)
+            sx = getattr(self, "_fit_scale_x", 1.0)
+            if sx != 1.0:
+                try:
+                    self._model.SetScaleX(fit * sx)
+                    self._model.SetScaleY(fit)
+                except Exception:
+                    # 老版本 wrapper 可能没有 SetScaleX；回退等比
+                    self._model.SetScale(fit)
+            else:
+                self._model.SetScale(fit)
+            logger.debug("Live2DRenderer: 缩放 fit=%.3f sx=%.3f (gl=%sx%s, canvas_px=%sx%s)",
+                         fit, self._gl_w, self._gl_h, cw_px, ch_px)
         except Exception as e:
             logger.warning("Live2DRenderer: 缩放计算失败: %s", e)
 
@@ -494,6 +560,8 @@ class Live2DRenderer(AvatarRenderer):
             mm.UpdateExpression(dt)
         except Exception:
             pass
+        # 水印抑制：模型自带 Param137(水印) 表情默认开，表情更新后强制置 0
+        self._suppress_watermark(mm)
         try:
             mm.UpdateDrag(dt)
         except Exception:
@@ -516,6 +584,70 @@ class Live2DRenderer(AvatarRenderer):
             pass
 
     # ── 内部：参数驱动 ──
+
+    def _cache_watermark_index(self) -> None:
+        """缓存水印部件索引。
+
+        多数免费模型把作者版权水印做成独立部件：
+        cdi3.json 里 Part 有 Id（如 Part18）与 Name（如 水印.psd）两个字段，
+        GetPartIds() 只暴露 Id，中文名在 cdi3 里——所以先读 cdi3 做 Id→Name 映射，
+        再匹配“水印/watermark/logo/版权”关键词，记录索引，每帧强制透明度 0。
+        这是作者文档所说的“水印按键可在设置表情中关闭”的真正实现：
+        水印不是一个参数，是一个可见部件。
+        """
+        self._watermark_part_idx: list[int] = []
+        self._watermark_idx = -1   # 兼容旧字段（参数索引，已弃用）
+        if not self._model:
+            return
+        try:
+            parts = self._model.GetPartIds()
+            if not parts:
+                return
+            # 从 model3.json 同目录的 cdi3.json 读 Id→Name
+            wm_ids = set()
+            import json as _json
+            base = os.path.dirname(self._model_path or "")
+            cdi3 = os.path.join(base, os.path.splitext(os.path.basename(self._model_path or ""))[0] + ".cdi3.json")
+            if not os.path.exists(cdi3):
+                # 回退：同目录里唯一的 cdi3
+                _cands = [f for f in os.listdir(base) if f.endswith(".cdi3.json")] if base and os.path.isdir(base) else []
+                if _cands:
+                    cdi3 = os.path.join(base, _cands[0])
+            if os.path.exists(cdi3):
+                try:
+                    _c = _json.load(open(cdi3, encoding="utf-8"))
+                    wm_kw = ("水印", "watermark", "logo", "版权")
+                    for _p in _c.get("Parts", []):
+                        if any(k in str(_p.get("Name", "")).lower() for k in wm_kw):
+                            wm_ids.add(_p.get("Id"))
+                except Exception:
+                    wm_ids = set()
+            if wm_ids:
+                self._watermark_part_idx = [i for i, p in enumerate(parts) if p in wm_ids]
+                logger.info(
+                    "Live2DRenderer: 检测到水印部件 %s，每帧强制隐藏",
+                    [parts[i] for i in self._watermark_part_idx],
+                )
+        except Exception:
+            self._watermark_part_idx = []
+
+    def _suppress_watermark(self, mm=None) -> None:
+        """每帧强制隐藏水印部件（Part 透明度=0）。
+
+        作者版权水印默认显示；via 部件透明度直接隐藏，
+        比参数方案可靠（水印部件不绑参数，Param137 只是装饰）。
+        """
+        idxs = getattr(self, "_watermark_part_idx", None)
+        if not idxs:
+            return
+        target = mm or getattr(self._model, "_model", None) or self._model
+        if target is None:
+            return
+        for i in idxs:
+            try:
+                target.SetPartOpacity(i, 0.0)
+            except Exception:
+                pass
 
     def _update_gaze_params(self) -> None:
         if not self._model:
@@ -578,7 +710,9 @@ class Live2DRenderer(AvatarRenderer):
                 self._model.StartRandomMotion(self._live2d.MotionGroup.IDLE,
                                               self._live2d.MotionPriority.IDLE)
         except Exception as e:
-            logger.warning("Live2DRenderer: 起始待机动作失败: %s", e)
+            # 忽略 "motion priority is too low" 警告（正常行为，idle 被更高优先级 motion 打断）
+            if "priority is too low" not in str(e):
+                logger.warning("Live2DRenderer: 起始待机动作失败: %s", e)
 
     def _play_motion_kw(self, *keywords, priority=None) -> bool:
         """按文件名关键词从 motion 列表找第一个匹配并播放。
@@ -612,7 +746,9 @@ class Live2DRenderer(AvatarRenderer):
             self._model.StartMotion(self._motion_group_name, idx, prio)
             return True
         except Exception as e:
-            logger.warning("Live2DRenderer._play_motion_kw 异常: %s", e)
+            # 忽略 "motion priority is too low" 警告（正常行为）
+            if "priority is too low" not in str(e):
+                logger.warning("Live2DRenderer._play_motion_kw 异常: %s", e)
             return False
 
     def _match_expression(self, emotion: str):
@@ -797,7 +933,8 @@ class Live2DRenderer(AvatarRenderer):
                     cw_log, ch_log = self._model.GetCanvasSize()
                     cw_px, ch_px = cw_log * ppu, ch_log * ppu
                 fit = abs(self._fit_scale)
-                self._model.SetScaleX(fit * (1 if right else -1))
+                sx = abs(getattr(self, "_fit_scale_x", 1.0))
+                self._model.SetScaleX(fit * sx * (1 if right else -1))
                 self._model.SetScaleY(fit)
             except Exception:
                 pass
