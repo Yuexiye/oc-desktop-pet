@@ -112,14 +112,111 @@ class ConversationEngine:
         # M4: 工具进度回调（Hanako WS 模式下，工具调用由服务端执行，这里只展示进度）
         # 参数: tool_name, phase ("start"/"progress"/"end"), display_text, success
         self.on_tool_progress: callable = lambda tool_name, phase, display_text, success: None
+        
+        # P0-1: 保存原始回调引用
+        self._original_on_reply = self.on_reply
+        self._original_on_status = self.on_status
+        self._original_on_progress = self.on_progress
+        self._original_on_tts_ready = self.on_tts_ready
+        self._original_on_tool_progress = self.on_tool_progress
+        
+        # P0-1: 线程安全回调包装器——确保回调在主线程执行
+        self._main_thread = None  # 将在 start() 时设置
+        
+        # P0-1: 回调包装——用 Qt Signal 绕回主线程
+        from PySide6.QtCore import QObject, Signal
+        
+        class _CallbackDispatcher(QObject):
+            """线程安全回调派发器"""
+            reply_signal = Signal(str, str, str, str)
+            status_signal = Signal(str)
+            progress_signal = Signal(str)
+            tts_ready_signal = Signal()
+            tool_progress_signal = Signal(str, str, str, object)
+        
+        self._dispatcher = _CallbackDispatcher()
+        # 连接信号到真实回调（在主线程执行）
+        self._dispatcher.reply_signal.connect(self._real_on_reply)
+        self._dispatcher.status_signal.connect(self._real_on_status)
+        self._dispatcher.progress_signal.connect(self._real_on_progress)
+        self._dispatcher.tts_ready_signal.connect(self._real_on_tts_ready)
+        self._dispatcher.tool_progress_signal.connect(self._real_on_tool_progress)
 
     @property
     def tts_ready(self) -> bool:
         return self._tts_ready
+    
+    # P0-1: 真实回调方法（在主线程执行）
+    def _real_on_reply(self, reply: str, emotion: str, anim: str, audio_path: str):
+        """真实 on_reply 回调（主线程）"""
+        try:
+            if hasattr(self, '_original_on_reply') and callable(self._original_on_reply):
+                self._original_on_reply(reply, emotion, anim, audio_path)
+        except Exception as e:
+            logger.error("on_reply callback error: %s", e)
+    
+    def _real_on_status(self, msg: str):
+        """真实 on_status 回调（主线程）"""
+        try:
+            if hasattr(self, '_original_on_status') and callable(self._original_on_status):
+                self._original_on_status(msg)
+        except Exception as e:
+            logger.error("on_status callback error: %s", e)
+    
+    def _real_on_progress(self, msg: str):
+        """真实 on_progress 回调（主线程）"""
+        try:
+            if hasattr(self, '_original_on_progress') and callable(self._original_on_progress):
+                self._original_on_progress(msg)
+        except Exception as e:
+            logger.error("on_progress callback error: %s", e)
+    
+    def _real_on_tts_ready(self):
+        """真实 on_tts_ready 回调（主线程）"""
+        try:
+            if hasattr(self, '_original_on_tts_ready') and callable(self._original_on_tts_ready):
+                self._original_on_tts_ready()
+        except Exception as e:
+            logger.error("on_tts_ready callback error: %s", e)
+    
+    def _real_on_tool_progress(self, tool_name: str, phase: str, display_text: str, success: object):
+        """真实 on_tool_progress 回调（主线程）"""
+        try:
+            if hasattr(self, '_original_on_tool_progress') and callable(self._original_on_tool_progress):
+                self._original_on_tool_progress(tool_name, phase, display_text, success)
+        except Exception as e:
+            logger.error("on_tool_progress callback error: %s", e)
 
     def start(self):
         """启动引擎（后台线程）"""
         self._running = True
+        # P0-1: 记录主线程 ID，用于线程安全回调
+        from PySide6.QtCore import QThread
+        self._main_thread = QThread.currentThread()
+        # P0-1: 创建回调派发器并连接到真实回调
+        from PySide6.QtCore import QObject, Signal
+        
+        class _CallbackDispatcher(QObject):
+            """线程安全回调派发器"""
+            reply_signal = Signal(str, str, str, str)
+            status_signal = Signal(str)
+            progress_signal = Signal(str)
+            tts_ready_signal = Signal()
+            tool_progress_signal = Signal(str, str, str, object)
+        
+        self._dispatcher = _CallbackDispatcher()
+        # 连接信号到真实回调（在主线程执行）
+        self._dispatcher.reply_signal.connect(self._real_on_reply)
+        self._dispatcher.status_signal.connect(self._real_on_status)
+        self._dispatcher.progress_signal.connect(self._real_on_progress)
+        self._dispatcher.tts_ready_signal.connect(self._real_on_tts_ready)
+        self._dispatcher.tool_progress_signal.connect(self._real_on_tool_progress)
+        # P0-1: 将包装后的回调赋值回去（后台线程调用时通过信号绕回主线程）
+        self.on_reply = self._dispatcher.reply_signal.emit
+        self.on_status = self._dispatcher.status_signal.emit
+        self.on_progress = self._dispatcher.progress_signal.emit
+        self.on_tts_ready = self._dispatcher.tts_ready_signal.emit
+        self.on_tool_progress = self._dispatcher.tool_progress_signal.emit
 
         # 初始化 LLM 适配器
         try:
@@ -193,6 +290,13 @@ class ConversationEngine:
     def stop(self):
         """停止引擎"""
         self._running = False
+        # P0-1: 清理派发器
+        if hasattr(self, '_dispatcher') and self._dispatcher is not None:
+            try:
+                self._dispatcher.deleteLater()
+            except Exception:
+                pass
+            self._dispatcher = None
         self._perception.stop_screen()
         with self._lock:
             self._queue.clear()
@@ -336,9 +440,15 @@ class ConversationEngine:
         self.on_status("")
         self.on_tts_ready()
 
-        # 刷新日程 + 启动屏幕感知
+        # 刷新日程 + 启动屏幕感知（interval 从 config 读，支持随机范围）
         self._perception.tick()
-        self._perception.start_screen(interval=120)
+        try:
+            from config import load_config
+            screen_cfg = load_config().get("screen", {}) or {}
+            interval = int(screen_cfg.get("interval", 120) or 120)
+        except Exception:
+            interval = 120
+        self._perception.start_screen(interval=interval)
 
         # 发现插件工具
         self._tool_registry.discover()
@@ -453,6 +563,16 @@ class ConversationEngine:
         # 2. 动画映射
         anim = map_emotion_to_anim(emotion)
 
+        # P1-6: 文字先行——LLM 回复立即上气泡，不等 TTS 合成
+        # （本地 CosyVoice 合成需数秒；若等音频做好才回调，用户看到的是
+        #  长时间只有“思考中”气泡甚至无气泡，像“没回话”。
+        #  先显示文字（audio_path=""），TTS 完成后同文本再回调只会续期
+        #  气泡时长并播放音频，不重复闪烁。）
+        try:
+            self.on_reply(reply, emotion, anim, "")
+        except Exception:
+            pass
+
         # 3. TTS 合成 + 回调：提交到专用线程池，避免同步合成卡住消息队列（P1-4）
         # 把合成与回传从 _run 主循环解耦，_run 可立即处理下一条消息。
         instruct_map = {
@@ -496,9 +616,12 @@ class ConversationEngine:
             with self._lock:
                 if self._tts_in_use > 0:
                     self._tts_in_use -= 1
-        # synth 后检查：已打断则丢弃脏音频
+        # synth 后检查：已打断则丢弃脏音频，但文字气泡仍要显示——
+        # 否则 proactive 慢回复(LLM 耗时数秒)期间用户一开口，整条回复连字都看不到。
+        # 打断的语义是"旧话不继续说"，不是"旧话没说过"。
         if self._is_stale(gen):
-            logger.debug("TTS 后已打断，丢弃: gen=%d", gen)
+            logger.debug("TTS 后已打断，仅保留文字气泡（丢弃音频）: gen=%d", gen)
+            self.on_reply(reply, emotion, anim, "")  # 空 audio_path → 只显示气泡不播音频
             return
         # 回调（文字 + 音频一起，从池线程 emit 信号 → 主线程播放口型）
         self.on_reply(reply, emotion, anim, audio_path)
