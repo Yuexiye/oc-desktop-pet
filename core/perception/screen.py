@@ -1,4 +1,4 @@
-﻿"""屏幕感知 — 后台定时截屏 + 视觉模型分析
+"""屏幕感知 — 后台定时截屏 + 视觉模型分析
 
 关键点：
 - 变化检测：对比上一帧 md5，相同则跳过 API 调用（节省算力）
@@ -172,6 +172,10 @@ class ScreenPerception:
     def __init__(self, interval: int = 120):
         self._interval = interval
         self._base_interval = interval
+        # 随机间隔范围（秒）：interval 为基准，实际每次截屏后在下限~上限间随机。
+        # 默认基准 ± 30%，既防模式化打扰，也不至于等太久
+        self._interval_min = int(interval * 0.7)
+        self._interval_max = int(interval * 1.3)
         self._enabled = True  # 屏幕感知总开关（默认开）
         self._blur_enabled = False  # 高斯模糊（默认关，需要时手动开）
         self._blacklist_enabled = False  # 敏感窗口黑名单（默认关，需要时手动开）
@@ -181,6 +185,8 @@ class ScreenPerception:
         self._last_description: str = ""
         self._last_event: ScreenEvent | None = None  # 结构化元数据
         self._last_activity: ActivityEvent | None = None  # 结构化活动事件
+        self._last_event_capture: float = 0          # 最近一次 event 截图时间
+        self._last_timer_capture: float = 0          # 最近一次 timer 截图时间
         self._activity_history: list[ActivityEvent] = []  # 最近 50 个活动事件
         self._last_frame_hash: str = ""
         self._consecutive_failures: int = 0
@@ -255,11 +261,12 @@ class ScreenPerception:
         if _is_screen_blacklisted(app, title, self._blacklist_enabled):
             logger.debug("Screenshot skipped (blacklisted): %s - %s", app, title[:30])
             return
-        # 事件触发也加冷却（至少间隔 _interval/2 秒）
+        # 事件触发也加冷却（与定时器同一节奏：event 与 timer 共用冷却，
+        # 避免"切窗口一次 + 定时一次"在 2 分钟内打两条视觉 API）
         now = time.time()
         if not hasattr(self, '_last_event_capture'):
             self._last_event_capture = 0
-        event_cooldown = max(30, self._interval // 2)
+        event_cooldown = self._interval  # 与 timer 同频，不再额外叠加
         if now - self._last_event_capture < event_cooldown:
             return
         self._last_event_capture = now
@@ -277,6 +284,30 @@ class ScreenPerception:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         logger.info("ScreenPerception started | interval=%ds", self._interval)
+
+    def set_interval(self, interval: int):
+        """设置基准间隔（秒），随机范围随之浮动。"""
+        self._interval = max(30, int(interval))
+        self._base_interval = self._interval
+        self._interval_min = max(30, int(round(interval * 0.7)))
+        self._interval_max = max(45, int(round(interval * 1.3)))
+
+    def set_interval_range(self, min_sec: int, max_sec: int):
+        """设置随机间隔范围（秒）。手动配置时用这个；基准取中点，退避逻辑不受影响。"""
+        lo = max(30, int(min_sec))
+        hi = max(lo + 1, int(max_sec))
+        self._interval_min = lo
+        self._interval_max = hi
+        self._interval = (lo + hi) // 2
+        self._base_interval = self._interval
+
+    def _next_interval(self) -> int:
+        """随机挑下一个截屏间隔（在下限~上限之间均匀分布）。"""
+        lo, hi = self._interval_min, self._interval_max
+        if hi <= lo:
+            return lo
+        import random
+        return random.randint(lo, hi)
 
     def disable(self):
         """禁用屏幕感知"""
@@ -306,6 +337,21 @@ class ScreenPerception:
         time.sleep(10)  # 首次延迟
         while self._running:
             try:
+                # 若 event 触发刚截过图（冷却期内），timer 也跳过本轮——
+                # 避免"切窗口一次 + 定时一次"背靠背打两条视觉 API
+                now = time.time()
+                last_any = max(
+                    getattr(self, '_last_event_capture', 0),
+                    getattr(self, '_last_timer_capture', 0),
+                )
+                if now - last_any < self._interval:
+                    # 仍在冷却：按剩余时间 sleep，然后继续下轮
+                    remain = int(self._interval - (now - last_any))
+                    for _ in range(max(1, remain)):
+                        if not self._running:
+                            return
+                        time.sleep(1)
+                    continue
                 # 定时截图时获取当前前台窗口信息（用于黑名单检查）
                 try:
                     from motion.foreground_watcher import _get_foreground_process_name, _get_foreground_window_title
@@ -314,6 +360,13 @@ class ScreenPerception:
                 except Exception:
                     app, title = "", ""
                 self._capture_and_analyze(mode="timer", app=app, title=title)
+                self._last_timer_capture = time.time()
+                # 随机化：每次截屏后重新掷下一个间隔，避免固定 120s 的机械感
+                next_iv = self._next_interval()
+                if next_iv != self._interval:
+                    logger.debug("ScreenPerception next interval=%ds (range %d-%d)",
+                                 next_iv, self._interval_min, self._interval_max)
+                    self._interval = next_iv
             except Exception as e:
                 logger.warning("ScreenPerception error: %s", e)
             for _ in range(self._interval):
@@ -360,7 +413,7 @@ class ScreenPerception:
         img.save(buf, format="JPEG", quality=quality)
         b64 = base64.b64encode(buf.getvalue()).decode()
         size_info = img.size if not self._compress_enabled else (img.width, img.height)
-        logger.info("Screenshot: %s, %dKB base64", size_info, len(b64) // 1024)
+        logger.debug("Screenshot: %s, %dKB base64", size_info, len(b64) // 1024)
 
         ctx = HanakoContext()
 
@@ -443,7 +496,7 @@ class ScreenPerception:
                                 self._activity_history.pop(0)
                     self._consecutive_failures = 0
                     self._consecutive_empty = 0  # 成功一次即重置空响应计数
-                    self._interval = self._base_interval  # 恢复正常间隔
+                    self._interval = self._next_interval()  # 恢复正常（随机）间隔
                     logger.info("Screen analysis [%s]: %s", mode, description[:50])
                     self.on_update(description)
                     # 触发屏幕情绪
@@ -499,7 +552,7 @@ class ScreenPerception:
         if self._consecutive_failures >= self.MAX_CONSECUTIVE_FAILURES:
             backoff = min(self.BASE_BACKOFF_SECONDS * (2 ** (self._consecutive_failures - self.MAX_CONSECUTIVE_FAILURES)),
                          self.MAX_BACKOFF_SECONDS)
-            self._interval = self._base_interval + backoff
+            self._interval = self._next_interval() + backoff  # 随机间隔基础上拉长
             logger.warning("ScreenPerception backoff: interval=%ds (failures=%d, backoff=%ds)",
                          self._interval, self._consecutive_failures, backoff)
         return None

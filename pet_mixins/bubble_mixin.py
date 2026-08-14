@@ -52,6 +52,14 @@ class BubbleMixin:
         """气泡实现体（仅限主线程调用；相同内容不重复刷新，高优先级不被低优先级覆盖）"""
         if not text or not hasattr(self, 'bubble'):
             return
+        # P0-2: 去重逻辑——2 秒内相同文本只打印一次日志
+        now = time.time()
+        if text == getattr(self, '_last_bubble_text', '') and (now - getattr(self, '_last_bubble_time', 0)) < 2.0:
+            logger.debug("Bubble dedupe: same text within 2s, skipping log")
+            self._bubble_timer.start(self._bubble_duration(text))  # 只续期
+            return
+        self._last_bubble_text = text
+        self._last_bubble_time = now
         # 节流：相同内容且气泡可见时不重复设置
         if text == self._bubble_message and self.bubble.isVisible():
             logger.debug("Bubble throttle: same text still visible")

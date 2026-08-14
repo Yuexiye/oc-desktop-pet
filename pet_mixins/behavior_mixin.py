@@ -123,12 +123,19 @@ class BehaviorMixin:
     # ── 前台窗口 ──
 
     def _foreground_tick(self):
-        """每 2 秒检测前台窗口"""
+        """每 2 秒检测前台窗口 + 活动感知"""
         logger.debug("_foreground_tick called")
         try:
             self._foreground_watcher.tick()
         except Exception as e:
             logger.error("_foreground_tick error: %s", e)
+        # 活动感知：打字/划水/空闲（零成本，喂给 ProactiveScheduler）
+        tracker = getattr(self, "_activity_tracker", None)
+        if tracker is not None:
+            try:
+                tracker.tick()
+            except Exception:
+                pass
 
     def _on_foreground_change(self, app_name: str, app_category: str, title: str):
         """前台窗口变化 → 重置 idle 计时器 + 窗口互动 + 事件触发截图"""
@@ -440,3 +447,11 @@ class BehaviorMixin:
                 self._conversation_engine.send(prompt)
         except Exception as e:
             logger.debug("Screen proactive failed: %s", e)
+
+    def _on_screen_update(self, description: str):
+        """屏幕分析结果更新（后台线程回调，通过信号绕回主线程）"""
+        self.screen_update_signal.emit(description)
+
+    def _do_screen_update(self, description: str):
+        """在主线程处理屏幕更新（记录日志等）"""
+        logger.debug("Screen update: %s", description[:50])

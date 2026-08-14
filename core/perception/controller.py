@@ -139,7 +139,8 @@ class PerceptionController:
         if not self._permissions.screenshot_enabled:
             logger.info("Screen disabled by permissions")
             return
-        self._screen._interval = interval
+        # 基准间隔 + 随机浮动范围（默认 ±30%，即 84~156s）
+        self._screen.set_interval(interval)
         self._screen.start()
 
     def stop_screen(self):
