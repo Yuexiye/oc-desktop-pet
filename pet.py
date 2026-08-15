@@ -564,6 +564,65 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         # ── P2 关系：陪伴记忆 + 每日首启问候 ──
         self._init_companion_memory()
 
+        # ── P3 表现：多宠打招呼（订阅 pet_enter，另一只宠上线时响应）──
+        self._init_multi_pet_greeting()
+
+    def _init_multi_pet_greeting(self):
+        """订阅 MultiPetBridge 的 pet_enter 事件：另一只桌宠上线 → 打招呼。
+
+        用户点名的 P3 需求："两只看不见彼此但会互相打招呼"。
+        注册顺序注意：bridge.register_pet 广播 pet_enter 时，先注册的宠会收到
+        后注册宠的 enter；本窗口自己 enter 时不响应（source 是自己）。
+        """
+        try:
+            mgr = getattr(self, "_pet_manager", None)
+            if mgr is None:
+                return
+            bridge = getattr(mgr, "bridge", None)
+            if bridge is None or not hasattr(bridge, "subscribe"):
+                return
+            bridge.subscribe(
+                "pet_enter",
+                self._on_other_pet_enter,
+                agent_id=self._agent_id,
+            )
+            logger.info("P3 多宠打招呼已订阅 (agent=%s)", self._agent_id)
+        except Exception as e:
+            logger.warning("P3 多宠打招呼订阅失败（非致命）: %s", e)
+
+    def _on_other_pet_enter(self, event):
+        """另一只桌宠上线 → 弹打招呼气泡 + 挥手动作（仅响应非自己的 enter）。"""
+        try:
+            payload = getattr(event, "payload", None) or {}
+            new_pet_id = payload.get("agent_id", "")
+            if not new_pet_id or new_pet_id == self._agent_id:
+                return
+            # 礼貌打招呼（随机文案 + 挥手动作）
+            import random as _r
+            lines = [
+                f"咦，{new_pet_id} 也来啦？打个招呼～",
+                f"欢迎 {new_pet_id}！",
+                f"{new_pet_id} 来了，今天一起玩吧！",
+            ]
+            text = _r.choice(lines)
+            # 弹气泡（主线程安全：bridge 分发在后台线程，用信号/延时回主线程）
+            try:
+                from PySide6.QtCore import QTimer as _QT
+                _QT.singleShot(0, lambda t=text: self._show_bubble(t, emotion="happy"))
+            except Exception:
+                pass
+            # 挥手动作（Live2D: waving motion；sprite: waving 序列）
+            try:
+                if hasattr(self, "_set_anim_seq"):
+                    from pet_mixins.behavior_mixin import get_transition_style
+                    self._set_anim_seq("waving", emotion="happy",
+                                       style=get_transition_style("happy"))
+            except Exception:
+                pass
+            logger.info("P3 多宠打招呼 → %s", text[:40])
+        except Exception as e:
+            logger.warning("P3 多宠打招呼处理失败: %s", e)
+
     def _init_companion_memory(self):
         """初始化陪伴记忆（CompanionMemory）并触发跨天首启问候。
 

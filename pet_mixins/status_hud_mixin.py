@@ -125,6 +125,38 @@ class StatusHudMixin:
         """更新持久化状态指示器"""
         from core.hanako_monitor import STATE_LABELS
         label = STATE_LABELS.get(state_name, f"⚪ {state_name}")
+
+        # ── P3 换装：已装备外观的图标拼到状态栏（🧣 等）──
+        try:
+            equip = getattr(self, "_equipped_costume_icons", None)
+            if equip is None:
+                # 从 save 管理器读取一次并缓存
+                save_mgr = getattr(self, "_save_mgr", None)
+                icons = ""
+                if save_mgr is not None:
+                    try:
+                        s = save_mgr.save
+                        costumes = dict(getattr(s, "equipped_costumes", {}) or {})
+                        # 图标映射：costume_id -> emoji（缺省用 🎽）
+                        icon_map = {
+                            "scarf": "🧣",
+                            "hat": "🎩",
+                            "glasses": "👓",
+                            "crown": "👑",
+                            "wings": "🪽",
+                            "tail": "🐾",
+                        }
+                        icons = " ".join(
+                            icon_map.get(cid, "🎽") for cid in costumes if costumes[cid]
+                        )
+                    except Exception:
+                        icons = ""
+                self._equipped_costume_icons = icons
+            if self._equipped_costume_icons:
+                label = f"{self._equipped_costume_icons} {label}"
+        except Exception:
+            pass
+
         self._status_label.setText(label)
 
         # 状态颜色映射

@@ -99,6 +99,9 @@ class PetSave(BaseModel):
     collected_items: list = Field(default_factory=list)  # 已收集实体物品 item_id 集合（图鉴）
     gacha_pity: int = 0                 # 盲盒保底计数（持久化 STANDARD_POOL.pity_count）
 
+    # ---- P3 换装：已装备的外观（costume_id -> 装备时间戳）----
+    equipped_costumes: dict = Field(default_factory=dict)  # {"scarf": 1755000000.0, ...}
+
 
 # 挂起池字段映射：(pending_field, main_field, max_field_or_None)
 # 集中维护，避免 store_take 里散落字符串

@@ -155,13 +155,20 @@ class MissionManager:
                 s.badges = list(s.badges or []) + [item.item_id]
         elif item.item_type in ("item", "costume", "character"):
             # 虚拟收集物：抽中即入册（item_collected 事件供任务系统去重统计）
-            if item.item_type == "item" and item.item_id:
-                EventBus.emit(
-                    "item_collected", target=item.item_id, name=item.name
-                )
-                cid = item.item_id
+            cid = item.item_id
+            if cid:
                 if cid not in (s.collected_items or []):
                     s.collected_items = list(s.collected_items or []) + [cid]
+                # P3 换装：costume 抽中即自动装备（equipped_costumes 持久化）
+                if item.item_type == "costume":
+                    equip = dict(getattr(s, "equipped_costumes", {}) or {})
+                    if cid not in equip:
+                        equip[cid] = time.time()
+                        s.equipped_costumes = equip
+                if item.item_type == "item":
+                    EventBus.emit(
+                        "item_collected", target=item.item_id, name=item.name
+                    )
 
     # -------------------------------------------------------------- 持久化
     def _save_state(self) -> None:
