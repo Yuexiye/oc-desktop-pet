@@ -206,11 +206,20 @@ class NurturingMixin:
             logger.exception("_do_work_finish failed")
 
     def _on_mission_completed_bubble(self, mission_id="", name="", rewards=None):
-        """任务完成通知（事件总线回调，主线程）——合并节流。
+        """任务完成通知（事件总线回调）——合并节流。
 
         启动时积压的每日任务/成就会在几秒内连续触发多个 mission_completed，
         逐个弹气泡会刷屏（🤝🎪💖🔋👀…）。改为 3 秒窗口内合并成一条气泡。
+
+        线程安全：mission_completed 可能由 MultiPetDispatcher 后台线程链触发
+        （multi_pet_event -> mission_tracker -> mission_completed），而这里会创建
+        QTimer(self) 并 start——QTimer 必须在主线程创建/启动。跨线程调用走
+        mission_bubble_signal 绕回主线程（与 _show_bubble 同模式）。
         """
+        from PySide6.QtCore import QThread
+        if QThread.currentThread() is not self.thread():
+            self.mission_bubble_signal.emit(str(mission_id), str(name), rewards)
+            return
         try:
             if not name:
                 return
@@ -249,11 +258,21 @@ class NurturingMixin:
     # ── 任务系统 UI（03 成长计划） ──
 
     def _emit_level_up(self, old_level: int, new_level: int):
-        """升级事件发射（由 PetSaveManager.on_level_up 回调，可能处于任意线程）
+        """升级事件发射入口（PetSaveManager.on_level_up 回调，可能处于任意线程）。
 
-        用 QTimer 延迟到事件循环空闲时发射，彻底切断"奖励结算 -> add_exp -> 升级 ->
-        再发射"的同步递归链；非 GUI 环境（冒烟测试）降级为立即发射。
+        线程安全：非主线程先走 level_up_signal 绕回主线程（queued connection），
+        主线程内用 singleShot(0) 异步发射——切断
+        「奖励结算 -> add_exp -> 升级 -> 再发射」的同步递归链；
+        非 GUI 环境（冒烟测试）降级为立即发射。
         """
+        from PySide6.QtCore import QThread
+        if QThread.currentThread() is not self.thread():
+            self.level_up_signal.emit(int(old_level), int(new_level))
+            return
+        self._fire_level_up(old_level, new_level)
+
+    def _fire_level_up(self, old_level: int, new_level: int):
+        """主线程发射 level_up 事件（保持异步语义，防递归链）。"""
         try:
             from core.event_bus import EventBus
         except Exception:

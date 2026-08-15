@@ -96,6 +96,12 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
     # 气泡：MultiPetBridge dispatcher / mission_tracker 等后台线程也会调 _show_bubble，
     # 而它内部要 start QTimer——必须先绕回主线程，否则 Qt 拒绝启动定时器。
     bubble_signal = Signal(str, str, int)  # text, emotion, priority
+    # 任务完成气泡：mission_completed 可能从 MultiPetDispatcher(后台线程)链触发，
+    # 直接创建/start QTimer 会报 Cannot create children + startTimer 跨线程警告。
+    mission_bubble_signal = Signal(str, str, object)  # mission_id, name, rewards
+    # 升级事件：PetSaveManager.on_level_up 回调可能处于任意线程，且需要在主线程
+    # 用 singleShot(0) 异步发射（切断奖励结算递归链）——跨线程先绕回主线程。
+    level_up_signal = Signal(int, int)  # old_level, new_level
 
     def __init__(self, agent_id: str = "yuexinmiao", sprite_dir: str = None,
                  position: dict = None, scale: float = 1.0,
@@ -337,6 +343,8 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self.tool_progress_signal.connect(self._do_tool_progress)
         # 后台线程调 _show_bubble 时经此信号绕回主线程（queued connection）
         self.bubble_signal.connect(self._show_bubble_impl)
+        self.mission_bubble_signal.connect(self._on_mission_completed_bubble)
+        self.level_up_signal.connect(self._fire_level_up)
 
         # 连接跨线程信号
         self.engine_reply_signal.connect(self._do_engine_reply)
