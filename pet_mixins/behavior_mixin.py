@@ -144,11 +144,13 @@ class BehaviorMixin:
         if going is not None:
             self._show_bubble("你回来啦~", emotion="happy")
 
-        # 窗口互动：桌宠靠近当前窗口（带冷却）
+        # 窗口互动：桌宠靠近当前窗口（带冷却）——仅当显式开启 auto_walk 时触发。
+        # 默认关闭：用户不希望在每次切换前台窗口时桌宠自动跳过去（位置漂移、
+        # 像“偏左偏右”的困扰来源）。要恢复旧行为：设置里开“自动跟随窗口”。
         if hasattr(self, '_window_interaction'):
             wi_config = self.config.get('window_interaction', {})
-            if wi_config.get('enabled', True):
-                cooldown = wi_config.get('cooldown_seconds', 30)
+            if wi_config.get('enabled', True) and wi_config.get('auto_walk', False):
+                cooldown = wi_config.get('cooldown_seconds', 600)
                 now = time.time()
                 if not hasattr(self, '_last_move_near'):
                     self._last_move_near = 0

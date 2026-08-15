@@ -75,6 +75,7 @@ DEFAULT_CONFIG = {
     },
     "window_interaction": {
         "enabled": True,
+        "auto_walk": False,
         "cooldown_seconds": 600
     },
     "memory": {

@@ -361,10 +361,14 @@ class SettingsDialog(QDialog):
         self.wi_enabled.setChecked(self._config.get("window_interaction", {}).get("enabled", True))
         wi_layout.addRow(self.wi_enabled)
 
+        self.wi_auto_walk = QCheckBox("自动跟随窗口（切换窗口时桌宠走到窗口旁）")
+        self.wi_auto_walk.setChecked(self._config.get("window_interaction", {}).get("auto_walk", False))
+        wi_layout.addRow(self.wi_auto_walk)
+
         self.wi_cooldown = QSpinBox()
-        self.wi_cooldown.setRange(5, 300)
+        self.wi_cooldown.setRange(5, 1800)
         self.wi_cooldown.setSuffix(" 秒")
-        self.wi_cooldown.setValue(self._config.get("window_interaction", {}).get("cooldown_seconds", 30))
+        self.wi_cooldown.setValue(self._config.get("window_interaction", {}).get("cooldown_seconds", 600))
         wi_layout.addRow("冷却时间", self.wi_cooldown)
 
         interact_layout.addWidget(wi_group)
@@ -1165,6 +1169,7 @@ class SettingsDialog(QDialog):
 
         # 窗口互动
         c.setdefault("window_interaction", {})["enabled"] = self.wi_enabled.isChecked()
+        c["window_interaction"]["auto_walk"] = self.wi_auto_walk.isChecked()
         c["window_interaction"]["cooldown_seconds"] = self.wi_cooldown.value()
 
         # 久坐提醒
