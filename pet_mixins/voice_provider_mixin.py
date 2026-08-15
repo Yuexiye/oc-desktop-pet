@@ -43,6 +43,16 @@ class VoiceProviderMixin:
             elif provider == "api":
                 from tts_provider.api_tts import ApiTtsProvider
                 return ApiTtsProvider()
+            elif provider == "edge":
+                from tts_provider.edge_tts import EdgeTtsProvider
+                tts_cfg = self.config.get("tts", {}) or {}
+                edge = EdgeTtsProvider()
+                edge.configure(
+                    voice=tts_cfg.get("edge_voice", ""),
+                    rate=tts_cfg.get("edge_rate", ""),
+                    pitch=tts_cfg.get("edge_pitch", ""),
+                )
+                return edge
             elif provider == "aqua":
                 from tts_provider.aqua_tts import AquaTtsProvider
                 return AquaTtsProvider()
@@ -72,6 +82,14 @@ class VoiceProviderMixin:
                 )
             except Exception:
                 api_sig = ()
+        elif provider == "edge":
+            # edge 引擎参数改变时也要重建
+            tts_cfg = self.config.get("tts", {}) or {}
+            api_sig = (
+                tts_cfg.get("edge_voice", ""),
+                tts_cfg.get("edge_rate", ""),
+                tts_cfg.get("edge_pitch", ""),
+            )
         return (provider, api_sig)
 
     def _maybe_reload_tts_provider(self):

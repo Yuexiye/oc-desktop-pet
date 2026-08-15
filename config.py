@@ -34,7 +34,9 @@ DEFAULT_CONFIG = {
     },
     "tts": {
         "enabled": True,
-        "volume": 0.8
+        "volume": 0.8,
+        # edge 引擎可选项：默认晓晓，可在设置面板切换
+        "edge_voice": "zh-CN-XiaoxiaoNeural",
     },
     "sfx": {
         "enabled": True,

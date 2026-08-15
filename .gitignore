@@ -38,3 +38,7 @@ PROJECT_LOG.md
 *.bak
 *.bak-*
 
+
+# 运行时进程文件
+scripts/*.pid
+scripts/_wt_live.py

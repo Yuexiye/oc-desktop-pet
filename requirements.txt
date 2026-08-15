@@ -14,6 +14,9 @@ soundfile>=0.12.0
 # TTS（CosyVoice 间接依赖）
 tqdm>=4.65.0
 
+# 微软 Edge TTS（免费在线合成，可选引擎：设置→语音输出→微软 Edge）
+edge-tts>=6.1.0
+
 # M4: Hanako WebSocket 客户端（同步适配现有 threading + Qt Signal 架构）
 websocket-client>=1.8.0
 

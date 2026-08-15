@@ -216,10 +216,35 @@ class SettingsDialog(QDialog):
         tts_layout.addRow(self.tts_enabled)
 
         self.tts_provider = QComboBox()
-        self.tts_provider.addItems(["本地 CosyVoice", "MIMO TTS", "API 调用"])
-        tts_prov_map = {"cosyvoice": 0, "mimo": 1, "api": 2}
+        self.tts_provider.addItems(["本地 CosyVoice", "MIMO TTS", "API 调用", "微软 Edge (免费)"])
+        tts_prov_map = {"cosyvoice": 0, "mimo": 1, "api": 2, "edge": 3}
         self.tts_provider.setCurrentIndex(tts_prov_map.get(self._config.get("tts", {}).get("provider", "cosyvoice"), 0))
         tts_layout.addRow("TTS 引擎", self.tts_provider)
+
+        # 微软 Edge 音色选择（仅当选中 Edge 引擎时显示）
+        self.tts_edge_voice = QComboBox()
+        try:
+            from tts_provider.edge_tts import EDGE_VOICES, DEFAULT_VOICE
+        except Exception:
+            EDGE_VOICES, DEFAULT_VOICE = ["zh-CN-XiaoxiaoNeural"], "zh-CN-XiaoxiaoNeural"
+        self.tts_edge_voice.addItems(EDGE_VOICES)
+        cur_voice = self._config.get("tts", {}).get("edge_voice", DEFAULT_VOICE)
+        idx = self.tts_edge_voice.findText(cur_voice)
+        self.tts_edge_voice.setCurrentIndex(idx if idx >= 0 else 0)
+        tts_layout.addRow("Edge 音色", self.tts_edge_voice)
+
+        def _toggle_edge_voice():
+            is_edge = self.tts_provider.currentIndex() == 3
+            self.tts_edge_voice.setVisible(is_edge)
+            self.tts_edge_voice.setEnabled(is_edge)
+            # 重新布局以收起空行
+            ok = self.tts_edge_voice.isVisibleTo(self)
+            label = tts_layout.labelForField(self.tts_edge_voice)
+            if label:
+                label.setVisible(ok)
+
+        self.tts_provider.currentIndexChanged.connect(_toggle_edge_voice)
+        _toggle_edge_voice()
 
         self.tts_volume = QSlider(Qt.Horizontal)
         self.tts_volume.setRange(0, 100)
@@ -1141,8 +1166,10 @@ class SettingsDialog(QDialog):
 
         # TTS
         c.setdefault("tts", {})["enabled"] = self.tts_enabled.isChecked()
-        c["tts"]["provider"] = ["cosyvoice", "mimo", "api"][self.tts_provider.currentIndex()]
+        c["tts"]["provider"] = ["cosyvoice", "mimo", "api", "edge"][self.tts_provider.currentIndex()]
         c["tts"]["volume"] = self.tts_volume.value() / 100
+        if hasattr(self, "tts_edge_voice"):
+            c["tts"]["edge_voice"] = self.tts_edge_voice.currentText()
 
         # SFX
         c.setdefault("sfx", {})["enabled"] = self.sfx_enabled.isChecked()
