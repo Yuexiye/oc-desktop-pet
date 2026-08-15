@@ -655,6 +655,13 @@ class ConversationEngine:
             if tts is not None:
                 self._tts_in_use += 1  # 引用计数：让 TTSReload 知道此实例正在使用
         audio_path = ""
+        # 已配置 provider 但未就绪（依赖缺失/网络不可用）：明确告警，避免“静默无语音”。
+        if tts and not tts_ready:
+            _reason = getattr(tts, "last_error", "") or "preload 未完成或依赖缺失"
+            logger.warning(
+                "TTS 已配置(provider=%s)但未就绪，跳过语音合成：%s",
+                getattr(tts, "name", "?"), _reason,
+            )
         try:
             if tts and tts_ready and reply and reply.strip() and reply.strip() not in ("\u2026", "..."):
                 try:
@@ -668,9 +675,21 @@ class ConversationEngine:
                     if audio_path:
                         logger.info("TTS done: %s", os.path.basename(audio_path))
                     else:
-                        logger.warning("TTS failed, no audio")
+                        # 合成未产出音频：把 provider 的真实错误（如 edge 网络不可达/
+                        # edge-tts 未安装）亮出来，而不是静默只显示文字气泡。
+                        _err = getattr(tts, "last_error", "") or "未知（网络不可达或服务不可用）"
+                        logger.warning(
+                            "TTS 合成失败：provider=%s 原因=%s",
+                            getattr(tts, "name", "?"), _err,
+                        )
                 except Exception as e:
                     logger.warning("TTS error: %s", e)
+                finally:
+                    # 复位“语音生成中”状态，避免气泡长期卡在提示
+                    try:
+                        self.on_status("")
+                    except Exception:
+                        pass
         finally:
             with self._lock:
                 if self._tts_in_use > 0:

@@ -482,8 +482,12 @@ class Live2DRenderer(AvatarRenderer):
             # pad_h 用 0.38 且保底 26px，专门防角色脚/裙摆被窗口下边缘截断。
             pad_w = max(14, int(bw * 0.28))
             pad_h = max(26, int(bh * 0.38))
+            # 额外底部补偿：HitDrawable 命中区通常只覆盖身体，脚部/裙摆常画在命中区
+            # 之外，导致 hit-bbox 底部不含脚、bh 偏小、窗口过矮而裁脚。单独在底部再加
+            # 一段边距（不占用左右/顶部），保证脚完整显示在窗口内。
+            pad_bottom = max(28, int(bh * 0.30))
             target_w = max(40, bw + pad_w)
-            target_h = max(40, bh + pad_h)
+            target_h = max(40, bh + pad_h + pad_bottom)
             logger.info(
                 "Live2DRenderer: 角色 bbox=%dx%d (偏移 %d,%d)，窗口贴合到 %dx%d (+%dpx 边距)",
                 bw, bh, min_x, min_y, target_w, target_h, pad_w,
@@ -843,13 +847,14 @@ class Live2DRenderer(AvatarRenderer):
         except Exception:
             pass
 
-    def _note_motion_started(self, fname: str = "") -> None:
+    def _note_motion_started(self, fname: str = "", is_idle: bool = False) -> None:
         """记录当前 motion 是否常态 idle 并重置计时（卡手势超时兜底用）。
 
-        fname 为空（非 idle 手势/随机 motion）→ 视为限时动作，播满
-        GESTURE_TIMEOUT 秒强制回 idle。
+        is_idle 由调用方显式传入（idle 动作=True，手势/随机动作=False），
+        不再依赖文件名是否含 "idle" 猜测——避免某手势 motion 文件名恰含 "idle"
+        被错判为 idle，导致 GESTURE_TIMEOUT 兜底永不触发、手势永久卡住（如比心）。
         """
-        self._motion_is_idle = bool(fname) and "idle" in os.path.basename(fname).lower()
+        self._motion_is_idle = bool(is_idle)
         self._motion_started_at = time.monotonic()
 
     def _force_idle(self) -> None:
@@ -886,7 +891,7 @@ class Live2DRenderer(AvatarRenderer):
                     fname = (motion_list[idx].get("File", "")
                              if isinstance(motion_list[idx], dict) else "")
                     self._model.StartMotion(group, idx, self._live2d.MotionPriority.IDLE)
-                    self._note_motion_started(fname)
+                    self._note_motion_started(fname, is_idle=True)
                     return
             # fallback：StartRandomMotion（组名非空时有效）
             if self._motion_groups:
@@ -895,7 +900,7 @@ class Live2DRenderer(AvatarRenderer):
             else:
                 self._model.StartRandomMotion(self._live2d.MotionGroup.IDLE,
                                               self._live2d.MotionPriority.IDLE)
-            self._note_motion_started("idle")  # fallback 视为 idle，不受超时限制
+            self._note_motion_started("idle", is_idle=True)  # fallback 视为 idle，不受超时限制
         except Exception as e:
             # 忽略 "motion priority is too low" 警告（正常行为，idle 被更高优先级 motion 打断）
             if "priority is too low" not in str(e):
@@ -956,7 +961,7 @@ class Live2DRenderer(AvatarRenderer):
             prio = priority if priority is not None else self._live2d.MotionPriority.NORMAL
             self._model.StartMotion(self._motion_group_name, idx, prio)
             self._current_motion_idx = idx
-            self._note_motion_started(fname)
+            self._note_motion_started(fname, is_idle=False)
             return True
         except Exception as e:
             logger.warning("Live2DRenderer.StartMotion 异常: %s", e)

@@ -83,6 +83,11 @@ class EdgeTtsProvider(TTSProvider):
     def is_ready(self) -> bool:
         return self._ready
 
+    @property
+    def last_error(self) -> str:
+        """最近一次合成/预检失败的原因（供引擎层在“无语音”时给出明确报错）。"""
+        return self._last_error
+
     def preload(self):
         """轻量预检：库可用即就绪（在线服务，网络失败在 synthesize 期暴露）"""
         try:

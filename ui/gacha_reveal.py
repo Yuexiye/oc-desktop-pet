@@ -43,6 +43,14 @@ class GachaReveal(QWidget):
         self._center_on_screen()
         self._animate_in()
 
+        # 预创建淡出动画（dismiss 复用）；不在 __init__ 启动时窗口保持不透明。
+        # gacha_mixin 会在 show() 之后立即连接 _op_out.finished，故必须先存在。
+        self._op_out = QPropertyAnimation(self, b"windowOpacity")
+        self._op_out.setDuration(260)
+        self._op_out.setStartValue(self.windowOpacity())
+        self._op_out.setEndValue(0.0)
+        self._op_out.finished.connect(self.close)
+
         # 自动消失
         self._auto = QTimer(self)
         self._auto.setSingleShot(True)
@@ -145,11 +153,6 @@ class GachaReveal(QWidget):
             return
         self._dismissed = True
         self._auto.stop()
-        self._op_out = QPropertyAnimation(self, b"windowOpacity")
-        self._op_out.setDuration(260)
-        self._op_out.setStartValue(self.windowOpacity())
-        self._op_out.setEndValue(0.0)
-        self._op_out.finished.connect(self.close)
         self._op_out.start()
 
     def mousePressEvent(self, event):
@@ -229,6 +232,15 @@ class GachaRevealMulti(QWidget):
         self._build_cells()
         self._center_on_screen()
         self._animate_in()
+
+        # 预创建淡出动画（dismiss 复用）；gacha_mixin 在 show() 后会立即连接
+        # _op_out.finished，故必须先存在，避免 AttributeError 导致演出降级。
+        self._op_out = QPropertyAnimation(self, b"windowOpacity")
+        self._op_out.setDuration(260)
+        self._op_out.setStartValue(self.windowOpacity())
+        self._op_out.setEndValue(0.0)
+        self._op_out.finished.connect(self.close)
+
         try:
             from ui.gacha_sound import play_reveal
             play_reveal(best_rv)
@@ -353,11 +365,6 @@ class GachaRevealMulti(QWidget):
             return
         self._dismissed = True
         self._auto.stop()
-        self._op_out = QPropertyAnimation(self, b"windowOpacity")
-        self._op_out.setDuration(260)
-        self._op_out.setStartValue(self.windowOpacity())
-        self._op_out.setEndValue(0.0)
-        self._op_out.finished.connect(self.close)
         self._op_out.start()
 
     def mousePressEvent(self, event):

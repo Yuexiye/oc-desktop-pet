@@ -1370,6 +1370,9 @@ class SettingsDialog(QDialog):
                         if not ac["dialog"]:
                             ac.pop("dialog", None)
 
+        # 落盘：将内存改动持久化到 config.json（原子写），否则关闭后配置丢失。
+        save_config(self._config)
+
         self.accept()
 
     def get_config(self) -> dict:
