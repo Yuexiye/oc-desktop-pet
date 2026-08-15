@@ -205,6 +205,14 @@ class ConversationEngine:
             tool_progress_signal = Signal(str, str, str, object)
         
         self._dispatcher = _CallbackDispatcher()
+        # P0-1: 保存“当前”真实回调——此时 pet 已把自己的 _on_engine_reply 等挂上来，
+        # 供 _real_on_* 经信号绕回主线程后调用。过去在 __init__ 保存的是空 lambda，
+        # 导致“有回复无气泡/状态提示丢空函数上”的根因。
+        self._original_on_reply = self.on_reply
+        self._original_on_status = self.on_status
+        self._original_on_progress = self.on_progress
+        self._original_on_tts_ready = self.on_tts_ready
+        self._original_on_tool_progress = self.on_tool_progress
         # 连接信号到真实回调（在主线程执行）
         self._dispatcher.reply_signal.connect(self._real_on_reply)
         self._dispatcher.status_signal.connect(self._real_on_status)

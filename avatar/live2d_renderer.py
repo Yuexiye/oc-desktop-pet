@@ -371,10 +371,26 @@ class Live2DRenderer(AvatarRenderer):
                 return
             bw = max_x - min_x + 1
             bh = max_y - min_y + 1
-            # 留一点呼吸边距：bbox 直接贴合会让角色顶满窗口显得“挤”。
-            # 简单按 6% 扩充宽高（下限 +2px），不改变角色实际大小。
-            pad_w = max(2, int(bw * 0.06))
-            pad_h = max(2, int(bh * 0.06))
+            # 自动居中：模型在画布里常偏右/偏左（作者留白），缩放后贴边被裁。
+            # 用 SetOffsetX 把模型平移到视口中心（实测校准 calib）。
+            try:
+                cw_log, _ch_log = self._model.GetCanvasSize()
+                if cw_log and cw_log > 0:
+                    ideal_min_x = (gl_w - bw) / 2.0
+                    shift_px = ideal_min_x - min_x
+                    offx = shift_px * cw_log * 2.0 / gl_w
+                    offx = max(-0.9, min(0.9, offx))
+                    self._model.SetOffsetX(offx)
+                    logger.info(
+                        "Live2DRenderer: 居中补偿 min_x=%d→%.0f shift=%+.0fpx offx=%+.3f",
+                        min_x, ideal_min_x, shift_px, offx,
+                    )
+            except Exception as _e:
+                logger.debug("居中补偿失败（跳过）: %s", _e)
+            # 边距：miku 这类带大摆幅 idle 动作的模型，贴太死会让摆动超出窗口被裁。
+            # 用 20% 边距（下限 +8px）给动作留出摆动余量，避免"一部分总在窗口外"。
+            pad_w = max(8, int(bw * 0.20))
+            pad_h = max(8, int(bh * 0.20))
             target_w = max(40, bw + pad_w)
             target_h = max(40, bh + pad_h)
             logger.info(
