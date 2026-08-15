@@ -15,13 +15,20 @@
 
 基于 PySide6 的 AI 桌面伴侣，深度集成 Hanako 生态。支持多桌宠并行运行，每个 Hanako agent 可独立拥有一个桌宠窗口。
 
+> **💡 一句话说明：Hanako 是什么？**
+> Hanako（本项目的宿主）是运行在后台的 AI 助手框架。oc-pet 桌宠**不是独立 AI**——
+> 它的对话、记忆、工具调用都复用你机器上 `~/.hanako/` 里已有的 Hanako 配置。
+> 换句话说：先装 Hanako 并配好模型/API，桌宠才有灵魂；没装 Hanako 时桌宠会用内置降级逻辑跑基础对话。
+> 安装见下方「环境要求」。
+
 <details>
 <summary>功能清单</summary>
 
 ### 对话系统
 - 💬 **文字对话** -- 复用 Hanako 身份/记忆/模型配置，支持 tool calling
-- 🗣️ **TTS 语音输出** -- 三种引擎可选：
+- 🗣️ **TTS 语音输出** -- 四种引擎可选：
   - CosyVoice2 本地克隆（零样本克隆，需 GPU）
+  - **微软 Edge TTS（免费在线，秒级，免注册免 key）**
   - MIMO TTS（小米 MiMo V2.5，音色可选）
   - OpenAI 兼容 API
 - 🎤 **ASR 语音输入** -- 三种引擎可选：
@@ -109,14 +116,26 @@ linjian-peek → MCP Plugin → Hanako tool calling ─────────�
 - **Python**: 3.10+
 - **操作系统**: Windows 10/11
 - **Hanako**: 已安装并配置（桌宠读取 `~/.hanako/` 下的配置和角色数据）
+  - Hanako 项目：<https://github.com/liliMozi/openhanako>
+  - 安装后运行**至少一次**（生成 `~/.hanako/agents/` 与 `provider-catalog.json`）
+  - 不装 Hanako 也能启动桌宠（走本地降级对话），但会缺失身份/记忆/多助手等核心能力
 
 ## 快速开始
 
-### 1. 安装依赖
+> 首次拉取仓库如果因网络中断报 `early EOF`，重试一次即可（可加 `git config http.postBuffer 524288000` 增大缓冲）。
+
+### 1. 创建虚拟环境并安装依赖
 
 ```bash
+# 推荐：创建 venv，避免污染系统 Python
+python -m venv .venv
+.venv\Scripts\activate
+
 pip install -r requirements.txt
 ```
+
+> 不用 venv 直接 `pip install -r requirements.txt` 也可以跑，但会装进全局环境。
+> 强烈建议用 venv——本项目依赖较多（PySide6 等 170MB+），可随时删除重建。
 
 ### 2. 确保 Hanako 已安装
 
@@ -210,7 +229,7 @@ setup_tts.bat --cosyvoice-repo https://your.git/cosyvoice-tts.git
   },
   "tts": {
     "enabled": true,
-    "provider": "cosyvoice",      // TTS 引擎: cosyvoice(本地) / mimo(在线) / api
+    "provider": "cosyvoice",      // TTS 引擎: cosyvoice(本地) / edge(微软免费) / mimo(在线) / api
     "volume": 0.8
   },
   "asr": {
