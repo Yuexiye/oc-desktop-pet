@@ -437,12 +437,23 @@ class Live2DRenderer(AvatarRenderer):
             #   <1  = 缩小留白
             #   >1  = 放大裁剪（特写）
             fit = self._fit_scale
-            # 横向比例系数：仅 pet.json 显式配置 scale_x 时生效（用户可调）。
-            # 不再自动补偿：之前的“画布宽高比 < 0.7 即放大 sv=0.55/ratio”是基于画布
-            # 比例的误判——miku 这类超高画布（3500x8888）是作者左右留白导致画布比例小，
-            # 但模型内容体比例正常（bbox 渇 155x289=0.536），放大后反而把模型推偏/贴边，
-            # 是“有时偏左有时偏右”的根源。默认 sx=1.0 等比缩放，位置稳定。
+            # 横向比例系数：
+            # - pet.json 显式配置 scale_x 时用它
+            # - 否则超高画布（如 miku 3500x8888）等比缩放会因画布超高导致角色横向偏细，
+            #   自动按画布比例补正（缓存后稳定，不再每次重算）。
+            # 之前“偏移不稳定”的真凶是 offset 时序 bug（已移除），不是 scale_x 本身；
+            # scale_x 是确定性缩放，恢复后模型稳定不跳。
             sx = getattr(self, "_fit_scale_x", 1.0)
+            if sx == 1.0 and cw_px and ch_px and cw_px / ch_px < 0.7:
+                try:
+                    ratio = cw_px / ch_px
+                    # 参考比 0.48：补到接近人体但不过度。之前 0.55 会让偏右的 miku
+                    # 横向放得过大，右边贴到视口边缘被裁。0.48 → sx≈1.22，模型不瘦、
+                    # 右边留一点余量不裁。
+                    sx = round(max(1.0, min(0.48 / ratio, 1.5)), 3)
+                    self._fit_scale_x = sx
+                except Exception:
+                    sx = 1.0
             if sx != 1.0:
                 try:
                     self._model.SetScaleX(fit * sx)
