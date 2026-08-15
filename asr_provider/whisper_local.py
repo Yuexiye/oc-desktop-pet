@@ -124,9 +124,17 @@ class WhisperLocalProvider(ASRProvider):
             try:
                 import voice_input
                 if hasattr(voice_input, '_whisper_model') and voice_input._whisper_model is not None:
-                    WhisperLocalProvider._model = voice_input._whisper_model
+                    model = voice_input._whisper_model
+                    WhisperLocalProvider._model = model
                     WhisperLocalProvider._loaded = True
-                    logger.info("Reused voice_input global Whisper model")
+                    # 同步 backend 标记：voice_input 按 config 可能加载了 faster-whisper 模型，
+                    # 复用后必须用它那套 transcribe 分支（VAD/置信度），否则静默退回 openai 路径
+                    if getattr(model, "_fw_backend", False):
+                        WhisperLocalProvider._backend = "faster_whisper"
+                    else:
+                        WhisperLocalProvider._backend = "whisper"
+                    logger.info("Reused voice_input global Whisper model (backend=%s)",
+                                WhisperLocalProvider._backend)
             except Exception as e:
                 logger.debug("Could not import voice_input: %s", e)
                 pass

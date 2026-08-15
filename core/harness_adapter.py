@@ -360,6 +360,14 @@ class HanakoPetAdapter:
                 err_msg = str(e)
                 if "pending turn" in err_msg.lower() and attempt < max_retries - 1:
                     logger.info("Session busy, retry %d/%d in %.1fs", attempt + 1, max_retries, retry_delay)
+                    # 重试仍在忙：可能是服务端 turn 清理卡住/“半个发送”挂了锁。
+                    # 尝试强制中断当前 turn，释放服务端锁，避免 session 永久卡死
+                    # （不中断则后续所有消息都会持续撞 busy）。
+                    if attempt >= 1:
+                        try:
+                            self._session_manager.abort(self._current_session, "busy_reset")
+                        except Exception:
+                            pass
                     _time.sleep(retry_delay)
                     retry_delay *= 1.5  # 递增等待
                     continue

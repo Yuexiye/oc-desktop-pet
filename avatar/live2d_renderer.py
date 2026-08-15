@@ -817,11 +817,13 @@ class Live2DRenderer(AvatarRenderer):
             if "priority is too low" not in str(e):
                 logger.warning("Live2DRenderer: 起始待机动作失败: %s", e)
 
-    def _play_motion_kw(self, *keywords, priority=None) -> bool:
+    def _play_motion_kw(self, *groups, priority=None) -> bool:
         """按文件名关键词从 motion 列表找第一个匹配并播放。
 
         模型所有动作都在一个组（如空串 ""），组名匹配不上任何关键词，
         所以按 GetMotions() 的 File 文件名匹配（如 touch_head → "touch"+"head"）。
+        支持多组备选关键词：每组内先 all 后 any 匹配，组间按顺序（前组优先）——
+        兼容 lafei（main_1/2/3、home…）与 miku（waving/touch/thinking…）两种模型命名。
 
         Returns:
             True 表示找到了并播放；False 表示无匹配（调用方可回退）。
@@ -829,31 +831,40 @@ class Live2DRenderer(AvatarRenderer):
         if not self._model or not self._motion_files:
             return False
         try:
-            idx = None
-            kws = [k.lower() for k in keywords if k]
-            for i, f in enumerate(self._motion_files):
-                low = f.lower()
-                if all(k in low for k in kws):
-                    idx = i
-                    break
-            if idx is None:
-                # 宽松：任一关键词命中即可
+            # 兼容旧式单组扁平调用（("main", "1")）→ 包成多组
+            if groups and not isinstance(groups[0], (tuple, list)):
+                groups = (groups,)
+            for kws in groups:
+                kws = [k.lower() for k in kws if k]
+                if not kws:
+                    continue
+                # 严格：全部关键词命中
+                for i, f in enumerate(self._motion_files):
+                    low = f.lower()
+                    if all(k in low for k in kws):
+                        return self._start_motion_at(i, priority)
+                # 宽松：任一关键词命中
                 for i, f in enumerate(self._motion_files):
                     low = f.lower()
                     if any(k in low for k in kws):
-                        idx = i
-                        break
-            if idx is None:
-                return False
+                        return self._start_motion_at(i, priority)
+            return False
+        except Exception as e:
+            # 忽略 "motion priority is too low" 警告（正常行为）
+            if "priority is too low" not in str(e):
+                logger.warning("Live2DRenderer._play_motion_kw 异常: %s", e)
+            return False
+
+    def _start_motion_at(self, idx: int, priority=None) -> bool:
+        """按索引播 motion 并记录起始状态（卡手势超时兜底用）。"""
+        try:
             fname = self._motion_files[idx] if idx < len(self._motion_files) else ""
             prio = priority if priority is not None else self._live2d.MotionPriority.NORMAL
             self._model.StartMotion(self._motion_group_name, idx, prio)
             self._note_motion_started(fname)
             return True
         except Exception as e:
-            # 忽略 "motion priority is too low" 警告（正常行为）
-            if "priority is too low" not in str(e):
-                logger.warning("Live2DRenderer._play_motion_kw 异常: %s", e)
+            logger.warning("Live2DRenderer.StartMotion 异常: %s", e)
             return False
 
     def _match_expression(self, emotion: str):
@@ -879,28 +890,30 @@ class Live2DRenderer(AvatarRenderer):
 
     # ── 动画控制 ──
 
-    # 精灵动画名/情绪 → Live2D motion 文件名关键词（模型动作全在空组，按文件名匹配）
+    # 精灵动画名/情绪 → Live2D motion 文件名关键词（模型动作全在空组，按文件名匹配）。
+    # 值是多组备选关键词：每组按 all→any 匹配，组间按顺序（前组优先）。
+    # 兼容两种模型命名：lafei（main_1/2/3、home、touch_head…）与 miku（happy/waving/touch…）
     _ANIM_TO_MOTION_KW = {
-        "idle": ("idle",),
-        "waving": ("main", "1"),
-        "happy": ("main", "1"),
-        "walk": ("main", "2"),
-        "sleep": ("home",),
-        "working": ("main", "3"),
-        "thinking": ("main", "3"),
-        "failed": ("mission",),
-        "sad": ("mission",),
-        "surprised": ("login",),
-        "angry": ("mission_complete",),
-        "touch": ("touch_head",),
-        "pat": ("touch_head",),
-        "stroke": ("touch_body",),
-        "pet": ("touch_body",),
-        "special": ("touch_special",),
-        "wedding": ("wedding",),
-        "login": ("login",),
-        "mail": ("mail",),
-        "complete": ("complete",),
+        "idle": (("idle",),),
+        "waving": (("waving",), ("main", "1")),
+        "happy": (("happy",), ("main", "1")),
+        "walk": (("walk",), ("main", "2")),
+        "sleep": (("sleep",), ("home",)),
+        "working": (("working",), ("main", "3")),
+        "thinking": (("thinking",), ("main", "3")),
+        "failed": (("failed",), ("mission",)),
+        "sad": (("sad",), ("mission",)),
+        "surprised": (("surprised",), ("login",)),
+        "angry": (("angry",), ("mission_complete",)),
+        "touch": (("touch",), ("touch_head",)),
+        "pat": (("touch",), ("touch_head",)),
+        "stroke": (("stroke",), ("touch_body",)),
+        "pet": (("stroke",), ("touch_body",)),
+        "special": (("special",), ("touch_special",)),
+        "wedding": (("wedding",),),
+        "login": (("login",),),
+        "mail": (("mail",),),
+        "complete": (("complete",),),
     }
 
     def play_anim(self, anim: str, emotion: str = "", frame_range=None) -> None:

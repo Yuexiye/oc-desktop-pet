@@ -59,7 +59,12 @@ def _asr_language() -> str:
 
 
 def _get_whisper_model():
-    """懒加载 Whisper 模型"""
+    """懒加载 Whisper 模型（尊重 config 的 asr.backend）。
+
+    之前硬编码 openai-whisper，导致 whisper_local 复用后 _backend 仍是
+    "whisper"——faster-whisper 的 VAD 过滤/置信度永远不生效。
+    现在按 config 加载，并给模型打 _fw_backend 标记供复用方识别。
+    """
     global _whisper_model, _whisper_loading
     if _whisper_model is not None:
         return _whisper_model
@@ -67,11 +72,25 @@ def _get_whisper_model():
         return None
     _whisper_loading = True
     try:
-        import whisper
         size = _get_asr_model_name()
-        logger.info("Whisper 模型加载中... (%s)", size)
-        _whisper_model = whisper.load_model(size)
-        logger.info("Whisper 模型就绪")
+        backend = "whisper"
+        try:
+            from config import load_config
+            backend = (load_config().get("asr", {}).get("backend") or "whisper").lower()
+        except Exception:
+            pass
+        logger.info("Whisper 模型加载中... (%s, backend=%s)", size, backend)
+        if backend == "faster_whisper":
+            from faster_whisper import WhisperModel
+            import torch
+            compute = "int8_float16" if torch.cuda.is_available() else "int8"
+            _whisper_model = WhisperModel(size, device="auto", compute_type=compute)
+            _whisper_model._fw_backend = True  # 供 whisper_local 复用方识别
+            logger.info("Whisper 模型就绪 (faster-whisper, compute=%s)", compute)
+        else:
+            import whisper
+            _whisper_model = whisper.load_model(size)
+            logger.info("Whisper 模型就绪")
     except Exception as e:
             # Whisper 是可选依赖，缺失时静默降级
             logger.info("Whisper 不可用（可选依赖未安装）: %s", e)

@@ -279,7 +279,7 @@ class BehaviorMixin:
                 ef.flash("blink", 900)
                 self._idle_face_cd = random.uniform(12, 22)
             return
-        self._idle_action_cd = random.uniform(14, 32)
+        self._idle_action_cd = random.uniform(8, 20)  # 待机微动作节奏：约 8-20 秒一次
 
         # 低精力时偶尔打盹（先于其他微动作）
         emgr = getattr(self, '_state_mgr', None)
@@ -355,8 +355,9 @@ class BehaviorMixin:
         if random.random() > mode_mult:
             return
 
-        # 候选微动作（对应 renderer._ANIM_TO_MOTION_KW 存在的键）
-        acts = ["waving", "thinking", "mail", "complete", "special"]
+        # 候选微动作（对应 renderer._ANIM_TO_MOTION_KW 的键；happy/touch 在 miku
+        # 语义名模型下都有效，mail/complete/special 只在 lafei 风格模型有）
+        acts = ["waving", "thinking", "happy", "touch", "mail", "special"]
         act = random.choice(acts)
         renderer = getattr(self, '_renderer', None)
         if renderer is not None and hasattr(renderer, 'play_anim'):
