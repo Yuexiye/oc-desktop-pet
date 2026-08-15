@@ -275,12 +275,21 @@ class CosyVoiceProvider(TTSProvider):
             self._replies.put(None)
 
     def _pump_stderr(self):
-        """必须排空，否则管道写满会把子进程卡死。"""
+        """必须排空，否则管道写满会把子进程卡死。
+
+        worker 的 fp16/CUDA/ORT provider 实锤行提到 info 级别（默认 INFO 配置
+        下 oc_pet.log 可见），其余保持 debug 防刷屏。
+        """
         proc = self._proc
         try:
             for line in proc.stderr:
                 line = line.rstrip()
-                if line:
+                if not line:
+                    continue
+                if any(k in line for k in ("fp16", "ORT", "ready", "cuda", "CUDA",
+                                          "provider", "error", "Error", "fail")):
+                    logger.info("[cosyvoice] %s", line[:300])
+                else:
                     logger.debug("[cosyvoice] %s", line[:500])
         except Exception:
             pass
