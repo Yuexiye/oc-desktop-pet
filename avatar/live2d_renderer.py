@@ -814,7 +814,9 @@ class Live2DRenderer(AvatarRenderer):
     def play_anim(self, anim: str, emotion: str = "", frame_range=None) -> None:
         self._current_anim = anim
         if emotion:
-            self.set_emotion(emotion)
+            # 缺陷② 修复：播放指定动作时，情绪只同步表情、不再重复播情绪 motion，
+            # 否则“情绪 motion + 动作 motion”连着播放，出现「生气表情 + 唱歌动作」错位。
+            self.set_emotion_expression_only(emotion)
         # Live2D：按精灵动画名映射到 motion 文件名播放（组名是空串匹配不上）
         kws = self._ANIM_TO_MOTION_KW.get(anim) or self._ANIM_TO_MOTION_KW.get(emotion)
         if kws:
@@ -826,6 +828,25 @@ class Live2DRenderer(AvatarRenderer):
                 self._model.StartRandomMotion(anim, self._live2d.MotionPriority.NORMAL)
             except Exception:
                 pass
+
+    def set_emotion_expression_only(self, emotion: str) -> None:
+        """仅同步情绪表情（不播动作）。给 play_anim 用，避免动作/表情错位。"""
+        self._current_emotion = emotion
+        self._emotion_target = emotion
+        if not self._model:
+            return
+        self._apply_expression(emotion)
+
+    def _apply_expression(self, emotion: str) -> None:
+        """应用情绪对应的表情（不碰 motion）。"""
+        expr = self._match_expression(emotion)
+        try:
+            if expr is None:
+                self._model.ResetExpressions()
+            else:
+                self._model.SetExpression(expr)
+        except Exception as e:
+            logger.warning("Live2DRenderer: 设置表情失败: %s", e)
 
     def set_emotion(self, emotion: str, intensity: float = 1.0) -> None:
         self._current_emotion = emotion
@@ -853,14 +874,7 @@ class Live2DRenderer(AvatarRenderer):
                 except Exception:
                     pass
         # 表情
-        expr = self._match_expression(emotion)
-        try:
-            if expr is None:
-                self._model.ResetExpressions()
-            else:
-                self._model.SetExpression(expr)
-        except Exception as e:
-            logger.warning("Live2DRenderer: 设置表情失败: %s", e)
+        self._apply_expression(emotion)
 
     # ── 视线 ──
 

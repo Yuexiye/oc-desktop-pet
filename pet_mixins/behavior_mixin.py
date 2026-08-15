@@ -474,7 +474,7 @@ class BehaviorMixin:
                 anim = 'idle'
             if anim in self._renderer._frames:
                 self._set_anim_seq(anim, emotion=emotion, style=get_transition_style(emotion))
-                self._set_surface_emotion(emotion, duration_ms=3000)
+                self._set_surface_emotion(emotion, duration_ms=3000, source="screen")
         except Exception:
             pass
 

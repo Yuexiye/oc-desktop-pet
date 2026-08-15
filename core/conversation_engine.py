@@ -828,10 +828,21 @@ class ConversationEngine:
             self.on_progress(display_text)
 
     def _handle_session_reply(self, result: object) -> None:
-        """镜像来自 Hanako 主窗口或插件的外部回复。"""
+        """镜像来自 Hanako 主窗口或插件的外部回复。
+
+        缺陷③ 修复：打断/插队语义。当本地队列还有用户消息待处理（用户在等
+        本地回复）时，外部镜像让位，避免两条回复音轨/气泡打架；本地空闲时
+        镜像正常同步（用户在主窗口跟同一 agent 聊天，桌宠跟随显示）。
+        """
         if getattr(result, "origin", "oc_pet") != "external":
             return
         if not self._is_current_session(getattr(result, "session", None)):
+            return
+        # 本地有 pending 用户消息（含正在处理的）→ 镜像让位
+        with self._lock:
+            pending_user = any(m.get("source") == "user" for m in self._queue)
+        if pending_user:
+            logger.debug("镜像回复让位（本地有 pending 用户消息）")
             return
         text, emotion = self._adapter.parse_emotion(getattr(result, "text", "") or "")
         self.on_reply(text or "…", emotion, map_emotion_to_anim(emotion), "")

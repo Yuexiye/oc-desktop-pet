@@ -175,6 +175,7 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self._emotion_expiry_timer.timeout.connect(self._on_emotion_expired)
         self._emotion_expiry_timer.setSingleShot(True)
         self._current_emotion = "neutral"
+        self._emotion_source = "neutral"   # 当前情绪来源（缺陷①优先级）
         # 屏幕情绪二次冷却，避免视觉模型反复输出同类关键词导致表情高频跳动
         self._screen_emotion_cooldown = 30.0  # 秒
         self._last_screen_emotion_at = 0.0
@@ -1436,9 +1437,34 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
             except Exception:
                 pass
 
-    def _set_surface_emotion(self, emotion: str, duration_ms: int = 3000):
-        """统一设置当前情绪并同步到情绪脸，启动过期计时器"""
-        self._current_emotion = emotion or "neutral"
+    # 情绪来源优先级（缺陷①）：数值越大越高优，低优先不能覆盖高优先。
+    # neutral 视为最低（0），任何来源都可覆盖回 neutral。
+    _EMOTION_PRIORITY = {
+        "dialog": 3,    # 对话回复情绪（LLM 明确表达）
+        "screen": 2,    # 屏幕内容触发
+        "timer": 1,     # 定时/主动对话/待机
+        "neutral": 0,   # 回归默认
+    }
+
+    def _set_surface_emotion(self, emotion: str, duration_ms: int = 3000, source: str = "dialog"):
+        """统一设置当前情绪并同步到情绪脸，启动过期计时器。
+
+        缺陷① 修复：带来源优先级。低优先级来源不能覆盖正显示的高优先级
+        非 neutral 情绪（如屏幕情绪不能顶掉正在讲话的对话情绪）。
+        """
+        emotion = emotion or "neutral"
+        new_prio = self._EMOTION_PRIORITY.get(source, 2)
+        cur_prio = self._EMOTION_PRIORITY.get(getattr(self, "_emotion_source", "neutral"), 0)
+        cur_emo = getattr(self, "_current_emotion", "neutral")
+        # 低优先不能覆盖高优先的非 neutral 情绪
+        if cur_emo != "neutral" and new_prio < cur_prio:
+            logger.debug(
+                "情绪被低优先级覆盖忽略: %s(%d) < 当前 %s(%d)",
+                emotion, new_prio, cur_emo, cur_prio,
+            )
+            return
+        self._current_emotion = emotion
+        self._emotion_source = source
         if hasattr(self, '_emotion_face'):
             self._emotion_face.set_emotion(self._current_emotion)
         if self._current_emotion != "neutral":
@@ -1514,7 +1540,9 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
             pass
 
         # A2: 情绪过期 — 3秒无新情绪自动回 idle
+        # 对话情绪是最高优先级（缺陷①），直接写入并标记来源，屏幕/定时情绪此后不得覆盖
         self._current_emotion = emotion or "neutral"
+        self._emotion_source = "dialog"
         if self._current_emotion != "neutral":
             self._emotion_expiry_timer.start(3000)
         else:
