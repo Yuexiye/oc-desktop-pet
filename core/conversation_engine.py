@@ -682,8 +682,19 @@ class ConversationEngine:
             logger.debug("TTS 后已打断，仅保留文字气泡（丢弃音频）: gen=%d", gen)
             self.on_reply(reply, emotion, anim, "")  # 空 audio_path → 只显示气泡不播音频
             return
-        # 回调（文字 + 音频一起，从池线程 emit 信号 → 主线程播放口型）
-        self.on_reply(reply, emotion, anim, audio_path)
+        # synth 后检查：已打断则丢弃脏音频，但文字气泡仍要显示——
+        # 否则 proactive 慢回复(LLM 耗时数秒)期间用户一开口，整条回复连字都看不到。
+        # 打断的语义是"旧话不继续说"，不是"旧话没说过"。
+        if self._is_stale(gen):
+            logger.debug("TTS 后已打断，仅保留文字气泡（丢弃音频）: gen=%d", gen)
+            self.on_reply(reply, emotion, anim, "")  # 空 audio_path → 只显示气泡不播音频
+            return
+        # 二次回调（文字 + 音频一起，从池线程 emit 信号 → 主线程播放口型）。
+        # 仅当真正合成了音频才回调——文字已在文字先行阶段(P1-6)显示过，
+        # 无音频时重复回调只会在 UI 侧造成冗余刷新（气泡续期 + 动画重放），
+        # 且测试断言正常消息只回调一次（replies == ["hi"]）。
+        if audio_path:
+            self.on_reply(reply, emotion, anim, audio_path)
 
     def _handle_tool_calls(self, resp: dict, user_text: str, character: str, perception_ctx: str, gen: int = None) -> tuple:
         """处理 LLM 的 tool_calls：执行工具 → 结果回传 → 再次调用 LLM
