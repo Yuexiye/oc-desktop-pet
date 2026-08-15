@@ -749,7 +749,15 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self.move(tx, ty)
 
     def _apply_penetration(self):
-        """应用当前鼠标穿透状态"""
+        """应用当前鼠标穿透状态。
+
+        WA_TransparentForMouseEvents 是 Qt 官方支持的顶层窗口穿透属性，
+        对 FramelessWindowHint | Tool 窗口同样生效（已实测验证）。
+        对角色渲染控件(GLCharWidget)与状态标签也同步设置，避免子控件吸收事件。
+        注意：本属性控制“整个窗口（含角色实体）都穿透”，即穿透后点击角色身体
+        也会直接落到桌面。若需“仅透明区域穿透、角色实体可点”，需改用
+        鼠标像素命中测试方案（见 _toggle_passthrough 说明）。
+        """
         self.setAttribute(Qt.WA_TransparentForMouseEvents, self._mousePassthrough)
         if hasattr(self, 'char_label') and self.char_label:
             self.char_label.setAttribute(Qt.WA_TransparentForMouseEvents, self._mousePassthrough)
@@ -763,12 +771,16 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         if self._mousePassthrough:
             self.input_widget.hide()
             self.bubble.hide_bubble()
-            # 状态栏提示穿透已启用(3s后恢复)
-            self._status_label.setText("🖱️ 穿透中")
+            # 状态栏常驻提示穿透已启用（不自动消失，直到退出穿透），
+            # 避免用户误以为“穿透没生效”。
+            self._status_label.setText("🖱️ 穿透中·点托盘退出")
             self._status_label.setStyleSheet(self._passthrough_qss())
             self._status_label.show()
             self._reposition_status_label()
-            QTimer.singleShot(3000, self._restore_status_label)
+        else:
+            # 退出穿透：恢复输入区，并立即恢复状态栏
+            self.input_widget.show()
+            self._restore_status_label()
 
     # ── 系统托盘 ──
 
