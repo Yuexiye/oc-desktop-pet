@@ -53,7 +53,7 @@ class Live2DRenderer(AvatarRenderer):
     _IGNORED_EXPRESSIONS = ("水印", "watermark", "版权", "author", "credit", "logo")
     # 卡手势防御：非 idle motion 播满此秒数强制回 idle（模型 motion 全 Loop=true，
     # waving/touch 等手势 mp3.json 都是 2.667s 循环，播 1.5 圈后回位）
-    GESTURE_TIMEOUT = 4.0
+    GESTURE_TIMEOUT = 3.0
     # 情绪 -> motion 组名（模型有对应动作组时播放）
     _EMOTION_MOTION = {
         "happy": ("happy", "joy", "fun"),
@@ -268,6 +268,8 @@ class Live2DRenderer(AvatarRenderer):
             # 这里记录当前 motion 是否常态 idle + 起始时间，播满 GESTURE_TIMEOUT 强制回 idle。
             self._motion_is_idle = True
             self._motion_started_at = time.monotonic()
+            # emotion → motion 上次播放时间，防止同一情绪手势被连续触发、看起来“永久卡死”
+            self._emotion_motion_cooldown: dict[str, float] = {}
             if not self._debug_minimal:
                 # wrapper 0.7.0.4 的真实 API 是 GetExpressionIds（pyi 写的 GetExpressions 不存在），
                 # 且 GetExpressionIds 在初始化早期可能抛异常——都 fallback 到 model3.json 解析。
@@ -670,10 +672,13 @@ class Live2DRenderer(AvatarRenderer):
             # 卡手势防御：模型 motion 全是 Loop=True，非 idle 手势永不 finished，
             # idle 永不重启 → 卡在最后手势（摸头/挥手等）。播满 GESTURE_TIMEOUT 秒强制回 idle。
             try:
-                if not self._motion_is_idle and \
-                        time.monotonic() - self._motion_started_at > self.GESTURE_TIMEOUT:
-                    if getattr(self, "_debug", False):
-                        logger.info("Live2DRenderer: 非 idle motion 超时，强制回 idle")
+                elapsed = time.monotonic() - self._motion_started_at
+                if not self._motion_is_idle and elapsed > self.GESTURE_TIMEOUT:
+                    logger.info(
+                        "Live2DRenderer: 非 idle motion 超时 %.1fs/%.1fs（%s），强制回 idle",
+                        elapsed, self.GESTURE_TIMEOUT,
+                        getattr(self, "_current_motion_idx", "?"),
+                    )
                     self._force_idle()
             except Exception as e:
                 logger.warning("Live2DRenderer.motion 超时检查异常: %s", e)
@@ -878,13 +883,18 @@ class Live2DRenderer(AvatarRenderer):
 
         idle 用 IDLE 优先级，打不过正在播的 NORMAL 手势（priority too low 会被拒），
         所以先清空 motion 队列再播。
+        兜底：_start_idle 异常时仍把状态机切回 idle，避免手势状态永远挂住。
         """
         try:
             if hasattr(self._model, "StopAllMotions"):
                 self._model.StopAllMotions()
         except Exception:
             pass
-        self._start_idle()
+        try:
+            self._start_idle()
+        except Exception as e:
+            logger.warning("Live2DRenderer: _start_idle 失败，兜底状态回 idle: %s", e)
+            self._note_motion_started("force_idle_fallback", is_idle=True)
 
     def _start_idle(self) -> None:
         if not self._model:
@@ -1075,16 +1085,33 @@ class Live2DRenderer(AvatarRenderer):
         self._emotion_target = emotion
         if not self._model:
             return
+
+        # emotion 级冷却：同一情绪触发的手势播完后，GESTURE_TIMEOUT 内不再重播该情绪 motion
+        # （只同步表情）。避免“屏幕/对话反复推 happy → 比心永远切不回来”的观感。
+        # 仅在当前已是 idle 时生效；若当前正播其他 gesture，新情绪正常打断。
+        now = time.monotonic()
+        last_at = self._emotion_motion_cooldown.get(emotion, 0.0)
+        in_cooldown = (
+            getattr(self, "_motion_is_idle", True)
+            and now - last_at < self.GESTURE_TIMEOUT
+        )
+        if in_cooldown:
+            logger.debug("Live2DRenderer: emotion=%s 仍在 %.1fs 冷却期，只同步表情", emotion, self.GESTURE_TIMEOUT)
+            self._apply_expression(emotion)
+            return
+
         # 优先：情绪 → motion 文件关键词（NORMAL 优先级，不打断主要动作）
         kws = self._ANIM_TO_MOTION_KW.get(emotion)
+        motion_played = False
         if kws:
-            played = self._play_motion_kw(*kws)
-            if not played:
+            motion_played = self._play_motion_kw(*kws)
+            if not motion_played:
                 # 回退：情绪 → motion 组
                 motion = self._match_motion(emotion)
                 if motion:
                     try:
                         self._model.StartRandomMotion(motion, self._live2d.MotionPriority.FORCE)
+                        motion_played = True
                     except Exception:
                         pass
         else:
@@ -1093,8 +1120,12 @@ class Live2DRenderer(AvatarRenderer):
             if motion:
                 try:
                     self._model.StartRandomMotion(motion, self._live2d.MotionPriority.FORCE)
+                    motion_played = True
                 except Exception:
                     pass
+        # 记录该情绪 motion 的播放时间，用于 emotion 级冷却
+        if motion_played:
+            self._emotion_motion_cooldown[emotion] = time.monotonic()
         # 表情
         self._apply_expression(emotion)
 
