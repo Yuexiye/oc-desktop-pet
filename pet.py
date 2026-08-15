@@ -121,10 +121,24 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self._on_position_change = on_position_change  # 位置变化回调
         self._pet_manager = pet_manager  # 多桌宠管理器引用
         self._init_position = position  # 初始位置（供 _setup_window 使用）
+        self._pet_scale = scale
+        self._current_char = agent_id
 
-        # ── P0 调试开关（二分法定位 0x8001010d）：通过环境变量禁用各模块 ──
-        # 用法：OC_DISABLE_TRAY=1 / OC_DISABLE_PERCEPTION=1 / OC_DISABLE_LIVE2D=1
-        # 让你能"禁托盘→禁感知→禁 Live2D，各跑一天"隔离崩溃根因。
+        # ── 接线初始化（按语义分块，顺序与原 __init__ 完全一致，行为零变化）──
+        self._init_diag_switches()
+        self._init_states()
+        self._init_schedulers()
+        self._init_interaction()
+        self._init_engine()
+        self._init_voice_audio()
+        self._init_visual_startup()
+
+    def _init_diag_switches(self):
+        """P0 调试开关：环境变量禁用各模块（二分法定位 0x8001010d）。
+
+        用法：OC_DISABLE_TRAY=1 / OC_DISABLE_PERCEPTION=1 / OC_DISABLE_LIVE2D=1
+        让你能"禁托盘→禁感知→禁 Live2D，各跑一天"隔离崩溃根因。
+        """
         self._diag_disable_tray = os.environ.get("OC_DISABLE_TRAY", "") == "1"
         self._diag_disable_perception = os.environ.get("OC_DISABLE_PERCEPTION", "") == "1"
         self._diag_disable_live2d = os.environ.get("OC_DISABLE_LIVE2D", "") == "1"
@@ -134,6 +148,8 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
                 self._diag_disable_tray, self._diag_disable_perception, self._diag_disable_live2d,
             )
 
+    def _init_states(self):
+        """交互/动画/Hanako/情绪等基础状态（与 __init__ 原顺序一致）。"""
         # ── 交互状态 ──
         self._drag_start_cursor = QPoint()
         self._drag_start_window = QPoint()
@@ -152,10 +168,8 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self._is_sitting = False         # 是否坐在窗口边缘
         self._sitting_edge = ""           # 坐在哪条边: top/bottom/left/right
 
-        self._current_char = agent_id
         self._is_thinking = False
 
-        self._pet_scale = scale
         self._pet_opacity = self.config.get("opacity", 1.0)
         self._behavior_mode = self.config.get("behavior", "normal")
 
@@ -209,6 +223,8 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self._break_timer = QTimer(self)
         self._break_timer.timeout.connect(self._break_check)
 
+    def _init_schedulers(self):
+        """动作联动/前景检测/Proactive/Presence/感知控制器（与 __init__ 原顺序一致）。"""
         # ── 动作联动 ──
         al_cfg = self.config.get("action_linker", {})
         self._action_linker = ActionLinker(
@@ -226,6 +242,7 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
 
         # ── Proactive 主动对话调度器(P1)──
         proactive_cfg = self.config.get("proactive", {})
+        self._proactive_cfg = proactive_cfg  # 供 _init_visual_startup 使用
         # 活动感知（打字/划水/空闲）：零成本，给 Proactive 提供打扰成本维度
         try:
             from motion.activity_tracker import ActivityTracker
@@ -261,7 +278,7 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self._perception.screen.on_emotion = self._on_screen_emotion
         self._perception.screen.on_screen_proactive = self._on_screen_proactive
         self._perception.screen.on_update = self._on_screen_update
-        
+
         # ── 屏幕感知开关（从配置读取）──
         screen_cfg = self.config.get("screen", {})
         if not screen_cfg.get("enabled", True):
@@ -290,6 +307,8 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         except Exception:
             self._perception.screen.set_interval(120)
 
+    def _init_interaction(self):
+        """鼠标交互/抚摸/喂食/HUD 状态（与 __init__ 原顺序一致）。"""
         # ── 鼠标交互追踪器 ──
         self._mouse_tracker = MouseTracker(self._get_window_rect)
         self._mouse_reaction_params = MOUSE_REACTIONS.get(
@@ -338,6 +357,9 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self._chasing = False
         self._chase_last_target = 0
 
+
+    def _init_engine(self):
+        """TTS provider / 对话引擎 / 信号连接 / 开场问候（与 __init__ 原顺序一致）。"""
         # ── TTS provider ──
         tts_provider = self._create_tts_provider()
         # 记下初始签名：设置页保存时若 TTS 配置未变，就不再重建 provider
@@ -419,6 +441,8 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         except Exception as e:
             logger.debug("开场问候跳过: %s", e)
 
+    def _init_voice_audio(self):
+        """语音输入(ASR) / TTS 播放器 / 音频事件桥接（与 __init__ 原顺序一致）。"""
         # ── 语音输入（ASR）──
         asr_provider = self._create_asr_provider()
         self._voice_input = None
@@ -458,6 +482,9 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         except Exception as e:
             logger.warning("AUDIO-07: Failed to connect bridge: %s", e)
 
+
+    def _init_visual_startup(self):
+        """渲染器/物理/UI/托盘/启动收尾（与 __init__ 原顺序一致）。"""
         # ── 帧动画状态(在 _setup_ui 后初始化)──
         self._anim_seq = 'idle'
         self._anim_idx = 0
