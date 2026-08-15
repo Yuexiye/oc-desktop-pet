@@ -489,19 +489,22 @@ class Live2DRenderer(AvatarRenderer):
             target_w = max(40, bw + pad_w)
             target_h = max(40, bh + pad_h + pad_bottom)
 
-            # 用 canvas 像素高度约束最小窗口高度：
-            # 模型实际占用高度 ≈ canvas_h * fit_scale。若 target_h 远小于此值，
-            # 必须大幅上移才能看到脚，必然截头顶。这里保证窗口高度至少能装下
-            # 模型高度的 82%，让脚和头顶都有生存空间。
+            # 用 canvas 像素尺寸约束最小窗口尺寸：
+            # 模型实际占用 ≈ canvas * fit_scale。若 target_h 远小于此值，
+            # 必须大幅上移才能看到脚，必然截头顶；若 target_w 只按 bbox 算而
+            # canvas 很宽/高，窗口会成瘦高柱子。这里保证宽高都能装下模型的 82%，
+            # 让比例接近画布、脚和头顶都有生存空间。
             try:
                 cw_px, ch_px = self._model.GetCanvasSizePixel()
+                min_w_from_canvas = int(cw_px * self._fit_scale * 0.82)
                 min_h_from_canvas = int(ch_px * self._fit_scale * 0.82)
-                if target_h < min_h_from_canvas:
+                if target_h < min_h_from_canvas or target_w < min_w_from_canvas:
                     logger.info(
-                        "Live2DRenderer: 窗口高度由 bbox %d 提升到 canvas-based %d",
-                        target_h, min_h_from_canvas,
+                        "Live2DRenderer: 窗口尺寸由 bbox %dx%d 提升到 canvas-based %dx%d",
+                        target_w, target_h, min_w_from_canvas, min_h_from_canvas,
                     )
-                    target_h = min_h_from_canvas
+                    target_w = max(target_w, min_w_from_canvas)
+                    target_h = max(target_h, min_h_from_canvas)
             except Exception:
                 pass
 
