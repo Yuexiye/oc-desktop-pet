@@ -44,6 +44,9 @@ def clean_bubble_text(text: str) -> str:
     text = re.sub(r'^[\s*#>-]+', '', text, flags=re.MULTILINE)
     # 去 MOOD/thinking/tool/status 等元信息
     text = re.sub(r'\b(?:MOOD|mood|thinking|tool|status)[:：]?[^\n。！？!?]*', ' ', text, flags=re.IGNORECASE)
+    # 去 emotion 标签（如 [emotion: curious]）—— 这是 LLM 内部情绪标记，
+    # 应被解析为表情/动画，不应出现在气泡文本中。
+    text = re.sub(r'\[\s*emotion\s*[:=]\s*[^\]\n]+\]\s*', ' ', text, flags=re.IGNORECASE)
     # 去引号和括号
     text = re.sub(r'[{}\\]"\'`]', ' ', text)
     # 压缩空白

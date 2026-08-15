@@ -419,9 +419,10 @@ class HanakoPetAdapter:
         """
         if not text:
             return "", "neutral"
-        em_matches = re.findall(r"\[emotion:(\w+)\]", text, flags=re.IGNORECASE)
+        # 支持 [emotion:xxx] / [emotion: xxx] / [ emotion : xxx ] 等 LLM 常见变体
+        em_matches = re.findall(r"\[\s*emotion\s*:\s*(\w+)\s*\]", text, flags=re.IGNORECASE)
         emotion = em_matches[-1].lower() if em_matches else "neutral"
-        cleaned = re.sub(r"\s*\[emotion:\w+\]\s*", "", text, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*\[\s*emotion\s*:\s*\w+\s*\]\s*", " ", text, flags=re.IGNORECASE)
         # 剥离 agent 思考/MOOD 块：以 [ Vibe:/Sparks:/Reflections:/Will: 开头的成块内容。
         # 先剥闭合块（到 ] 为止，可跨行），再剥未闭合残余（到文本末尾）。
         # 注意不能依赖 MULTILINE 的 $ 作边界（会在块内第一行行尾提前停下）。
