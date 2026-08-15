@@ -529,7 +529,8 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self._foreground_timer.start(2000)  # 每 2 秒检测前台窗口
 
         # ── proactive 默认启用(由 config 控制)──
-        if not proactive_cfg.get("enabled", True):
+        # P2 拆分 fix：proactive_cfg 已在 _init_schedulers 存为 self._proactive_cfg
+        if not self._proactive_cfg.get("enabled", True):
             self._proactive.disable()
 
         # ── 空闲时间追踪 ──
