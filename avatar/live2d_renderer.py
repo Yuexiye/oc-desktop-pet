@@ -51,6 +51,9 @@ class Live2DRenderer(AvatarRenderer):
     }
     # 自动排除的表情名关键词（作者水印/版权声明等，桌宠不展示）
     _IGNORED_EXPRESSIONS = ("水印", "watermark", "版权", "author", "credit", "logo")
+    # 卡手势防御：非 idle motion 播满此秒数强制回 idle（模型 motion 全 Loop=true，
+    # waving/touch 等手势 mp3.json 都是 2.667s 循环，播 1.5 圈后回位）
+    GESTURE_TIMEOUT = 4.0
     # 情绪 -> motion 组名（模型有对应动作组时播放）
     _EMOTION_MOTION = {
         "happy": ("happy", "joy", "fun"),
@@ -260,6 +263,11 @@ class Live2DRenderer(AvatarRenderer):
             self._motion_groups = {}
             self._motion_files: list[str] = []      # 空组下的 motion 文件名列表
             self._motion_group_name: str = ""       # 实际使用的 motion 组名
+            # 卡手势防御：模型 motion 全是 Loop=True（永不 finished），非 idle 手势一旦
+            # 播放，IsMotionFinished 永不 True → idle 永不重启 → 卡在最后动作上。
+            # 这里记录当前 motion 是否常态 idle + 起始时间，播满 GESTURE_TIMEOUT 强制回 idle。
+            self._motion_is_idle = True
+            self._motion_started_at = time.monotonic()
             if not self._debug_minimal:
                 # wrapper 0.7.0.4 的真实 API 是 GetExpressionIds（pyi 写的 GetExpressions 不存在），
                 # 且 GetExpressionIds 在初始化早期可能抛异常——都 fallback 到 model3.json 解析。
@@ -551,6 +559,17 @@ class Live2DRenderer(AvatarRenderer):
             except Exception as e:
                 logger.warning("Live2DRenderer.idle 循环异常: %s", e)
 
+            # 卡手势防御：模型 motion 全是 Loop=True，非 idle 手势永不 finished，
+            # idle 永不重启 → 卡在最后手势（摸头/挥手等）。播满 GESTURE_TIMEOUT 秒强制回 idle。
+            try:
+                if not self._motion_is_idle and \
+                        time.monotonic() - self._motion_started_at > GESTURE_TIMEOUT:
+                    if getattr(self, "_debug", False):
+                        logger.info("Live2DRenderer: 非 idle motion 超时，强制回 idle")
+                    self._force_idle()
+            except Exception as e:
+                logger.warning("Live2DRenderer.motion 超时检查异常: %s", e)
+
         # 完整帧更新：绕过 live2d-py 0.7.0.4 wrapper 残缺的 Update()（motion/blink/呼吸全被注释），
         # 直接驱动 C++ Model 的完整更新序列（UpdateMotion → Blink → Breath → Physics → Pose）。
         try:
@@ -736,6 +755,28 @@ class Live2DRenderer(AvatarRenderer):
         except Exception:
             pass
 
+    def _note_motion_started(self, fname: str = "") -> None:
+        """记录当前 motion 是否常态 idle 并重置计时（卡手势超时兜底用）。
+
+        fname 为空（非 idle 手势/随机 motion）→ 视为限时动作，播满
+        GESTURE_TIMEOUT 秒强制回 idle。
+        """
+        self._motion_is_idle = bool(fname) and "idle" in os.path.basename(fname).lower()
+        self._motion_started_at = time.monotonic()
+
+    def _force_idle(self) -> None:
+        """StopAllMotions 后重启 idle。
+
+        idle 用 IDLE 优先级，打不过正在播的 NORMAL 手势（priority too low 会被拒），
+        所以先清空 motion 队列再播。
+        """
+        try:
+            if hasattr(self._model, "StopAllMotions"):
+                self._model.StopAllMotions()
+        except Exception:
+            pass
+        self._start_idle()
+
     def _start_idle(self) -> None:
         if not self._model:
             return
@@ -754,7 +795,10 @@ class Live2DRenderer(AvatarRenderer):
                         if isinstance(m, dict) and "idle" in m.get("File", "").lower():
                             idx = i
                             break
+                    fname = (motion_list[idx].get("File", "")
+                             if isinstance(motion_list[idx], dict) else "")
                     self._model.StartMotion(group, idx, self._live2d.MotionPriority.IDLE)
+                    self._note_motion_started(fname)
                     return
             # fallback：StartRandomMotion（组名非空时有效）
             if self._motion_groups:
@@ -763,6 +807,7 @@ class Live2DRenderer(AvatarRenderer):
             else:
                 self._model.StartRandomMotion(self._live2d.MotionGroup.IDLE,
                                               self._live2d.MotionPriority.IDLE)
+            self._note_motion_started("idle")  # fallback 视为 idle，不受超时限制
         except Exception as e:
             # 忽略 "motion priority is too low" 警告（正常行为，idle 被更高优先级 motion 打断）
             if "priority is too low" not in str(e):
@@ -796,8 +841,10 @@ class Live2DRenderer(AvatarRenderer):
                         break
             if idx is None:
                 return False
+            fname = self._motion_files[idx] if idx < len(self._motion_files) else ""
             prio = priority if priority is not None else self._live2d.MotionPriority.NORMAL
             self._model.StartMotion(self._motion_group_name, idx, prio)
+            self._note_motion_started(fname)
             return True
         except Exception as e:
             # 忽略 "motion priority is too low" 警告（正常行为）
@@ -867,6 +914,7 @@ class Live2DRenderer(AvatarRenderer):
         if self._model and anim in self._motion_groups:
             try:
                 self._model.StartRandomMotion(anim, self._live2d.MotionPriority.NORMAL)
+                self._note_motion_started("")  # 未知 motion → 按限时手势处理
             except Exception:
                 pass
 
