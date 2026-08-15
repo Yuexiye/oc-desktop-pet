@@ -369,14 +369,14 @@ class Live2DRenderer(AvatarRenderer):
             logger.info("Live2DRenderer: fit 开始 gl=%dx%d", gl_w, gl_h)
             self._model.Update()
             self._model.Draw()
-            STEP = 2
+            STEP = 3  # 视口大时 2px 步长太慢（458x520 视口 4 帧 ≈ 24 万次命中检测），3px 降负
             # idle motion 会大幅左右摆动（miku 摆幅可达几十 px），单帧 bbox 追不上摆动，
-            # 导致窗口贴成“瞬时位置”后一动就出窗口。采样 4 帧取动态外接框（min_x 取最左、
+            # 导致窗口贴成“瞬时位置”后一动就出窗口。采样 3 帧取动态外接框（min_x 取最左、
             # max_x 取最右、max_y 取最下），让窗口一次性包住摆动范围，之后模型再摆也不溢出。
             # 注意 HitDrawable 是命中检测区域（作者定义，通常只覆盖躯干）——脚部/裙摆/发尖
             # 画在命中区外时 bbox 会偏小，所以底部额外加固定余量，避免角色脚被窗口截断。
             min_x, min_y, max_x, max_y = gl_w, gl_h, -1, -1
-            for _sample in range(4):
+            for _sample in range(3):
                 self._model.Update()
                 self._model.Draw()
                 for x in range(0, gl_w + 1, STEP):
@@ -392,35 +392,6 @@ class Live2DRenderer(AvatarRenderer):
             if max_x < 0:
                 logger.info("Live2DRenderer: 未命中角色像素，跳过窗口贴合")
                 return
-
-            # 像素级底部校验：HitDrawable 命中区通常只覆盖躯干，脚部/裙摆画在命中区外
-            # 时窗口偏小裁脚。抓帧缓冲扫可见像素的最底行，修正 max_y。
-            try:
-                cl = getattr(self, "char_label", None)
-                if cl is not None and hasattr(cl, "grabFramebuffer"):
-                    _img = cl.grabFramebuffer()
-                    if _img is not None and not _img.isNull():
-                        _w, _h = _img.width(), _img.height()
-                        _bottom = -1
-                        # 从底部向上扫，步进 2（快）；沿行采样 x 步进 3
-                        for _y in range(_h - 1, 0, -2):
-                            _hit = False
-                            for _x in range(0, _w, 3):
-                                _c = _img.pixelColor(_x, _y)
-                                if _c.alpha() > 8:  # 可见像素（>3% 不透明）
-                                    _hit = True
-                                    break
-                            if _hit:
-                                _bottom = _y
-                                break
-                        if _bottom > max_y:
-                            logger.info(
-                                "Live2DRenderer: 像素修正 可见底部 y=%d（命中区漏脚 %dpx），扩展 bbox",
-                                _bottom, _bottom - max_y,
-                            )
-                            max_y = _bottom
-            except Exception as _e:
-                logger.warning("Live2DRenderer: 像素底部校验失败（忽略）: %s", _e)
 
             bw = max_x - min_x + 1
             bh = max_y - min_y + 1
