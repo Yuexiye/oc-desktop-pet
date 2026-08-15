@@ -206,12 +206,45 @@ class NurturingMixin:
             logger.exception("_do_work_finish failed")
 
     def _on_mission_completed_bubble(self, mission_id="", name="", rewards=None):
-        """任务完成通知（事件总线回调，主线程）"""
+        """任务完成通知（事件总线回调，主线程）——合并节流。
+
+        启动时积压的每日任务/成就会在几秒内连续触发多个 mission_completed，
+        逐个弹气泡会刷屏（🤝🎪💖🔋👀…）。改为 3 秒窗口内合并成一条气泡。
+        """
         try:
-            if name:
-                self._show_bubble(f"任务完成！{name} 🎉", emotion="happy", priority=0)
+            if not name:
+                return
+            pending = getattr(self, "_mission_bubble_pending", None)
+            if pending is None:
+                pending = []
+                self._mission_bubble_pending = pending
+                timer = QTimer(self)
+                timer.setSingleShot(True)
+                timer.timeout.connect(self._flush_mission_bubbles)
+                self._mission_bubble_timer = timer
+            pending.append(name)
+            self._mission_bubble_timer.start(3000)
         except Exception:
             logger.debug("mission_completed bubble failed", exc_info=True)
+
+    def _flush_mission_bubbles(self):
+        """合并弹一条任务完成气泡（3 秒窗口收口）。"""
+        try:
+            pending = getattr(self, "_mission_bubble_pending", []) or []
+            self._mission_bubble_pending = []
+            if not pending:
+                return
+            if len(pending) == 1:
+                text = f"任务完成！{pending[0]} 🎉"
+            else:
+                shown = "、".join(pending[:3])
+                if len(pending) > 3:
+                    text = f"任务完成！{shown} 等 {len(pending)} 项 🎉"
+                else:
+                    text = f"任务完成！{shown} 🎉"
+            self._show_bubble(text, emotion="happy", priority=0)
+        except Exception:
+            logger.debug("flush mission bubbles failed", exc_info=True)
 
     # ── 任务系统 UI（03 成长计划） ──
 

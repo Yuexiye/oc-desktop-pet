@@ -412,7 +412,12 @@ class HanakoPetAdapter:
             return "", "neutral"
         em_matches = re.findall(r"\[emotion:(\w+)\]", text, flags=re.IGNORECASE)
         emotion = em_matches[-1].lower() if em_matches else "neutral"
-        cleaned = re.sub(r"\s*\[emotion:\w+\]\s*", "", text, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"\s*\[emotion:\w+\]\s*", "", text, flags=re.IGNORECASE)
+        # 剥离表情包 XML 段：<parameter name=...>值</parameter> 整段剥掉
+        cleaned = re.sub(r"<parameter[^>]*>.*?</parameter>", "", cleaned, flags=re.S)
+        # 剥离其余残留标签（<brioqingbao_express> 等）
+        cleaned = re.sub(r"<[^>]+>", "", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
         return cleaned, emotion
 
     def set_session(self, session_ref) -> None:
