@@ -483,9 +483,14 @@ class Live2DRenderer(AvatarRenderer):
             # 旧实现用 pad_bottom=200 + 大幅 offsetY 上移来防截脚，结果头顶被推出窗口、
             # 比例瘦高。新策略：底部只留合理边距，靠【窗口高度足够】来包容模型，
             # 而不是把模型在画布里拼命上移。
+            # 关键：hit-bbox 不含脚/裙摆（这些区域通常在 HitDrawable 命中区外），
+            # 但模型在窗口里实际占的高度 ≈ bbox + 1.2x 脚部高度。所以 pad_bottom 必须
+            # 大到够装下"看不见的脚"，否则用户站在小窗口里看不到脚。
             pad_w = max(16, int(bw * 0.20))
             pad_h = max(24, int(bh * 0.18))
-            pad_bottom = max(60, int(bh * 0.10))
+            # 脚部系数据真实 miku 模型：bbox 287x473 → 实际模型高度约 600，bh 比≈25%
+            # 用 0.25*bh 当脚部估算，保底 80px（防 bbox 很小的情况）。
+            pad_bottom = max(80, int(bh * 0.25))
             target_w = max(40, bw + pad_w)
             target_h = max(40, bh + pad_h + pad_bottom)
 
@@ -1091,15 +1096,23 @@ class Live2DRenderer(AvatarRenderer):
             logger.warning("Live2DRenderer: 设置表情失败: %s", e)
 
     def set_emotion(self, emotion: str, intensity: float = 1.0) -> None:
+        # 同一 emotion 短时间内重复调用：直接同步表情，不重播 motion。
+        # 真实场景：_unified_tick 每秒检查 emotion 并 set_emotion，
+        # 若屏幕感知把 emotion 设为 happy，每秒都会触发 happy 调用，
+        # 全局 cooling 3 秒挡不住这种"每秒一次"的节奏 → 比心永远切不回来。
+        # 修：上次同 emotion 调用距今 < GESTURE_TIMEOUT 时，直接同步表情 return。
+        now = time.monotonic()
+        last_same_at = self._emotion_motion_cooldown.get(f"_lastcall:{emotion}", 0.0)
+        if emotion == getattr(self, "_current_emotion", None) and now - last_same_at < self.GESTURE_TIMEOUT:
+            self._apply_expression(emotion)
+            return
         self._current_emotion = emotion
         self._emotion_target = emotion
         if not self._model:
             return
 
-        now = time.monotonic()
-
         # 全局 gesture 冷却：任何非 idle motion 播放后，GESTURE_TIMEOUT 内不再播新 motion。
-        # 这是防“比心/挥手持久卡死”的核心：屏幕感知、对话回复、鼠标交互可能高频推同一
+        # 这是防"比心/挥手持久卡死"的核心：屏幕感知、对话回复、鼠标交互可能高频推同一
         # 情绪，若每次都能重新触发 motion，就会不断重置计时、手势永不回 idle。
         last_gesture_at = getattr(self, "_last_gesture_at", 0.0)
         in_global_gesture_cooldown = (
@@ -1115,6 +1128,7 @@ class Live2DRenderer(AvatarRenderer):
                 now - max(self._motion_started_at, last_gesture_at),
                 self.GESTURE_TIMEOUT, emotion,
             )
+            self._emotion_motion_cooldown[f"_lastcall:{emotion}"] = now
             self._apply_expression(emotion)
             return
 
@@ -1123,6 +1137,7 @@ class Live2DRenderer(AvatarRenderer):
         in_emotion_cooldown = getattr(self, "_motion_is_idle", True) and now - last_at < self.GESTURE_TIMEOUT
         if in_emotion_cooldown:
             logger.debug("Live2DRenderer: emotion=%s 仍在 %.1fs 冷却期，只同步表情", emotion, self.GESTURE_TIMEOUT)
+            self._emotion_motion_cooldown[f"_lastcall:{emotion}"] = now
             self._apply_expression(emotion)
             return
 
@@ -1153,6 +1168,7 @@ class Live2DRenderer(AvatarRenderer):
         if motion_played:
             self._emotion_motion_cooldown[emotion] = time.monotonic()
             self._last_gesture_at = time.monotonic()
+        self._emotion_motion_cooldown[f"_lastcall:{emotion}"] = now
         # 表情
         self._apply_expression(emotion)
 

@@ -93,16 +93,17 @@ def test_fit_window_height_enough_for_canvas(renderer):
 
 
 def test_fit_pad_bottom_reduced(renderer):
-    """pad_bottom 从 200 降到 60，窗口不再被撑高"""
+    """pad_bottom 足够装下脚部估算（旧 200 太大/60 太小，目前 0.25*bh+80 防截脚）"""
     renderer._scan_bbox_adaptive = MagicMock(return_value=(100, 100, 300, 400))
     renderer._parent = MagicMock()
     renderer._parent.fit_window_to_model = MagicMock()
     Live2DRenderer._fit_window_to_model(renderer)
-    # bbox 高 300 → pad_bottom = max(60, 30) = 60
-    # target_h = 300 + pad_h(54) + 60 = 414，但受 canvas 约束提升到 1749
-    # 验证窗口宽高比不再瘦高：宽 ≥ 高*0.3（合理人体比例）
+    # bbox 高 300 → pad_bottom=80, target_h ≈ 300+pad_h+80 < 600
     target_w = renderer._parent.fit_window_to_model.call_args[0][0]
     target_h = renderer._parent.fit_window_to_model.call_args[0][1]
+    assert target_h < 700, f"窗口高度 {target_h} 超出（含脚部后还是过大）"
+    # 应至少能装下 bbox + 脚部估算（80px）
+    assert target_h >= 400, f"窗口高度 {target_h} 太小，脚部截断"
     assert target_w / target_h > 0.25, f"宽高比 {target_w}/{target_h} 过瘦"
 
 
