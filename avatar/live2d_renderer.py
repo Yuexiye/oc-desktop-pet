@@ -347,11 +347,92 @@ class Live2DRenderer(AvatarRenderer):
             self._ready = False
             self._model = None
 
+    def _scan_bbox_adaptive(self, frames: int = 3, coarse_step: int = 32, fine_step: int = 6) -> tuple | None:
+        """自适应两段式扫描：每帧先粗扫定位，再在同一帧内四带精扫，帧间并集。
+
+        关键设计：粗扫与精扫必须在**同一帧**（同一摆动相位）执行——
+        若分开跑，band 要同时覆盖粗步长误差 + 帧间摆动差（可达 56px+），盖不住。
+        每帧成本 ≈ 粗扫(≈255 次) + 四带精扫(≈1.5k 次) ≈ 1.8k 次，3 帧 ≈ 5.4k 次，
+        对比原 3 帧全视口 step=3 的 8 万次，降一个量级（约 15x）。
+        返回 (min_x, min_y, max_x, max_y)，未命中返回 None。
+        """
+        mm = getattr(self._model, "_model", None) or self._model
+        gl_w = int(getattr(self, "_gl_w", 0))
+        gl_h = int(getattr(self, "_gl_h", 0))
+        if gl_w <= 0 or gl_h <= 0:
+            return None
+        min_x, min_y, max_x, max_y = gl_w, gl_h, -1, -1
+        hit_any_frame = False
+        for _ in range(frames):
+            try:
+                self._model.Update()
+                self._model.Draw()
+            except Exception:
+                pass
+
+            def _hit(x: int, y: int) -> bool:
+                try:
+                    return bool(mm.HitDrawable(float(x), float(y)))
+                except Exception:
+                    return False
+
+            # ① 粗扫本帧：大步长定位大致 bbox
+            c_min_x, c_min_y, c_max_x, c_max_y = gl_w, gl_h, -1, -1
+            for y in range(0, gl_h + 1, coarse_step):
+                for x in range(0, gl_w + 1, coarse_step):
+                    if _hit(x, y):
+                        if x < c_min_x: c_min_x = x
+                        if x > c_max_x: c_max_x = x
+                        if y < c_min_y: c_min_y = y
+                        if y > c_max_y: c_max_y = y
+            if c_max_x < 0:
+                continue  # 本帧未命中，等下一帧
+            hit_any_frame = True
+            # ② 同帧四带精扫：band 只需覆盖粗步长误差（同帧无摆动差）
+            band = coarse_step + 8  # 40
+            # 左带 / 右带（全高）
+            for x in range(max(0, c_min_x - band), min(gl_w, c_min_x + band) + 1, fine_step):
+                for y in range(0, gl_h + 1, fine_step):
+                    if _hit(x, y):
+                        if x < min_x: min_x = x
+                        if x > max_x: max_x = x
+                        if y < min_y: min_y = y
+                        if y > max_y: max_y = y
+            for x in range(max(0, c_max_x - band), min(gl_w, c_max_x + band) + 1, fine_step):
+                for y in range(0, gl_h + 1, fine_step):
+                    if _hit(x, y):
+                        if x < min_x: min_x = x
+                        if x > max_x: max_x = x
+                        if y < min_y: min_y = y
+                        if y > max_y: max_y = y
+            # 上带 / 下带（角色宽度范围，含外扩）
+            x_lo = max(0, c_min_x - band)
+            x_hi = min(gl_w, c_max_x + band)
+            for y in range(max(0, c_min_y - band), min(gl_h, c_min_y + band) + 1, fine_step):
+                for x in range(x_lo, x_hi + 1, fine_step):
+                    if _hit(x, y):
+                        if x < min_x: min_x = x
+                        if x > max_x: max_x = x
+                        if y < min_y: min_y = y
+                        if y > max_y: max_y = y
+            for y in range(max(0, c_max_y - band), min(gl_h, c_max_y + band) + 1, fine_step):
+                for x in range(x_lo, x_hi + 1, fine_step):
+                    if _hit(x, y):
+                        if x < min_x: min_x = x
+                        if x > max_x: max_x = x
+                        if y < min_y: min_y = y
+                        if y > max_y: max_y = y
+        if not hit_any_frame or max_x < 0:
+            return None
+        return (min_x, min_y, max_x, max_y)
+
     def _fit_window_to_model(self) -> None:
         """测量角色本体 bbox，请求窗口 resize 到模型大小（去掉多余透明边距）。
 
-        HitDrawable 在 draw 后才有有效状态；用 2px 步长扫描窗口坐标，
-        找非透明像素的最小外接矩形。窗口尺寸 = bbox + 1px 安全边距。
+        HitDrawable 在 draw 后才有有效状态。原实现 3 帧全视口 STEP=3 扫描
+        （458x520 视口约 8 万次命中检测，耗时 ≈ 70s）。
+        现改为自适应两段式（每帧：粗扫定位 + 同帧四带精扫，帧间并集），
+        总调用降一个量级（≈5.4k 次，约 15x），耗时降到秒级。
         """
         if not self._model or not self._ready:
             logger.debug("Live2DRenderer: fit 跳过（模型未就绪）")
@@ -367,34 +448,19 @@ class Live2DRenderer(AvatarRenderer):
                 logger.debug("Live2DRenderer: fit 跳过（视口无效 %dx%d）", gl_w, gl_h)
                 return
             logger.info("Live2DRenderer: fit 开始 gl=%dx%d", gl_w, gl_h)
-            self._model.Update()
-            self._model.Draw()
-            STEP = 3  # 视口大时 2px 步长太慢（458x520 视口 4 帧 ≈ 24 万次命中检测），3px 降负
-            # idle motion 会大幅左右摆动（miku 摆幅可达几十 px），单帧 bbox 追不上摆动，
-            # 导致窗口贴成“瞬时位置”后一动就出窗口。采样 3 帧取动态外接框（min_x 取最左、
-            # max_x 取最右、max_y 取最下），让窗口一次性包住摆动范围，之后模型再摆也不溢出。
-            # 注意 HitDrawable 是命中检测区域（作者定义，通常只覆盖躯干）——脚部/裙摆/发尖
-            # 画在命中区外时 bbox 会偏小，所以底部额外加固定余量，避免角色脚被窗口截断。
-            min_x, min_y, max_x, max_y = gl_w, gl_h, -1, -1
-            for _sample in range(3):
-                self._model.Update()
-                self._model.Draw()
-                for x in range(0, gl_w + 1, STEP):
-                    for y in range(0, gl_h + 1, STEP):
-                        try:
-                            if mm.HitDrawable(float(x), float(y)):
-                                if x < min_x: min_x = x
-                                if x > max_x: max_x = x
-                                if y < min_y: min_y = y
-                                if y > max_y: max_y = y
-                        except Exception:
-                            pass
-            if max_x < 0:
+            t0 = time.time()
+            bbox = self._scan_bbox_adaptive(frames=3, coarse_step=32, fine_step=6)
+            t1 = time.time()
+            if bbox is None:
                 logger.info("Live2DRenderer: 未命中角色像素，跳过窗口贴合")
                 return
-
+            min_x, min_y, max_x, max_y = bbox
             bw = max_x - min_x + 1
             bh = max_y - min_y + 1
+            logger.info(
+                "Live2DRenderer: fit 耗时 %.2fs (bbox=%dx%d)",
+                t1 - t0, bw, bh,
+            )
             # 居中补偿：模型在画布里固位偏右（moc3 留白），用 SetOffsetX 平移居中。
             # 不在这里直接设——_fit_window_to_model 之后窗口贴合成新视口会触发 SetScale，
             # 与 offset 的时序交互在真实多并发环境有过闪退。改为缓存 offx，统一由
