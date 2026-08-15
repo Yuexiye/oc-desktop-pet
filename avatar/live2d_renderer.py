@@ -482,15 +482,27 @@ class Live2DRenderer(AvatarRenderer):
             # pad_h 用 0.38 且保底 26px，专门防角色脚/裙摆被窗口下边缘截断。
             pad_w = max(14, int(bw * 0.28))
             pad_h = max(26, int(bh * 0.38))
-            # 额外底部补偿：HitDrawable 命中区通常只覆盖身体，脚部/裙摆常画在命中区
-            # 之外，导致 hit-bbox 底部不含脚、bh 偏小、窗口过矮而裁脚。单独在底部再加
-            # 一段边距（不占用左右/顶部），保证脚完整显示在窗口内。
-            pad_bottom = max(28, int(bh * 0.30))
+            # 额外底部补偿：HitDrawable 命中区通常只覆盖身体，脚部/裙摆/长发常画在命中区
+            # 之外，导致 hit-bbox 底部不含脚、bh 偏小、窗口过矮而裁脚。直接用固定大边距
+            # 而非 bh 百分比，因为 bh 本身已漏掉脚部，百分比追不上。
+            pad_bottom = max(200, int(bh * 0.15))
             target_w = max(40, bw + pad_w)
             target_h = max(40, bh + pad_h + pad_bottom)
+            # 关键修复（截脚根因）：HitDrawable 命中区只覆盖上半身，脚部/裙摆在命中区
+            # 之外，扫描出的 bbox 不含脚。仅加窗口高度只是把"画布底→窗口底"的空白拉大，
+            # 模型在 Live2D 画布里的位置没动，脚仍落在窗口可见区之外被裁。
+            # 必须把模型在画布里【上移】，等效于"顶部留白、脚贴窗口下缘"。
+            # offsetY 单位≈整个画布高度偏移比例：把 pad_bottom 占窗口高度的比例换算成
+            # 上移量（正值=上移）。初音实测 pad_bottom≈200/target_h≈793 → 约 0.25 上移。
+            # 用 max 保底 0.18，避免换算异常时脚仍被裁。
+            try:
+                _ratio = pad_bottom / float(target_h) if target_h > 0 else 0.25
+            except Exception:
+                _ratio = 0.25
+            self._fit_offset_y = max(0.18, min(0.45, _ratio))
             logger.info(
-                "Live2DRenderer: 角色 bbox=%dx%d (偏移 %d,%d)，窗口贴合到 %dx%d (+%dpx 边距)",
-                bw, bh, min_x, min_y, target_w, target_h, pad_w,
+                "Live2DRenderer: 角色 bbox=%dx%d (偏移 %d,%d)，窗口贴合到 %dx%d (+%dpx 边距, 上移 offsetY=%.3f)",
+                bw, bh, min_x, min_y, target_w, target_h, pad_w, self._fit_offset_y,
             )
             parent = getattr(self, "_parent", None)
             fit_win = getattr(parent, "fit_window_to_model", None)
@@ -581,12 +593,16 @@ class Live2DRenderer(AvatarRenderer):
                 self._model.SetOffsetX(_ox)
             except Exception:
                 pass
-            # 垂直偏移：pet.json 的 live2d.offset[1]（脚贴地微调）。
-            # Live2D 模型坐标 Y 轴向上，SetOffsetY 正值=上移、负值=下移；
-            # fit 会故意在底部留白(pad_h≈0.38*角色高)防脚部被裁，导致角色悬空，
-            # 故用负值把模型整体下移，让脚部贴近窗口下边缘(地面)。缺 offset 默认 0 不生效。
+            # 垂直偏移：pet.json 的 live2d.offset[1]（脚贴地微调）+ fit 自动上移补偿。
+            # Live2D 模型坐标 Y 轴向上，SetOffsetY 正值=上移、负值=下移。
+            # 第二来源 _fit_offset_y：截脚修复——HitDrawable 命中区只覆盖上半身，bbox 不含脚，
+            # 仅加窗口高度会把脚推出可见区；故把模型上移 _fit_offset_y（见 _fit_window_to_model），
+            # 等效"顶部留白、脚贴窗口下缘"，让脚真正显示在窗口内。
+            # 二者叠加：用户自定义 offset[1]（通常微调用，正值上移）与自动补偿合并。
             try:
-                _oy = float(_os[1] if len(_os) > 1 else 0.0)
+                _oy_user = float(_os[1] if len(_os) > 1 else 0.0)
+                _oy_fit = getattr(self, "_fit_offset_y", 0.0) or 0.0
+                _oy = _oy_user + _oy_fit
                 if _oy:
                     self._model.SetOffsetY(_oy)
             except Exception:

@@ -84,6 +84,24 @@ logging.basicConfig(
 )
 _setup_file_logging()
 
+# ── 全局未捕获异常钩子 ──
+# 桌宠闪退后自动重启却无 Python 堆栈，难定位根因。这里把任何未捕获异常
+# 同时写进 logs/oc_pet.log（faulthandler 只抓 C 层崩溃，抓不到 Python 异常），
+# 下次再崩直接翻日志即可看到完整 traceback，不必再靠猜。
+def _install_excepthook():
+    import traceback as _tb
+    _root = logging.getLogger()
+    def _hook(etype, exc, tb):
+        try:
+            _root.critical("未捕获异常导致进程即将退出:\n%s",
+                           "".join(_tb.format_exception(etype, exc, tb)))
+        except Exception:
+            pass
+        # 仍交给默认钩子，保证 stderr 也有输出、退出码正确
+        sys.__excepthook__(etype, exc, tb)
+    sys.excepthook = _hook
+_install_excepthook()
+
 # Add project root to path
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
