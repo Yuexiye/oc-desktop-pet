@@ -64,12 +64,16 @@ def _get_whisper_model():
     之前硬编码 openai-whisper，导致 whisper_local 复用后 _backend 仍是
     "whisper"——faster-whisper 的 VAD 过滤/置信度永远不生效。
     现在按 config 加载，并给模型打 _fw_backend 标记供复用方识别。
+    faster-whisper 下载失败（网络/SSL）时自动回退 openai-whisper（本地 .pt），
+    保证语音识别不挂。
     """
     global _whisper_model, _whisper_loading
     if _whisper_model is not None:
         return _whisper_model
     if _whisper_loading:
         return None
+    # HuggingFace 国内走镜像（HuggingFace 直连 SSL/超时是常见问题）
+    os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
     _whisper_loading = True
     try:
         size = _get_asr_model_name()
@@ -81,12 +85,18 @@ def _get_whisper_model():
             pass
         logger.info("Whisper 模型加载中... (%s, backend=%s)", size, backend)
         if backend == "faster_whisper":
-            from faster_whisper import WhisperModel
-            import torch
-            compute = "int8_float16" if torch.cuda.is_available() else "int8"
-            _whisper_model = WhisperModel(size, device="auto", compute_type=compute)
-            _whisper_model._fw_backend = True  # 供 whisper_local 复用方识别
-            logger.info("Whisper 模型就绪 (faster-whisper, compute=%s)", compute)
+            try:
+                from faster_whisper import WhisperModel
+                import torch
+                compute = "int8_float16" if torch.cuda.is_available() else "int8"
+                _whisper_model = WhisperModel(size, device="auto", compute_type=compute)
+                _whisper_model._fw_backend = True  # 供 whisper_local 复用方识别
+                logger.info("Whisper 模型就绪 (faster-whisper, compute=%s)", compute)
+            except Exception as e:
+                logger.warning("faster-whisper 加载失败，回退 openai-whisper: %s", str(e)[:240])
+                import whisper
+                _whisper_model = whisper.load_model(size)
+                logger.info("Whisper 模型就绪 (openai-whisper fallback)")
         else:
             import whisper
             _whisper_model = whisper.load_model(size)

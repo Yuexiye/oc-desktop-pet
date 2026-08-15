@@ -73,12 +73,19 @@ class WhisperLocalProvider(ASRProvider):
                     )
                     backend = "whisper"
                 else:
+                    import os as _os
+                    _os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
                     compute = "int8" if not WhisperLocalProvider._has_cuda() else "int8_float16"
-                    WhisperLocalProvider._model = WhisperModel(
-                        size, device="auto", compute_type=compute,
-                    )
-                    WhisperLocalProvider._backend = "faster_whisper"
-                    logger.info("faster-whisper 初始化完成 (compute=%s)", compute)
+                    try:
+                        WhisperLocalProvider._model = WhisperModel(
+                            size, device="auto", compute_type=compute,
+                        )
+                        WhisperLocalProvider._backend = "faster_whisper"
+                        logger.info("faster-whisper 初始化完成 (compute=%s)", compute)
+                    except Exception as _e:
+                        logger.warning("faster-whisper 下载/初始化失败，回退 openai-whisper: %s", str(_e)[:240])
+                        backend = "whisper"
+                        WhisperLocalProvider._model = None
             if WhisperLocalProvider._model is None:
                 import whisper
                 WhisperLocalProvider._model = whisper.load_model(size)

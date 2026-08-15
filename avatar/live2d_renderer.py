@@ -388,6 +388,36 @@ class Live2DRenderer(AvatarRenderer):
             if max_x < 0:
                 logger.info("Live2DRenderer: 未命中角色像素，跳过窗口贴合")
                 return
+
+            # 像素级底部校验：HitDrawable 命中区通常只覆盖躯干，脚部/裙摆画在命中区外
+            # 时窗口偏小裁脚。抓帧缓冲扫可见像素的最底行，修正 max_y。
+            try:
+                cl = getattr(self, "char_label", None)
+                if cl is not None and hasattr(cl, "grabFramebuffer"):
+                    _img = cl.grabFramebuffer()
+                    if _img is not None and not _img.isNull():
+                        _w, _h = _img.width(), _img.height()
+                        _bottom = -1
+                        # 从底部向上扫，步进 2（快）；沿行采样 x 步进 3
+                        for _y in range(_h - 1, 0, -2):
+                            _hit = False
+                            for _x in range(0, _w, 3):
+                                _c = _img.pixelColor(_x, _y)
+                                if _c.alpha() > 8:  # 可见像素（>3% 不透明）
+                                    _hit = True
+                                    break
+                            if _hit:
+                                _bottom = _y
+                                break
+                        if _bottom > max_y:
+                            logger.info(
+                                "Live2DRenderer: 像素修正 可见底部 y=%d（命中区漏脚 %dpx），扩展 bbox",
+                                _bottom, _bottom - max_y,
+                            )
+                            max_y = _bottom
+            except Exception as _e:
+                logger.warning("Live2DRenderer: 像素底部校验失败（忽略）: %s", _e)
+
             bw = max_x - min_x + 1
             bh = max_y - min_y + 1
             # 居中补偿：模型在画布里固位偏右（moc3 留白），用 SetOffsetX 平移居中。
@@ -567,7 +597,7 @@ class Live2DRenderer(AvatarRenderer):
             # idle 永不重启 → 卡在最后手势（摸头/挥手等）。播满 GESTURE_TIMEOUT 秒强制回 idle。
             try:
                 if not self._motion_is_idle and \
-                        time.monotonic() - self._motion_started_at > GESTURE_TIMEOUT:
+                        time.monotonic() - self._motion_started_at > self.GESTURE_TIMEOUT:
                     if getattr(self, "_debug", False):
                         logger.info("Live2DRenderer: 非 idle motion 超时，强制回 idle")
                     self._force_idle()
