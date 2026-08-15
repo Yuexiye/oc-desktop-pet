@@ -1,11 +1,12 @@
-"""主动对话调度 — 规则引擎 + 空闲检测 + 前台分类 + 活动感知
+"""主动对话调度 — 意图分类 + 规则引擎 + 空闲检测 + 前台分类 + 活动感知
 
 触发流程：
 1. tick() 检查是否过冷却期
 2. 计算对话空闲时间（since last conversation）
-3. 按 idle_min 倒序遍历 rules，匹配 foreground 分类
-4. 检查活动状态（typing/idle/mouse）——**打字中打断成本高，降低触发权重**
-5. 命中规则的 weight 概率触发，并通过 on_proactive 回调上抛 prompt
+3. 【P1 灵魂】先跑 IntentClassifier：综合 时间+前台+活动+持续时长 推断意图，
+   命中场景（深夜加班/长时间工作/连续学习/频繁切窗…）且置信度达标 → 优先触发
+4. 意图分类未命中时，退回旧规则引擎（按 idle_min 倒序匹配 foreground 分类）
+5. 检查活动状态（typing/idle/mouse）——打字中打断成本高，降低触发权重
 
 打扰成本逻辑：
     typing → 用户专注打字，打断成本最高，权重乘以 COST_TYPING（默认 0.2）
@@ -15,6 +16,8 @@
 外部依赖：
 - random（概率触发）
 - motion.activity_tracker（可选注入，未注入时退回纯规则）
+- core.perception.intent（P1 意图分类器）
+- core.perception.scenarios（场景文案池）
 """
 from __future__ import annotations
 
@@ -23,6 +26,9 @@ import random
 import time
 
 logger = logging.getLogger(__name__)
+
+from .intent import classify_intent, LATE_NIGHT_WORK_MINUTES
+from .scenarios import get_reaction, is_disruptive
 
 
 DEFAULT_RULES = [
@@ -40,9 +46,12 @@ COST_IDLE = 1.0      # 空闲/离开：最佳时机，权重不变
 # 打字中完全抑制的时间阈值：持续打字超过该时长则打死不搭话
 TYPING_SUPPRESS_SECONDS = 60.0
 
+# P1 意图触发的最低置信度（低于此值不触发，退回规则引擎）
+INTENT_MIN_CONFIDENCE = 0.6
+
 
 class ProactiveScheduler:
-    """主动对话调度器 - 规则引擎 + 空闲检测 + 前台分类 + 活动感知"""
+    """主动对话调度器 - 意图分类 + 规则引擎 + 空闲检测 + 前台分类 + 活动感知"""
 
     def __init__(self, foreground_watcher=None, on_proactive: callable = None, activity_tracker=None):
         self._foreground_watcher = foreground_watcher
@@ -76,6 +85,68 @@ class ProactiveScheduler:
 
     def reset(self):
         self._cooldown_until = time.time() + self._cooldown_minutes * 60
+
+    def _collect_signals(self, now: float) -> dict:
+        """收集意图分类所需信号（时间/前台/活动/持续时长）。"""
+        signals = {
+            "period": "other", "category": "other", "activity": "idle",
+            "fg_duration_min": 0.0, "conversation_idle_min": 0.0,
+            "window_switches_5min": 0, "is_weekend": False,
+        }
+        try:
+            from .time import TimePerception
+            tp = TimePerception()
+            tctx = tp.get_context()
+            signals["period"] = tctx.get("period", "other")
+            signals["is_weekend"] = tctx.get("is_weekend", False)
+        except Exception:
+            pass
+        if self._foreground_watcher:
+            signals["category"] = getattr(self._foreground_watcher, "last_category", "") or "other"
+            signals["fg_duration_min"] = getattr(self._foreground_watcher, "fg_duration_min", 0.0) or 0.0
+            signals["window_switches_5min"] = getattr(self._foreground_watcher, "window_switches_5min", 0) or 0
+        if self._activity_tracker is not None:
+            try:
+                signals["activity"] = self._activity_tracker.state.state
+            except Exception:
+                signals["activity"] = "idle"
+        signals["conversation_idle_min"] = (now - self._last_conversation) / 60.0
+        return signals
+
+    def _try_intent(self, now: float, signals: dict) -> str | None:
+        """P1 意图分类优先触发：命中场景 + 置信度达标 → 触发。"""
+        try:
+            intent = classify_intent(
+                period=signals["period"],
+                category=signals["category"],
+                activity=signals["activity"],
+                fg_duration_min=signals["fg_duration_min"],
+                conversation_idle_min=signals["conversation_idle_min"],
+                window_switches_5min=signals["window_switches_5min"],
+                is_weekend=signals["is_weekend"],
+            )
+            scenario = intent.get("scenario", "")
+            confidence = intent.get("confidence", 0.0)
+            if confidence < INTENT_MIN_CONFIDENCE or not scenario:
+                return None
+            # 打扰成本：打字中且场景非"值得打扰" → 不触发
+            activity = signals["activity"]
+            if activity == "typing" and not is_disruptive(scenario):
+                logger.debug("Proactive intent skipped: typing + 非值得打扰场景 %s", scenario)
+                return None
+            # 深夜加班类场景：即使打字也值得提醒（强度高）
+            reaction = get_reaction(scenario, intensity=confidence)
+            prompt = reaction["text"]
+            self._cooldown_until = now + self._cooldown_minutes * 60
+            logger.info(
+                "Proactive intent triggered: scenario=%s intent=%s conf=%.2f %s",
+                scenario, intent.get("intent"), confidence, intent.get("reason"),
+            )
+            self.on_proactive(prompt)
+            return prompt
+        except Exception as e:
+            logger.debug("Proactive intent failed (fallback to rules): %s", e)
+            return None
 
     def tick(self) -> str | None:
         if not self._enabled or not self._rules:
@@ -115,6 +186,13 @@ class ProactiveScheduler:
         else:
             self._typing_since = None
 
+        # ── P1 意图分类优先触发 ──
+        signals = self._collect_signals(now)
+        intent_prompt = self._try_intent(now, signals)
+        if intent_prompt:
+            return intent_prompt
+
+        # ── 规则引擎兜底 ──
         sorted_rules = sorted(self._rules, key=lambda r: r.get("idle_min", 0), reverse=True)
         for rule in sorted_rules:
             required_idle = rule.get("idle_min", 0) * 60

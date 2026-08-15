@@ -181,6 +181,24 @@ class ForegroundWatcher:
         self._cooldown_until: float = 0
         self.cooldown_seconds: float = 5.0
 
+        # ── P1 意图分类输入 ──
+        # 当前分类的持续时长（分钟）：同一 category 不变则累加
+        self._fg_since: float = time.time()
+        self._fg_category: str = ""
+        # 5 分钟窗口内的切窗次数（用于"频繁切窗→可能卡住"判定）
+        self._switch_times: list[float] = []
+
+    @property
+    def fg_duration_min(self) -> float:
+        """当前前台分类的持续时长（分钟）"""
+        return max(0.0, (time.time() - self._fg_since) / 60.0)
+
+    @property
+    def window_switches_5min(self) -> int:
+        """最近 5 分钟内切换前台窗口的次数"""
+        now = time.time()
+        return sum(1 for t in self._switch_times if now - t <= 300)
+
     def start(self):
         """开始轮询（由 QTimer 驱动，每 2 秒 tick）"""
         self._started = True
@@ -230,6 +248,15 @@ class ForegroundWatcher:
         self._last_category = category
         self._last_title = title
         self._cooldown_until = now + self.cooldown_seconds
+
+        # ── P1: 更新意图分类输入 ──
+        # 分类变化 → 重置持续时长；同一分类延续 → 保持
+        if category != self._fg_category:
+            self._fg_category = category
+            self._fg_since = now
+        # 记录切窗（5 分钟窗口，懒清理）
+        self._switch_times.append(now)
+        self._switch_times = [t for t in self._switch_times if now - t <= 300]
 
         info = {"app": app, "category": category, "title": title}
         logger.debug("Foreground changed: %s (%s)", app, category)
