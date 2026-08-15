@@ -486,10 +486,12 @@ class Live2DRenderer(AvatarRenderer):
             # 关键：hit-bbox 不含脚/裙摆（这些区域通常在 HitDrawable 命中区外），
             # 但模型在窗口里实际占的高度 ≈ bbox + 1.2x 脚部高度。所以 pad_bottom 必须
             # 大到够装下"看不见的脚"，否则用户站在小窗口里看不到脚。
-            pad_w = max(16, int(bw * 0.20))
+            # pad_w：横向留余量给左右摆动的手/头发（hit-bbox 不含这些）。
+            # 旧 0.20*bw=57 → 窗口 344x684（瘦高柱子，模型居中只占 266 宽）。
+            # 改 0.40*bw=115 → 窗口更宽，角色比例更接近正常"宠物窗口"。
+            # pad_bottom 保留脚部余量（bh*0.25≈120）防截脚，只在窗口瘦高时放宽。
+            pad_w = max(16, int(bw * 0.40))
             pad_h = max(24, int(bh * 0.18))
-            # 脚部系数据真实 miku 模型：bbox 287x473 → 实际模型高度约 600，bh 比≈25%
-            # 用 0.25*bh 当脚部估算，保底 80px（防 bbox 很小的情况）。
             pad_bottom = max(80, int(bh * 0.25))
             target_w = max(40, bw + pad_w)
             target_h = max(40, bh + pad_h + pad_bottom)
@@ -896,13 +898,14 @@ class Live2DRenderer(AvatarRenderer):
         self._motion_started_at = time.monotonic()
 
     def _force_idle(self) -> None:
-        """StopAllMotions 后用 NORMAL 优先级重启 idle（不再用 IDLE 优先级）。
+        """StopAllMotions 后用 FORCE 优先级重启 idle（最高优先级强制接管）。
 
-        旧实现用 IDLE 优先级调 StartMotion，但 wrapper 0.7.0.4 的 StopAllMotions
-        在某些模型上不能彻底清掉正在播的 motion 实例，导致 IDLE 优先级接不上、
-        角色在 happy 上"死锁"——这就是用户一直看到的"比心持续"。
-        修：改用 NORMAL 优先级（force 接管），并在调用前多调一次 StopAllMotions
-        增加清理力度，同时把状态机也强制切回 idle。
+        历史教训（三次修复）：
+        - v1 用 IDLE 优先级 → 打不过正在播的 NORMAL 手势，接不上 → 比心死锁
+        - v2 用 NORMAL 优先级 → 但手势 motion 也是 NORMAL，Live2D 同优先级
+          不打断正在播的 motion，StartMotion(idle, NORMAL) 被静默拒绝 → 仍死锁
+        - v3（当前）用 FORCE 优先级（最高）→ 强制替换任何正在播的 motion，
+          再叠加双重 StopAllMotions 清理，确保 idle 一定能接管
         """
         # 双重 StopAllMotions：某些 wrapper 实现需要两次才彻底清
         try:
@@ -915,7 +918,7 @@ class Live2DRenderer(AvatarRenderer):
                 self._model.StopAllMotions()
         except Exception:
             pass
-        # 用 NORMAL 优先级播 idle，确保能接管
+        # 用 FORCE 优先级播 idle（最高，强制接管当前任何 motion）
         try:
             if not self._model:
                 self._note_motion_started("force_idle_no_model", is_idle=True)
@@ -932,10 +935,10 @@ class Live2DRenderer(AvatarRenderer):
                             break
                     fname = (motion_list[idx].get("File", "")
                              if isinstance(motion_list[idx], dict) else "idle")
-                    # 关键：用 NORMAL 优先级（不再是 IDLE），确保能强制接管当前 motion
-                    self._model.StartMotion(group, idx, self._live2d.MotionPriority.NORMAL)
+                    # 关键：FORCE 优先级，强制替换正在播的 happy/手势 motion
+                    self._model.StartMotion(group, idx, self._live2d.MotionPriority.FORCE)
                     self._note_motion_started(fname, is_idle=True)
-                    logger.info("Live2DRenderer: _force_idle 成功播放 idle（idx=%d, NORMAL 优先级）", idx)
+                    logger.info("Live2DRenderer: _force_idle 成功播放 idle（idx=%d, FORCE 优先级）", idx)
                     return
         except Exception as e:
             logger.warning("Live2DRenderer: _force_idle 强切 idle 失败: %s", e)
