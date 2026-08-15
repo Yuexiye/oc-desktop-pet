@@ -479,29 +479,39 @@ class Live2DRenderer(AvatarRenderer):
                 )
             except Exception as _e:
                 logger.debug("居中补偿失败（跳过）: %s", _e)
-            # 边距：给 idle 摆幅留余量（窗口尺寸用摆动范围 bw）。
-            # 底部额外多留（HitDrawable 命中区 < 可见像素，脚部可能画在命中区外）：
-            # pad_h 用 0.38 且保底 26px，专门防角色脚/裙摆被窗口下边缘截断。
-            pad_w = max(14, int(bw * 0.28))
-            pad_h = max(26, int(bh * 0.38))
-            # 额外底部补偿：HitDrawable 命中区通常只覆盖身体，脚部/裙摆/长发常画在命中区
-            # 之外，导致 hit-bbox 底部不含脚、bh 偏小、窗口过矮而裁脚。直接用固定大边距
-            # 而非 bh 百分比，因为 bh 本身已漏掉脚部，百分比追不上。
-            pad_bottom = max(200, int(bh * 0.15))
+            # 边距：给 idle 摆幅留余量，同时避免窗口被 fit 成瘦高异形。
+            # 旧实现用 pad_bottom=200 + 大幅 offsetY 上移来防截脚，结果头顶被推出窗口、
+            # 比例瘦高。新策略：底部只留合理边距，靠【窗口高度足够】来包容模型，
+            # 而不是把模型在画布里拼命上移。
+            pad_w = max(16, int(bw * 0.20))
+            pad_h = max(24, int(bh * 0.18))
+            pad_bottom = max(60, int(bh * 0.10))
             target_w = max(40, bw + pad_w)
             target_h = max(40, bh + pad_h + pad_bottom)
-            # 关键修复（截脚根因）：HitDrawable 命中区只覆盖上半身，脚部/裙摆在命中区
-            # 之外，扫描出的 bbox 不含脚。仅加窗口高度只是把"画布底→窗口底"的空白拉大，
-            # 模型在 Live2D 画布里的位置没动，脚仍落在窗口可见区之外被裁。
-            # 必须把模型在画布里【上移】，等效于"顶部留白、脚贴窗口下缘"。
-            # offsetY 单位≈整个画布高度偏移比例：把 pad_bottom 占窗口高度的比例换算成
-            # 上移量（正值=上移）。初音实测 pad_bottom≈200/target_h≈793 → 约 0.25 上移。
-            # 用 max 保底 0.18，避免换算异常时脚仍被裁。
+
+            # 用 canvas 像素高度约束最小窗口高度：
+            # 模型实际占用高度 ≈ canvas_h * fit_scale。若 target_h 远小于此值，
+            # 必须大幅上移才能看到脚，必然截头顶。这里保证窗口高度至少能装下
+            # 模型高度的 82%，让脚和头顶都有生存空间。
             try:
-                _ratio = pad_bottom / float(target_h) if target_h > 0 else 0.25
+                cw_px, ch_px = self._model.GetCanvasSizePixel()
+                min_h_from_canvas = int(ch_px * self._fit_scale * 0.82)
+                if target_h < min_h_from_canvas:
+                    logger.info(
+                        "Live2DRenderer: 窗口高度由 bbox %d 提升到 canvas-based %d",
+                        target_h, min_h_from_canvas,
+                    )
+                    target_h = min_h_from_canvas
             except Exception:
-                _ratio = 0.25
-            self._fit_offset_y = max(0.18, min(0.45, _ratio))
+                pass
+
+            # 居中偏移：把模型在画布里轻微上移，让脚贴近窗口下缘但不裁头顶。
+            # 上限 0.28（旧 0.45 会截头顶），保底 0.10 保证脚基本可见。
+            try:
+                _ratio = pad_bottom / float(target_h) if target_h > 0 else 0.18
+            except Exception:
+                _ratio = 0.18
+            self._fit_offset_y = max(0.10, min(0.28, _ratio))
             logger.info(
                 "Live2DRenderer: 角色 bbox=%dx%d (偏移 %d,%d)，窗口贴合到 %dx%d (+%dpx 边距, 上移 offsetY=%.3f)",
                 bw, bh, min_x, min_y, target_w, target_h, pad_w, self._fit_offset_y,
@@ -1086,16 +1096,32 @@ class Live2DRenderer(AvatarRenderer):
         if not self._model:
             return
 
-        # emotion 级冷却：同一情绪触发的手势播完后，GESTURE_TIMEOUT 内不再重播该情绪 motion
-        # （只同步表情）。避免“屏幕/对话反复推 happy → 比心永远切不回来”的观感。
-        # 仅在当前已是 idle 时生效；若当前正播其他 gesture，新情绪正常打断。
         now = time.monotonic()
-        last_at = self._emotion_motion_cooldown.get(emotion, 0.0)
-        in_cooldown = (
+
+        # 全局 gesture 冷却：任何非 idle motion 播放后，GESTURE_TIMEOUT 内不再播新 motion。
+        # 这是防“比心/挥手持久卡死”的核心：屏幕感知、对话回复、鼠标交互可能高频推同一
+        # 情绪，若每次都能重新触发 motion，就会不断重置计时、手势永不回 idle。
+        last_gesture_at = getattr(self, "_last_gesture_at", 0.0)
+        in_global_gesture_cooldown = (
+            not getattr(self, "_motion_is_idle", True)
+            and now - self._motion_started_at < self.GESTURE_TIMEOUT
+        ) or (
             getattr(self, "_motion_is_idle", True)
-            and now - last_at < self.GESTURE_TIMEOUT
+            and now - last_gesture_at < self.GESTURE_TIMEOUT
         )
-        if in_cooldown:
+        if in_global_gesture_cooldown:
+            logger.debug(
+                "Live2DRenderer: 全局 gesture 冷却中（%.1fs/%.1fs），emotion=%s 只同步表情",
+                now - max(self._motion_started_at, last_gesture_at),
+                self.GESTURE_TIMEOUT, emotion,
+            )
+            self._apply_expression(emotion)
+            return
+
+        # emotion 级冷却：同一情绪在 GESTURE_TIMEOUT 内不重播（即便已回 idle）。
+        last_at = self._emotion_motion_cooldown.get(emotion, 0.0)
+        in_emotion_cooldown = getattr(self, "_motion_is_idle", True) and now - last_at < self.GESTURE_TIMEOUT
+        if in_emotion_cooldown:
             logger.debug("Live2DRenderer: emotion=%s 仍在 %.1fs 冷却期，只同步表情", emotion, self.GESTURE_TIMEOUT)
             self._apply_expression(emotion)
             return
@@ -1126,6 +1152,7 @@ class Live2DRenderer(AvatarRenderer):
         # 记录该情绪 motion 的播放时间，用于 emotion 级冷却
         if motion_played:
             self._emotion_motion_cooldown[emotion] = time.monotonic()
+            self._last_gesture_at = time.monotonic()
         # 表情
         self._apply_expression(emotion)
 
