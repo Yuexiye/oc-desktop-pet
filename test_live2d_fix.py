@@ -74,14 +74,22 @@ def test_fit_offset_y_upper_bound(renderer):
 
 
 def test_fit_window_height_enough_for_canvas(renderer):
-    """窗口高度至少装下 canvas 高度的 82%，避免瘦高窗口"""
+    """撤除 canvas 约束后：窗口只由 bbox + 边距决定，不会被超高 canvas 撑大
+
+    旧实现（已撤除）用 ch_px * fit_scale * 0.82 当 canvas 约束，会把窗口撑到
+    数千像素（miku canvas 8888px → 7288px）。新策略：只按 bbox + 合理边距
+    算窗口，确保 fit 后的窗口贴合到模型实际可见区域。
+    """
+    renderer._model.GetCanvasSizePixel.return_value = (1200.0, 2134.0)
     renderer._scan_bbox_adaptive = MagicMock(return_value=(100, 100, 300, 400))
     renderer._parent = MagicMock()
     renderer._parent.fit_window_to_model = MagicMock()
     Live2DRenderer._fit_window_to_model(renderer)
-    # canvas 高 2134 * fit_scale 1.0 * 0.82 ≈ 1749
     target_h = renderer._parent.fit_window_to_model.call_args[0][1]
-    assert target_h >= int(2134 * 1.0 * 0.82), f"target_h={target_h} 太小，仍会瘦高"
+    # bbox 300x400 → 窗口高 ≈ bbox + pad_h(72) + pad_bottom(60) = 532
+    assert target_h < 700, f"窗口高度 {target_h} 超出合理范围（应 < 700，避免 canvas 撑大）"
+    # 也不应过小导致裁头顶：至少 ≥ bbox 高 + 一些边距
+    assert target_h >= 400, f"窗口高度 {target_h} 太小，模型会被裁"
 
 
 def test_fit_pad_bottom_reduced(renderer):

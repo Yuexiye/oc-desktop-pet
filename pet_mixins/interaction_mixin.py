@@ -244,8 +244,12 @@ class InteractionMixin:
 
         # 移除旋转
         self.char_label.setGraphicsEffect(None)
-        # 恢复帧渲染
-        self._renderer._show_frame()
+        # 恢复帧渲染（仅 sprite renderer 有 _show_frame；Live2D 走自己的 draw loop，不需要）
+        if hasattr(self._renderer, "_show_frame"):
+            try:
+                self._renderer._show_frame()
+            except Exception:
+                pass
 
         logger.info("Stopped sitting")
 
