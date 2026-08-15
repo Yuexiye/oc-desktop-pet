@@ -122,6 +122,18 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self._pet_manager = pet_manager  # 多桌宠管理器引用
         self._init_position = position  # 初始位置（供 _setup_window 使用）
 
+        # ── P0 调试开关（二分法定位 0x8001010d）：通过环境变量禁用各模块 ──
+        # 用法：OC_DISABLE_TRAY=1 / OC_DISABLE_PERCEPTION=1 / OC_DISABLE_LIVE2D=1
+        # 让你能"禁托盘→禁感知→禁 Live2D，各跑一天"隔离崩溃根因。
+        self._diag_disable_tray = os.environ.get("OC_DISABLE_TRAY", "") == "1"
+        self._diag_disable_perception = os.environ.get("OC_DISABLE_PERCEPTION", "") == "1"
+        self._diag_disable_live2d = os.environ.get("OC_DISABLE_LIVE2D", "") == "1"
+        if any((self._diag_disable_tray, self._diag_disable_perception, self._diag_disable_live2d)):
+            logger.warning(
+                "P0 调试开关生效: tray=%s perception=%s live2d=%s",
+                self._diag_disable_tray, self._diag_disable_perception, self._diag_disable_live2d,
+            )
+
         # ── 交互状态 ──
         self._drag_start_cursor = QPoint()
         self._drag_start_window = QPoint()
@@ -255,6 +267,10 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         if not screen_cfg.get("enabled", True):
             self._perception.screen.disable()
             logger.info("Screen perception disabled by config")
+        # P0 调试：环境变量强制禁用感知（二分定位用）
+        if self._diag_disable_perception:
+            self._perception.screen.disable()
+            logger.warning("Screen perception DISABLED via OC_DISABLE_PERCEPTION=1")
         # 截图保护开关（默认全关，配置开启）
         if screen_cfg.get("blur", False):
             self._perception.screen.set_blur(True)
@@ -476,7 +492,10 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self._window_interaction = WindowInteraction(self)
 
         self._setup_menu()
-        self._setup_tray()
+        if self._diag_disable_tray:
+            logger.warning("系统托盘 DISABLED via OC_DISABLE_TRAY=1")
+        else:
+            self._setup_tray()
         self.load_character(self._current_char)
         self._startup_screen.raise_()  # 确保启动画面在角色立绘之上
         self._break_timer.start(30000)  # 每 30 秒检查一次空闲

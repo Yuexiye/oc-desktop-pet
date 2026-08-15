@@ -11,6 +11,11 @@ import faulthandler
 # 抓 C++ 层崩溃栈（segfault / access violation）
 faulthandler.enable(file=open('crash_trace.txt', 'w', encoding='utf-8'))
 
+# ── 崩溃现场自动收集（打包 crash_trace + 日志尾部 + C扩展列表 + 线程快照）──
+# 必须在重模块 import / 任何可能崩溃的操作之前安装，才能覆盖全程。
+from core.crash_collector import install as _install_crash_collector
+_install_crash_collector()
+
 
 def _setup_file_logging():
     """将完整日志同时写入 logs/oc_pet.log（UTF-8 滚动），便于回看。

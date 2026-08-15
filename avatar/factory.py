@@ -95,6 +95,14 @@ def create_renderer(character_id: str, parent, override_format: str = None) -> A
     fmt = detect_format(character_id)
     logger.info("create_renderer('%s') -> format=%s", character_id, fmt)
 
+    # P0 调试：OC_DISABLE_LIVE2D=1 时强制走 Q6 精灵渲染器，
+    # 完全不 import live2d-py，用于二分法隔离"live2d C 层是否引发 0x8001010d"。
+    import os as _os
+    if _os.environ.get("OC_DISABLE_LIVE2D", "") == "1" and fmt == "live2d":
+        logger.warning("OC_DISABLE_LIVE2D=1：跳过 Live2D，强制使用 Q6 SpriteRenderer")
+        from avatar.sprite_renderer import SpriteRenderer
+        return SpriteRenderer(parent)
+
     if fmt == "live2d":
         try:
             from avatar.live2d_renderer import Live2DRenderer
