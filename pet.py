@@ -629,11 +629,22 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self.setFixedSize(self._base_w, self._base_h)
 
         win_cfg = self._init_position or self.config.get("window", {})
+        sg = self._current_screen_geometry()
         if win_cfg.get("x", -1) >= 0 and win_cfg.get("y", -1) >= 0:
-            self.move(win_cfg["x"], win_cfg["y"])
+            tx, ty = int(win_cfg["x"]), int(win_cfg["y"])
         else:
-            sg = self._current_screen_geometry()
-            self.move(sg.width() - 250, sg.height() - 350)
+            # 默认：屏幕底部居中（之前是右下角，用户反馈“偏右”）。
+            tx, ty = (sg.width() - 250) // 2, sg.height() - 350
+        # 边界约束：config 里可能存了越界坐标（如窗口尺寸变化前的旧 x），
+        # 让窗口始终完整落在屏幕可用区域内，避免“一启动就贴边/出屏幕”。
+        try:
+            tw = max(self._base_w, int(self._base_w * getattr(self, "_pet_scale", 1.0)))
+            th = max(self._base_h, int(self._base_h * getattr(self, "_pet_scale", 1.0)))
+            tx = max(sg.left(), min(tx, sg.right() - tw + 1))
+            ty = max(sg.top(), min(ty, sg.bottom() - th + 1))
+        except Exception:
+            pass
+        self.move(tx, ty)
 
     def _apply_penetration(self):
         """应用当前鼠标穿透状态"""
@@ -824,7 +835,12 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
             base_h = self._base_h
             w_final = max(base_w, int(base_w * self._pet_scale))
             h_final = max(base_h, int(base_h * self._pet_scale))
+            # setFixedSize 默认左上角不动、向右下扩展——贴合后模型会跟着往右/往下漂
+            # （用户反馈“更右了”）。先记当前窗口中心，resize 后把中心对齐回原位置。
+            _center = self.frameGeometry().center()
             self.setFixedSize(w_final, h_final)
+            if self.isVisible():
+                self.move(_center.x() - w_final // 2, _center.y() - h_final // 2)
             # P0-2: 一次性调用 recalc_geometry，避免 set_scale 和 recalc_geometry 分别触发 _recompute_fit
             if hasattr(self._renderer, "recalc_geometry"):
                 self._renderer.recalc_geometry(w_final, h_final)
@@ -837,12 +853,16 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
             logger.warning("PetWindow: 窗口贴合失败: %s", e)
 
     def _recalc_geometry(self):
-        """缩放后重算窗口和角色图片尺寸(不改变窗口位置)"""
+        """缩放后重算窗口和角色图片尺寸(保持窗口中心不变)"""
         # 基准尺寸来自 _setup_window 读的 config.window（默认 458x520）。
-        # 放大后角色更大更清晰。
+        # 放大后角色更大更清晰。setFixedSize 默认左上角锚定（向右下扩展），
+        # 会让模型中心漂移；这里先记中心，resize 后对齐回原位置。
         w = max(self._base_w, int(self._base_w * self._pet_scale))
         h = max(self._base_h, int(self._base_h * self._pet_scale))
+        _center = self.frameGeometry().center()
         self.setFixedSize(w, h)
+        if self.isVisible():
+            self.move(_center.x() - w // 2, _center.y() - h // 2)
         # 委托给 SpriteRenderer 处理角色尺寸
         self._renderer.set_scale(self._pet_scale)
         self._renderer.recalc_geometry(w, h)
