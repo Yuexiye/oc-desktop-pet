@@ -561,6 +561,46 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         # 自动绑定到第一个可用 agent（零硬编码，不静默乱落）
         self._ensure_dialog_agent()
 
+        # ── P2 关系：陪伴记忆 + 每日首启问候 ──
+        self._init_companion_memory()
+
+    def _init_companion_memory(self):
+        """初始化陪伴记忆（CompanionMemory）并触发跨天首启问候。
+
+        - 记忆文件：~/.oc-pet/memory/<agent_id>.json（与养成存档同目录）
+        - 跨天启动时弹"接得上昨天"的问候；非跨天不打扰。
+        """
+        try:
+            from core.companion_memory import CompanionMemory
+            self._companion_memory = CompanionMemory(self._agent_id)
+            # 前台分类活动 → 记忆（常做的事）
+            if hasattr(self, '_foreground_watcher'):
+                self._foreground_watcher.on_change = self._on_foreground_change_with_memory
+            # 跨天首启问候（延迟到窗口稳定后弹气泡）
+            from core.companion_hooks import build_morning_greeting
+            greet = build_morning_greeting(self._companion_memory)
+            if greet:
+                QTimer.singleShot(2000, lambda g=greet: self._show_bubble(g, emotion="happy"))
+                logger.info("P2 每日首启问候 → %s", greet[:40])
+            else:
+                logger.debug("P2 非跨天启动，不弹首启问候")
+        except Exception as e:
+            logger.warning("P2 陪伴记忆初始化失败（非致命）: %s", e)
+            self._companion_memory = None
+
+    def _on_foreground_change_with_memory(self, app_name: str, app_category: str, title: str):
+        """前台变化：记录活动到陪伴记忆 + 原有回调。"""
+        try:
+            mem = getattr(self, "_companion_memory", None)
+            if mem is not None:
+                mem.record_activity(app_category)
+        except Exception:
+            pass
+        try:
+            self._on_foreground_change(app_name, app_category, title)
+        except Exception:
+            pass
+
     def set_hanako_ws(self, ws_client, session_manager):
         """注入共享 Hanako WS 客户端（由 PetManager 调用）"""
         try:
@@ -2019,6 +2059,20 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
                     self._engine._thread.join(timeout=3)
             except Exception:
                 pass
+
+        # ── P2 关系：关电脑离别语 + 存档陪伴记忆 ──
+        try:
+            mem = getattr(self, "_companion_memory", None)
+            if mem is not None:
+                from core.companion_hooks import build_farewell
+                farewell = build_farewell(mem)
+                # 离别语延迟 300ms 弹出（等窗口还可见）
+                QTimer.singleShot(300, lambda f=farewell: self._show_bubble(f, emotion="sad"))
+                # 归档今日 + 保存（下次启动能接上）
+                mem.close()
+                logger.info("P2 离别语 → %s", farewell[:40])
+        except Exception as e:
+            logger.warning("P2 离别语失败（非致命）: %s", e)
 
         super().closeEvent(event)
 

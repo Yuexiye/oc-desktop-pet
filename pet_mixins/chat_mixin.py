@@ -73,6 +73,8 @@ class ChatMixin:
                     self._is_thinking = True
                     self._pending_chat = True
                     self._pending_user_msg = text
+                    # P2 关系：记录语音话题到陪伴记忆
+                    self._record_topic(text)
                 else:
                     self.voice_status_signal.emit("没听清...")
 
@@ -236,6 +238,9 @@ class ChatMixin:
         if self._perception.proactive:
             self._perception.proactive.mark_conversation()
 
+        # P2 关系：记录用户话题到陪伴记忆（隔天能接上）
+        self._record_topic(text)
+
         # ── 用户发新消息 → 立即截停旧 TTS(P2 可中断管线)──
         self._tts_player.stop()
         # P1 全链路打断：推进代际 + 中断 LLM 层（旧消息作废，转入新对话）
@@ -281,6 +286,19 @@ class ChatMixin:
         except Exception:
             pass
         self._think_timeout.start(think_timeout_ms)
+
+    # ── P2 关系：记录话题到陪伴记忆 ──
+
+    def _record_topic(self, text: str):
+        """把用户消息记录到 CompanionMemory（隔天能接上话题）。"""
+        if not text:
+            return
+        try:
+            mem = getattr(self, "_companion_memory", None)
+            if mem is not None:
+                mem.record_topic(text)
+        except Exception as e:
+            logger.debug("P2 记录话题失败: %s", e)
 
     # ── 新建会话 ──
 
