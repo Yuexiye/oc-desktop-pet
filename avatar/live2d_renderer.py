@@ -70,6 +70,7 @@ class Live2DRenderer(AvatarRenderer):
         self._ready: bool = False   # 模型是否成功加载并可在 draw 中渲染
         self._fit_scale: float = 1.0
         self._fit_scale_x: float = 1.0  # 横向比例系数（超高画布模型微调用）
+        self._center_offset_x: float = 0.0  # 水平居中偏移（画布单位，_recompute_fit 里 SetScale 后应用）
         self._offset_scale: tuple[float, float] = (0.0, 0.0)
 
         # 视线/朝向目标（draw 中平滑插值）
@@ -377,9 +378,22 @@ class Live2DRenderer(AvatarRenderer):
                 return
             bw = max_x - min_x + 1
             bh = max_y - min_y + 1
-            # 注意：这里不能用 SetOffsetX 居中。实测 offset 会改 modelMatrix，
-            # 后续表情/动作/TTS 口型等 model 操作与 offset 状态结合会触发 C++ 层
-            # 段错误（闪退无 traceback）。模型在画布里的固位偏移靠大边距吸收。
+            # 居中补偿：模型在画布里固位偏右（moc3 留白），用 SetOffsetX 平移居中。
+            # 不在这里直接设——_fit_window_to_model 之后窗口贴合成新视口会触发 SetScale，
+            # 与 offset 的时序交互在真实多并发环境有过闪退。改为缓存 offx，统一由
+            # _recompute_fit 在每次 SetScale 之后应用（保证 SetScale → SetOffsetX 顺序，
+            # 实测该顺序稳定不闪退）。
+            try:
+                center_x = (min_x + max_x) / 2.0
+                offx = (gl_w / 2.0 - center_x) / (0.591 * gl_w)
+                offx = max(-0.9, min(0.9, offx))
+                self._center_offset_x = offx
+                logger.info(
+                    "Live2DRenderer: 居中补偿 中心x=%.0f→%.0f offx=%+.3f",
+                    center_x, gl_w / 2.0, offx,
+                )
+            except Exception as _e:
+                logger.debug("居中补偿失败（跳过）: %s", _e)
             # 边距：给 idle 摆幅留余量（窗口尺寸用摆动范围 bw）。
             pad_w = max(14, int(bw * 0.28))
             pad_h = max(14, int(bh * 0.28))
@@ -393,6 +407,12 @@ class Live2DRenderer(AvatarRenderer):
             fit_win = getattr(parent, "fit_window_to_model", None)
             if callable(fit_win):
                 fit_win(target_w, target_h)
+            # 保险：若窗口尺寸未变（on_resize 不触发），主动应用一次居中
+            if getattr(self, "_center_offset_x", 0.0):
+                try:
+                    self._recompute_fit()
+                except Exception:
+                    pass
         except Exception as e:
             logger.warning("Live2DRenderer: 窗口贴合失败: %s", e)
 
@@ -463,6 +483,14 @@ class Live2DRenderer(AvatarRenderer):
                     self._model.SetScale(fit)
             else:
                 self._model.SetScale(fit)
+            # 居中：SetScale 之后应用缓存的水平偏移（保证 SetScale→SetOffsetX 顺序，
+            # 实测稳定；offset 是画布单位，模型偏移比例固定，各视口下都保持居中）。
+            _offx = getattr(self, "_center_offset_x", 0.0)
+            if _offx:
+                try:
+                    self._model.SetOffsetX(_offx)
+                except Exception:
+                    pass
             logger.debug("Live2DRenderer: 缩放 fit=%.3f sx=%.3f (gl=%sx%s, canvas_px=%sx%s)",
                          fit, self._gl_w, self._gl_h, cw_px, ch_px)
         except Exception as e:
