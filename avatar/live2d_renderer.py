@@ -71,6 +71,8 @@ class Live2DRenderer(AvatarRenderer):
         self._fit_scale: float = 1.0
         self._fit_scale_x: float = 1.0  # 横向比例系数（超高画布模型微调用）
         self._center_offset_x: float = 0.0  # 水平居中偏移（画布单位，_recompute_fit 里 SetScale 后应用）
+        self._mirror_facing_enabled: bool = False  # 朝向镜像（精灵图玩法，Live2D 不启用）
+        self._facing_right: bool = True
         self._offset_scale: tuple[float, float] = (0.0, 0.0)
 
         # 视线/朝向目标（draw 中平滑插值）
@@ -990,7 +992,13 @@ class Live2DRenderer(AvatarRenderer):
 
     def set_facing(self, right: bool) -> None:
         self._facing_right = right
-        if self._model:
+        # Live2D 是 3D 立绘，保持正面：水平镜像（SetScaleX 负值）会把模型整体
+        # 左右翻转，与画布偏右的居中补偿（SetOffsetX 左移）叠加，转向后模型
+        # 明显偏左/偏右——用户反馈的“又偏左/偏右”就是镜像+居中的冲突。
+        # 镜像朝向是精灵图桌宠的玩法，Live2D 不用。这里仅记录 facing 状态，
+        # 供 walk 动画/交互语义使用，不改 model 矩阵。若将来要“转身”，
+        # 应走 Live2D 参数（如 ParamAngleY 体感转向）而非负 scale。
+        if self._model and getattr(self, "_mirror_facing_enabled", False):
             try:
                 # 用像素画布尺寸计算缩放（与 _recompute_fit 一致，按高度缩放）
                 cw_px, ch_px = self._model.GetCanvasSizePixel()
