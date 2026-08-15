@@ -105,6 +105,8 @@ linjian-peek → MCP Plugin → Hanako tool calling ─────────�
 - 🏠 **多窗口并行** -- 每个 Hanako agent 独立运行一个桌宠
 - 🔍 **Agent 发现** -- 自动扫描 `~/.hanako/agents/`
 - 🎨 **角色包管理** -- 自定义精灵 + 内置回退
+- 🎛️ **per-pet 独立配置** -- 每个桌宠可单独绑定自己的 TTS 引擎/音色与对话助手
+  （设置面板 → 基础 →「桌宠独立配置」；不配置则沿用全局默认）
 
 ### 通知
 - 📱 **ntfy 通知** -- 推送通知到手机（需安装 ntfy app）

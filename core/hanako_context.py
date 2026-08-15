@@ -171,7 +171,10 @@ class HanakoContext:
         model_id = chat_model.get("id", "") or ""
 
         if not provider_id or not model_id:
-            logger.warning("Model config incomplete: provider=%s model=%s", provider_id, model_id)
+            # 未配置对话模型是常态（用户可能只开桌宠/未配置 LLM），
+            # 降为 debug：fallback 链已在 harness_adapter 处理（.env → 默认），
+            # 每轮对话打 warning 会刷屏。
+            logger.debug("Model config incomplete: provider=%s model=%s", provider_id, model_id)
             return {}
 
         # 从 provider catalog 查找 provider 配置
@@ -179,7 +182,9 @@ class HanakoContext:
         provider_cfg = providers.get(provider_id, {})
 
         if not provider_cfg:
-            logger.warning("Provider '%s' not found in catalog", provider_id)
+            # provider 不在 catalog：返回兑底值，同样不是致命路径，降 debug。
+            # （catalog 未收录自定义 provider 是可预期场景）
+            logger.debug("Provider '%s' not found in catalog", provider_id)
             return {
                 "provider": provider_id,
                 "model": model_id,
