@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -21,6 +22,10 @@ from .base import TTSProvider
 logger = logging.getLogger(__name__)
 
 OUTPUT_DIR = Path.home() / ".hanako" / "pets" / "tts_cache"
+
+# 缓存 TTL：超过 1 天的 mp3 可清理；每 10 分钟最多扫一次，避免每次合成都遍历目录
+CACHE_TTL = 24 * 3600
+_SWEEP_INTERVAL = 600
 
 # 微软自带中文音色（edge-tts 服务端音色名）
 EDGE_VOICES = [
@@ -60,7 +65,7 @@ class EdgeTtsProvider(TTSProvider):
         self._pitch = pitch
         self._ready = False
         self._last_error = ""
-
+        self._last_sweep = 0.0          # 上次清理缓存目录的时间（节流）
     def configure(self, voice: str = "", rate: str = "", pitch: str = ""):
         """从配置覆盖默认参数"""
         if voice:
@@ -103,6 +108,12 @@ class EdgeTtsProvider(TTSProvider):
 
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+        # 节流式 TTL 清理：>1 天的 mp3 删除，封顶磁盘增长（每次合成最多清一次，10 分钟最小间隔）
+        now = time.monotonic()
+        if now - self._last_sweep > _SWEEP_INTERVAL:
+            self._last_sweep = now
+            self._sweep_cache(CACHE_TTL)
+
         # 缓存：同文本+音色+语速复用（instruct 情感不参与，edge 不支持精细情感）
         cache_key = f"edge:{self._voice}:{self._rate}:{text}"
         text_hash = hashlib.md5(cache_key.encode()).hexdigest()[:12]
@@ -130,6 +141,26 @@ class EdgeTtsProvider(TTSProvider):
             self._last_error = str(e)
             logger.warning("Edge TTS 合成失败: %s", e)
             return None
+
+    def _sweep_cache(self, max_age: float) -> None:
+        """删除超过 max_age 秒的 edge 缓存 mp3（只在 synthesize 节流调用）。
+
+        只清本 provider 的 edge_*.mp3，不碰 CosyVoice 的 wav 等其他引擎缓存。
+        """
+        try:
+            cutoff = time.time() - max_age
+            removed = 0
+            for f in OUTPUT_DIR.glob("edge_*.mp3"):
+                try:
+                    if f.is_file() and f.stat().st_mtime < cutoff:
+                        f.unlink()
+                        removed += 1
+                except FileNotFoundError:
+                    pass  # 已被并发/别处删除
+            if removed:
+                logger.info("Edge TTS 缓存清理: 删除 %d 个过期 mp3", removed)
+        except Exception:
+            pass  # 清理失败不影响合成
 
     def get_speaker_info(self, character_id: str) -> dict:
         return {"voice": self._voice, "provider": "edge-tts", "free": True}
