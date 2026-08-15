@@ -220,12 +220,21 @@ class BehaviorMixin:
         self._set_anim_seq(params.nearby_anim, emotion="happy", style=get_transition_style("happy"))
 
     def _on_mouse_hover(self):
-        """鼠标在角色附近静止 - 只切动画"""
+        """鼠标在角色附近静止（1.5s）→ 转向 + 气泡回应（“在看我吗~”之类）"""
         params = self._mouse_reaction_params
         if not params.react_hover:
             return
-        if self._is_thinking:
+        if self._is_thinking or self._check_reaction_cooldown():
             return
+        try:
+            import random as _random
+            lines = [
+                "嗯？", "在看我吗~", "有什么事吗？", "摸我一下试试？",
+                "发什么呆呢~", "要陪我玩吗？", "在看什么呢？",
+            ]
+            self._show_bubble(_random.choice(lines), emotion="thinking")
+        except Exception:
+            pass
         self._set_anim_seq("idle", emotion="thinking", style=get_transition_style("thinking"))
 
     def _on_mouse_chase(self, target_x: int):
