@@ -355,42 +355,47 @@ class Live2DRenderer(AvatarRenderer):
             self._model.Update()
             self._model.Draw()
             STEP = 2
+            # idle motion 会大幅左右摆动（miku 摆幅可达几十 px），单帧 bbox 追不上摆动，
+            # 导致窗口贴成“瞬时位置”后一动就出窗口。采样 2 帧取动态外接框（min_x 取最左、
+            # max_x 取最右），让窗口一次性包住摆动范围，之后模型再摆也不溢出。
             min_x, min_y, max_x, max_y = gl_w, gl_h, -1, -1
-            for x in range(0, gl_w + 1, STEP):
-                for y in range(0, gl_h + 1, STEP):
-                    try:
-                        if mm.HitDrawable(float(x), float(y)):
-                            if x < min_x: min_x = x
-                            if x > max_x: max_x = x
-                            if y < min_y: min_y = y
-                            if y > max_y: max_y = y
-                    except Exception:
-                        pass
+            for _sample in range(2):
+                self._model.Update()
+                self._model.Draw()
+                for x in range(0, gl_w + 1, STEP):
+                    for y in range(0, gl_h + 1, STEP):
+                        try:
+                            if mm.HitDrawable(float(x), float(y)):
+                                if x < min_x: min_x = x
+                                if x > max_x: max_x = x
+                                if y < min_y: min_y = y
+                                if y > max_y: max_y = y
+                        except Exception:
+                            pass
             if max_x < 0:
                 logger.info("Live2DRenderer: 未命中角色像素，跳过窗口贴合")
                 return
             bw = max_x - min_x + 1
             bh = max_y - min_y + 1
-            # 自动居中：模型在画布里常偏右/偏左（作者留白），缩放后贴边被裁。
-            # 用 SetOffsetX 把模型平移到视口中心（实测校准 calib）。
+            # 居中：模型在画布里常固位偏右（moc3 作者的留白），导致缩放后贴边。
+            # 用 SetOffsetX 把摆动中心平移到视口中心（一次性，fit 只触发一次）。
+            # 实测校准：1 offset 单位 = 0.591 视口宽（130px@220 视口），正=右移、负=左移。
+            # 摆动对称绕中心，摆动幅度不变，居中后窗口仍包住摆动范围。
             try:
-                cw_log, _ch_log = self._model.GetCanvasSize()
-                if cw_log and cw_log > 0:
-                    ideal_min_x = (gl_w - bw) / 2.0
-                    shift_px = ideal_min_x - min_x
-                    offx = shift_px * cw_log * 2.0 / gl_w
-                    offx = max(-0.9, min(0.9, offx))
-                    self._model.SetOffsetX(offx)
-                    logger.info(
-                        "Live2DRenderer: 居中补偿 min_x=%d→%.0f shift=%+.0fpx offx=%+.3f",
-                        min_x, ideal_min_x, shift_px, offx,
-                    )
+                center_x = (min_x + max_x) / 2.0
+                shift_px = gl_w / 2.0 - center_x
+                offx = shift_px / (0.591 * gl_w)
+                offx = max(-0.9, min(0.9, offx))
+                self._model.SetOffsetX(offx)
+                logger.info(
+                    "Live2DRenderer: 居中补偿 中心x=%.0f→%.0f shift=%+.0fpx offx=%+.3f",
+                    center_x, gl_w / 2.0, shift_px, offx,
+                )
             except Exception as _e:
                 logger.debug("居中补偿失败（跳过）: %s", _e)
-            # 边距：miku 这类带大摆幅 idle 动作的模型，贴太死会让摆动超出窗口被裁。
-            # 用 20% 边距（下限 +8px）给动作留出摆动余量，避免"一部分总在窗口外"。
-            pad_w = max(8, int(bw * 0.20))
-            pad_h = max(8, int(bh * 0.20))
+            # 边距：给 idle 摆幅留余量（窗口尺寸用摆动范围 bw，居中平移不影响 bw）。
+            pad_w = max(14, int(bw * 0.28))
+            pad_h = max(14, int(bh * 0.28))
             target_w = max(40, bw + pad_w)
             target_h = max(40, bh + pad_h)
             logger.info(
@@ -445,20 +450,12 @@ class Live2DRenderer(AvatarRenderer):
             #   <1  = 缩小留白
             #   >1  = 放大裁剪（特写）
             fit = self._fit_scale
-            # 横向比例系数：
-            # - pet.json 显式配置 scale_x 时用它（用户可调）
-            # - 否则自动补偿：画布宽高比低于参考比（~0.7，接近人体比例）时
-            #   说明模型是“超高画布”（如 miku 3500x8888），等比缩放会导致角色
-            #   横向偏细。此时按画布比例反推横向放大倍数，让任何模型默认都不窄。
+            # 横向比例系数：仅 pet.json 显式配置 scale_x 时生效（用户可调）。
+            # 不再自动补偿：之前的“画布宽高比 < 0.7 即放大 sv=0.55/ratio”是基于画布
+            # 比例的误判——miku 这类超高画布（3500x8888）是作者左右留白导致画布比例小，
+            # 但模型内容体比例正常（bbox 渇 155x289=0.536），放大后反而把模型推偏/贴边，
+            # 是“有时偏左有时偏右”的根源。默认 sx=1.0 等比缩放，位置稳定。
             sx = getattr(self, "_fit_scale_x", 1.0)
-            if sx == 1.0 and cw_px and ch_px and cw_px / ch_px < 0.7:
-                try:
-                    ratio = cw_px / ch_px
-                    # 补到参考比 0.55（接近人类体型）：sx = 参考比 / 实际比
-                    sx = round(max(1.0, min(0.55 / ratio, 2.2)), 3)
-                    self._fit_scale_x = sx
-                except Exception:
-                    sx = 1.0
             if sx != 1.0:
                 try:
                     self._model.SetScaleX(fit * sx)
