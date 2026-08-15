@@ -11,6 +11,7 @@ self._set_anim_seq / self._mark_user_interaction 等，均由 PetWindow 提供�
 """
 import logging
 import threading
+import time
 
 import numpy as np
 
@@ -174,6 +175,15 @@ class ChatMixin:
                         try:
                             text = vi_ref.transcribe_audio(audio_data)
                             if text and eng:
+                                # 去重：同文本 5 秒内不重复发（VAD 切两次/用户复读同一句）
+                                _now = time.monotonic()
+                                _prev_t = getattr(self, "_continuous_last_sent_t", 0.0)
+                                _prev_text = getattr(self, "_continuous_last_sent_text", "")
+                                if text == _prev_text and _now - _prev_t < 5.0:
+                                    logger.debug("Continuous ASR 同句去重，丢弃: %s", text[:20])
+                                    return
+                                self._continuous_last_sent_t = _now
+                                self._continuous_last_sent_text = text
                                 eng.send(text, character=self._current_char)
                                 logger.info("Continuous voice sent: %s", text[:30])
                         finally:

@@ -367,10 +367,12 @@ class Live2DRenderer(AvatarRenderer):
             self._model.Draw()
             STEP = 2
             # idle motion 会大幅左右摆动（miku 摆幅可达几十 px），单帧 bbox 追不上摆动，
-            # 导致窗口贴成“瞬时位置”后一动就出窗口。采样 2 帧取动态外接框（min_x 取最左、
-            # max_x 取最右），让窗口一次性包住摆动范围，之后模型再摆也不溢出。
+            # 导致窗口贴成“瞬时位置”后一动就出窗口。采样 4 帧取动态外接框（min_x 取最左、
+            # max_x 取最右、max_y 取最下），让窗口一次性包住摆动范围，之后模型再摆也不溢出。
+            # 注意 HitDrawable 是命中检测区域（作者定义，通常只覆盖躯干）——脚部/裙摆/发尖
+            # 画在命中区外时 bbox 会偏小，所以底部额外加固定余量，避免角色脚被窗口截断。
             min_x, min_y, max_x, max_y = gl_w, gl_h, -1, -1
-            for _sample in range(2):
+            for _sample in range(4):
                 self._model.Update()
                 self._model.Draw()
                 for x in range(0, gl_w + 1, STEP):
@@ -405,8 +407,10 @@ class Live2DRenderer(AvatarRenderer):
             except Exception as _e:
                 logger.debug("居中补偿失败（跳过）: %s", _e)
             # 边距：给 idle 摆幅留余量（窗口尺寸用摆动范围 bw）。
+            # 底部额外多留（HitDrawable 命中区 < 可见像素，脚部可能画在命中区外）：
+            # pad_h 用 0.38 且保底 26px，专门防角色脚/裙摆被窗口下边缘截断。
             pad_w = max(14, int(bw * 0.28))
-            pad_h = max(14, int(bh * 0.28))
+            pad_h = max(26, int(bh * 0.38))
             target_w = max(40, bw + pad_w)
             target_h = max(40, bh + pad_h)
             logger.info(

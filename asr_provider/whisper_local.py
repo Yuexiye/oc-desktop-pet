@@ -157,12 +157,23 @@ class WhisperLocalProvider(ASRProvider):
                     vad_filter=True,  # Silero VAD：过滤音乐/环境背景音，只识别真人语音段
                     **_kw,
                 )
-                parts = [s.text.strip() for s in segments]
+                parts = []
+                avg_lp = 0.0
+                no_speech = 1.0
+                _n = 0
+                for s in segments:
+                    parts.append(s.text.strip())
+                    _n += 1
+                    avg_lp += float(getattr(s, "avg_logprob", -1.0) or -1.0)
+                    if _n == 1:
+                        no_speech = float(getattr(s, "no_speech_prob", 1.0) or 1.0)
                 text = "".join(parts).strip()
+                avg_lp = avg_lp / max(_n, 1)
                 try:
-                    logger.info("ASR backend=faster_whisper lang=%s conf=%.2f",
+                    logger.info("ASR backend=faster_whisper lang=%s conf=%.2f avg_lp=%.2f no_speech=%.2f",
                                 getattr(info, "language", "?"),
-                                getattr(info, "language_probability", 0.0) or 0.0)
+                                getattr(info, "language_probability", 0.0) or 0.0,
+                                avg_lp, no_speech)
                 except Exception:
                     pass
             else:
@@ -173,6 +184,20 @@ class WhisperLocalProvider(ASRProvider):
                     **_kw,
                 )
                 text = result.get("text", "").strip()
+
+            # ── 噪声防御 ──
+            # ① initial_prompt 回显：对空/静音音频，whisper 可能把提示词本身当结果输出
+            #    （实测出现过“请用简体中文转写。”被当成用户说的话）。
+            _PROMPT_HINT = "请用简体中文转写"
+            if text and _PROMPT_HINT in text:
+                logger.info("ASR 空音频误识别（initial_prompt 回显），丢弃")
+                return None
+            # ② 置信度：整段平均 logprob 太低（多为环境噪音——直播/B站视频声被识别）
+            #    → 丢弃；faster-whisper 才有这两个分数，openai 分支跳过。
+            if backend == "faster_whisper" and text:
+                if avg_lp < -1.2 or no_speech > 0.9:
+                    logger.info("ASR 低置信度丢弃 (avg_lp=%.2f no_speech=%.2f)", avg_lp, no_speech)
+                    return None
             logger.info("ASR result: %s", text[:50])
             return text if text else None
         except Exception as e:
