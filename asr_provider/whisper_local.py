@@ -154,7 +154,7 @@ class WhisperLocalProvider(ASRProvider):
                     audio_path,
                     language=language,
                     beam_size=5,
-                    vad_filter=False,
+                    vad_filter=True,  # Silero VAD：过滤音乐/环境背景音，只识别真人语音段
                     **_kw,
                 )
                 parts = [s.text.strip() for s in segments]

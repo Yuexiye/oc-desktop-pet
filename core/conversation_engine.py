@@ -560,7 +560,7 @@ class ConversationEngine:
             logger.info("LLM 回复: %s [emotion:%s]", reply, emotion)
         except Exception as e:
             logger.error("LLM 失败: %s", e)
-            reply = "…（信号不太好，你再说一遍？）"
+            reply = "（嗯…让我缓一下）"
             emotion = "neutral"
 
         # P1：LLM 调用后检查——若已打断（代际过期），不再继续 TTS/回调
@@ -658,6 +658,12 @@ class ConversationEngine:
         try:
             if tts and tts_ready and reply and reply.strip() and reply.strip() not in ("\u2026", "..."):
                 try:
+                    # 合成提示：本地 CosyVoice 一句要几十秒到两分钟（GPU 推理），
+                    # 期间不提示的话，用户会误以为“没有语音”
+                    try:
+                        self.on_status("\U0001f50a 语音生成中…")
+                    except Exception:
+                        pass
                     audio_path = tts.synthesize(reply, character_id=character, instruct=instruct) or ""
                     if audio_path:
                         logger.info("TTS done: %s", os.path.basename(audio_path))

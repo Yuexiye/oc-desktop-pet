@@ -267,10 +267,10 @@ class HanakoPetAdapter:
                     return self.chat_via_hanako(message, False, extra_context, tools=None)
                 except HanakoUnavailableBeforeSend:
                     if self.transport_mode == "hanako_only":
-                        return "(信号不太好,你再说一遍?)", "neutral"
+                        return "（嗯，我这边有点忙，稍等片刻）", "neutral"
                     # prefer_hanako → 回退直接 LLM
                 except HanakoUnavailableAfterSend:
-                    return "(信号不太好,你再说一遍?)", "neutral"
+                    return "（等我把上一句回应完～）", "neutral"
             return self.chat_direct(message, False, extra_context, tools=None)
 
         # direct 模式：跳过 Hanako
@@ -290,7 +290,7 @@ class HanakoPetAdapter:
         except HanakoUnavailableAfterSend as e:
             # 已交给 Hanako，绝不 fallback - 避免双执行
             logger.error("Hanako 已接收但未完成，不能 fallback: %s", e)
-            return "(信号不太好,你再说一遍?)", "neutral"
+            return "（稍等，我正在把刚才的话回应完…）", "neutral"
 
     def chat_via_hanako(
         self,

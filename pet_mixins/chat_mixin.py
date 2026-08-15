@@ -127,7 +127,16 @@ class ChatMixin:
         if not self._voice_continuous:
             return
 
-        THRESHOLD = 0.02
+        # 自适应底噪（惰性初始化）：环境在放视频/音乐时噪声抬高，阈值随之抬高，
+        # 避免把背景音（如 B 站视频台词）当成真人说话触发识别。
+        # 只在“未开始说话”的静音态更新底噪，说话中断音不更新，避免截断语句。
+        if not self._voice_continuous_started:
+            nf = getattr(self, "_vad_noise_floor", 0.006)
+            nf = 0.9 * nf + 0.1 * max(rms, 1e-5)
+            self._vad_noise_floor = nf
+            THRESHOLD = max(0.02, nf * 3.0)
+        else:
+            THRESHOLD = max(0.02, getattr(self, "_vad_noise_floor", 0.006) * 3.0)
         SILENCE_FRAMES_LIMIT = 40  # 约 1.3s（512 帧/帧）
 
         if rms > THRESHOLD:
