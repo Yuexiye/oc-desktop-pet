@@ -45,6 +45,9 @@ DEFAULT_CONFIG = {
     "ui": {
         "onboarded": False  # 首屏引导是否已看过
     },
+    "greeting": {
+        "enabled": True,   # 开场问候总开关（零配置首次启动时触发本地问候气泡）
+    },
     "proactive": {
         "enabled": True,
         "cooldown_minutes": 10,
@@ -74,6 +77,11 @@ DEFAULT_CONFIG = {
                 "weight": 0.3
             }
         ]
+    },
+    "presence": {
+        "enabled": True,
+        "min_idle_minutes": 5,
+        "interval_minutes": 8,
     },
     "window_interaction": {
         "enabled": True,

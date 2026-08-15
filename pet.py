@@ -228,6 +228,21 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self._proactive.load_config(proactive_cfg)
         self._proactive_grace = time.time() + 120  # 启动后 2 分钟内不触发主动对话
 
+        # ── Presence 轻存在感调度器（不同于 proactive：不说话只做动作）──
+        # 与主动对话互补：proactive 会打断（说话），presence 只在空闲时做微动作，
+        # 让角色“在线”。“对话中暂停”通过 _mark_user_interaction → mark_interaction 实现。
+        self._presence = None
+        self._presence_timer = None
+        try:
+            from core.presence import PresenceScheduler
+            self._presence = PresenceScheduler(on_presence=self._on_presence_action)
+            self._presence.load_config(self.config.get("presence", {}) or {})
+            self._presence_timer = QTimer(self)
+            self._presence_timer.timeout.connect(self._presence_tick)
+            self._presence_timer.start(60_000)  # 每 60s 检查一次空闲状态
+        except Exception as e:
+            logger.warning("Presence 初始化失败（非致命）: %s", e)
+
         # ── 感知控制器(P2: 时间 + 情绪状态机 + 日程)──
         self._perception = PerceptionController(self._current_char)
         # 屏幕内容→情绪回调
@@ -362,6 +377,31 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self.screen_update_signal.connect(self._do_screen_update)
         self.hanako_state_signal.connect(self._do_hanako_state)
         self._engine.start()
+
+        # ── 零配置开场问候（首次启动且未配 LLM 时，本地问候引导配置）──
+        # 检测到无 LLM 配置时主动自我介绍，让新用户第一眼看到桌宠“活”。
+        # 幂等：maybe_greet 内部检测标记文件，已问候过不再打扰。
+        try:
+            from core.greeting import maybe_greet, default_marker_path
+            from config import CHARACTER_INFO
+            _gname = self._current_char
+            try:
+                _ginfo = CHARACTER_INFO.get(self._current_char, {}) or {}
+                _gname = _ginfo.get("name") or self._current_char
+            except Exception:
+                pass
+            _marker = default_marker_path(self._agent_id)
+            _greet = maybe_greet(self.config, _marker, _gname)
+            if _greet:
+                _gtext, _gemotion = _greet
+                # 等窗口稳定后弹气泡（主线程延迟）
+                QTimer.singleShot(
+                    1500,
+                    lambda t=_gtext, e=_gemotion: self._show_bubble(t, emotion=e),
+                )
+                logger.info("开场问候（零配置引导）→ %s", _gtext[:36])
+        except Exception as e:
+            logger.debug("开场问候跳过: %s", e)
 
         # ── 语音输入（ASR）──
         asr_provider = self._create_asr_provider()
@@ -611,6 +651,48 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
             logger.info("F5: 首次启动自动绑定对话 assistant=%s (角色=%s)", tid, self._current_char)
         except Exception as e:
             logger.warning("F5: 引导失败: %s", e)
+
+    # ── 轻存在感（Presence） ──
+
+    def _on_presence_action(self, action: str, bubble: str):
+        """轻存在感回调：切动画 + 可选轻气泡（不打断对话）。
+
+        action 已是真实帧序列名（waiting / sleep / waving）；
+        bubble 默认空串（纯动作不打扰），少数动作带一句无害轻提示。
+        """
+        try:
+            self._set_anim_seq(action, emotion="neutral", style="fade")
+        except Exception:
+            pass
+        if bubble:
+            try:
+                self._show_bubble(bubble, emotion="neutral", priority=0)
+            except Exception:
+                pass
+
+    def _presence_tick(self):
+        """QTimer 每 60s 驱动一次存在感检查（主线程，无需跨线程处理）。"""
+        try:
+            if self._presence:
+                self._presence.tick()
+        except Exception:
+            pass
+
+    # ── 多宠总览 ──
+
+    def _open_pet_overview(self):
+        """打开多宠总览面板（依赖 pet_manager 注入）。"""
+        pm = getattr(self, "_pet_manager", None)
+        if pm is None:
+            self._show_bubble("多宠总览需要从主管理器启动", emotion="neutral")
+            return
+        try:
+            from ui.pet_overview import PetOverviewDialog
+            dlg = PetOverviewDialog(pm, self)
+            dlg.exec_()
+        except Exception as e:
+            logger.warning("打开桌宠总览失败: %s", e)
+            self._show_bubble("总览面板打开失败", emotion="sad")
 
     # ── 屏幕查询 ──
 
@@ -1151,20 +1233,22 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
 
-        # 构建右键菜单
+        # 构建右键菜单（分层：互动 / 玩法 / 管理 三组，退出置底）
         self._menu = QMenu(self)
         self._menu.setStyleSheet(self._menu_qss())
 
-        # 基础操作
-        self._menu.addAction("💬 对话", self._toggle_input)
-        self._voice_action = self._menu.addAction("🎤 说话", self._toggle_voice)
-        self._voice_continuous_action = self._menu.addAction("🎤 持续监听", self._toggle_voice_continuous)
+        # ── 互动组 ──
+        self._interact_menu = self._menu.addMenu("🍙 互动")
+        self._interact_menu.setStyleSheet(self._menu_qss())
+        self._interact_menu.addAction("💬 对话", self._toggle_input)
+        self._voice_action = self._interact_menu.addAction("🎤 说话", self._toggle_voice)
+        self._voice_continuous_action = self._interact_menu.addAction("🎤 持续监听", self._toggle_voice_continuous)
         self._voice_continuous_action.setCheckable(True)
         self._voice_continuous_action.setChecked(False)
-        self._menu.addAction("🍙 喂一口", self._quick_feed)
+        self._interact_menu.addAction("🍙 喂一口", self._quick_feed)
 
         # 行为模式子菜单
-        self._behavior_submenu = self._menu.addMenu("🚶 行为")
+        self._behavior_submenu = self._interact_menu.addMenu("🚶 行为")
         self._behavior_actions = {}
         for mode in ["quiet", "normal", "active", "cling"]:
             labels = {"quiet": "静默", "normal": "正常", "active": "活跃", "cling": "黏人"}
@@ -1174,29 +1258,38 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
             a.triggered.connect(lambda checked, m=mode: self._switch_behavior_mode(m))
             self._behavior_actions[mode] = a
 
-        # 动作联动(动态高亮)
-        self._menu.addSeparator()
+        # 动作联动(动态高亮,默认隐藏,匹配时显示)
+        self._interact_menu.addSeparator()
         self._action_menu_items = {}  # action_id -> QAction
         for action in self._action_linker.actions:
-            a = self._menu.addAction(f"{action.emoji} {action.label}", lambda a_id=action.id: self._trigger_action(a_id))
+            a = self._interact_menu.addAction(f"{action.emoji} {action.label}", lambda a_id=action.id: self._trigger_action(a_id))
             a.setVisible(False)  # 默认隐藏,匹配时高亮
             self._action_menu_items[action.id] = a
 
-        self._menu.addSeparator()
+        # ── 玩法组（养成子菜单注入目标：喂食/工作/任务/抽卡）──
+        self._play_menu = self._menu.addMenu("🎮 玩法")
+        self._play_menu.setStyleSheet(self._menu_qss())
 
-        # 穿透 / 设置
-        self._passthrough_action = self._menu.addAction("🔍 穿透", self._toggle_passthrough)
+        # ── 管理组 ──
+        self._manage_menu = self._menu.addMenu("⚙️ 管理")
+        self._manage_menu.setStyleSheet(self._menu_qss())
+
+        # 穿透 / 活动流 / 新建对话
+        self._passthrough_action = self._manage_menu.addAction("🔍 穿透", self._toggle_passthrough)
         self._passthrough_action.setCheckable(True)
         self._passthrough_action.setChecked(self._mousePassthrough)
-        self._menu.addAction("📜 活动流", self._open_activity_feed)
+        self._manage_menu.addAction("📜 活动流", self._open_activity_feed)
+        # 多宠总览（依赖 pet_manager 注入；独立启动时隐藏）
+        if getattr(self, "_pet_manager", None) is not None:
+            self._manage_menu.addAction("🐾 桌宠总览", self._open_pet_overview)
         # M4: 新建对话入口（仅在 Hanako WS 模式下有意义）
-        self._new_session_action = self._menu.addAction("🔄 新对话", self._create_new_session)
+        self._new_session_action = self._manage_menu.addAction("🔄 新对话", self._create_new_session)
         # 注：不再提供全局“切换助手”菜单——助手绑定已 per-pet 化
         # （每个桌宠在设置面板独立配置，见“桌宠独立配置”组）
         # 全局切换会破坏各桌宠自己的绑定，故移除。
 
         # 主题子菜单
-        self._theme_submenu = self._menu.addMenu("🎨 主题")
+        self._theme_submenu = self._manage_menu.addMenu("🎨 主题")
         self._theme_actions = {}
         for label, mode in [("自动（跟随时间）", "auto"), ("浅色", "light"), ("深色", "dark")]:
             a = self._theme_submenu.addAction(label)
@@ -1205,20 +1298,19 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
             self._theme_actions[mode] = a
         self._refresh_theme_menu()
 
-        self._menu.addAction("⚙️ 设置", self._open_settings)
-        self._menu.addAction("🔌 插件", self._open_plugin_panel)
+        self._manage_menu.addAction("⚙️ 设置", self._open_settings)
+        self._manage_menu.addAction("🔌 插件", self._open_plugin_panel)
 
-        self._menu.addSeparator()
-        
-        # FrameBaker 集成
+        # FrameBaker 集成（管理组内）
         try:
             from ui.framebaker import get_framebaker_menu_items
             for label, callback in get_framebaker_menu_items():
-                self._menu.addAction(label, callback)
-            self._menu.addSeparator()
+                self._manage_menu.addAction(label, callback)
         except Exception as e:
             logger.debug("FrameBaker 菜单加载失败: %s", e)
-        
+
+        # ── 退出（顶层置底,始终可见）──
+        self._menu.addSeparator()
         self._menu.addAction("❌ 退出", self.close)
 
     # ── 养成接入（set_nurturing 后才填充） ──

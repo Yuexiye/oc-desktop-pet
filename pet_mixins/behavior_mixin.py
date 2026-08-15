@@ -40,6 +40,13 @@ class BehaviorMixin:
         idle_chatter = getattr(self, "_idle_chatter", None)
         if idle_chatter:
             idle_chatter.reset()
+        # 轻存在感：用户交互（拖拽/点击/对话/右键）重置空闲计时
+        presence = getattr(self, "_presence", None)
+        if presence is not None:
+            try:
+                presence.mark_interaction()
+            except Exception:
+                pass
 
     # ── 空闲自言自语 ──
 

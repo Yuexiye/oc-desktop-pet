@@ -532,3 +532,125 @@ class PetManager:
                 except Exception:
                     self._save_config()
                 return
+
+    # ── M5: 多宠总览接口 ──
+
+    def overview_rows(self) -> list[dict]:
+        """返回所有 enabled_agents 的概览行。
+
+        已启动的从 window 读状态；未启动的补一行 running=False。
+        不存在的 agent（agents 里有但 AGENTS_DIR 无目录）不追加。
+        """
+        rows: list[dict] = []
+        launched: set[str] = set(self._windows.keys())
+
+        for agent in self.enabled_agents:
+            aid = agent.get("id")
+            if not aid:
+                continue
+
+            if aid in launched:
+                w = self._windows[aid]
+                muted = getattr(w, "_muted", False)
+                passthrough = getattr(getattr(w, "_mousePassthrough", None), "__bool__", lambda: False)()
+                visible = w.isVisible()
+                rows.append({
+                    "agent_id": aid,
+                    "name": aid,
+                    "running": True,
+                    "muted": bool(muted),
+                    "passthrough": bool(passthrough),
+                    "visible": bool(visible),
+                })
+            else:
+                rows.append({
+                    "agent_id": aid,
+                    "name": aid,
+                    "running": False,
+                    "muted": False,
+                    "passthrough": False,
+                    "visible": False,
+                })
+
+        return rows
+
+    def set_muted(self, agent_id: str, muted: bool) -> None:
+        """设置指定 agent 的静音状态。"""
+        window = self._windows.get(agent_id)
+        if window is None:
+            return
+        window._muted = muted
+        if hasattr(window, "set_muted"):
+            try:
+                window.set_muted(muted)
+            except Exception as e:
+                logger.warning("set_muted(%s) call failed: %s", agent_id, e)
+        # 若存在 TTS player，直接 set_volume(0) 模拟静音（不影响已播放音频）
+        tts = getattr(window, "_tts_player", None)
+        if tts is not None:
+            try:
+                if muted:
+                    tts.set_volume(0.0)
+                else:
+                    tts.set_volume(0.8)
+            except Exception as e:
+                logger.warning("tts_player.set_volume failed: %s", e)
+
+    def toggle_passthrough(self, agent_id: str) -> None:
+        """切换鼠标穿透。"""
+        window = self._windows.get(agent_id)
+        if window is None:
+            return
+        if hasattr(window, "_toggle_passthrough"):
+            try:
+                window._toggle_passthrough()
+            except Exception as e:
+                logger.warning("_toggle_passthrough failed: %s", e)
+        else:
+            # 兜底：直接取反 _mousePassthrough
+            passthrough = getattr(window, "_mousePassthrough", False)
+            window._mousePassthrough = not passthrough
+            window._apply_penetration()
+
+    def set_visible(self, agent_id: str, visible: bool) -> None:
+        """显示/隐藏窗口。"""
+        window = self._windows.get(agent_id)
+        if window is None:
+            return
+        if visible:
+            window.show()
+        else:
+            window.hide()
+
+    def close_window(self, agent_id: str) -> None:
+        """关闭单个桌宠窗口（委托给已有关闭逻辑，含 bridge 注销）。"""
+        # 复用 PetManager 现有的 close_window 实现
+        if self._bridge and self._bridge_enabled:
+            try:
+                self._bridge.unregister_pet(agent_id)
+                logger.info("Unregistered pet '%s' from MultiPetBridge", agent_id)
+            except Exception as e:
+                logger.warning("Failed to unregister pet '%s' from MultiPetBridge: %s", agent_id, e)
+
+        window = self._windows.pop(agent_id, None)
+        if window:
+            try:
+                window.close()
+            except Exception:
+                pass
+
+    def hide_all(self) -> None:
+        """隐藏所有已启动的窗口。"""
+        for window in list(self._windows.values()):
+            try:
+                window.hide()
+            except Exception as e:
+                logger.warning("hide_all failed for %s: %s", window, e)
+
+    def show_all(self) -> None:
+        """显示所有已启动的窗口。"""
+        for window in list(self._windows.values()):
+            try:
+                window.show()
+            except Exception as e:
+                logger.warning("show_all failed for %s: %s", window, e)

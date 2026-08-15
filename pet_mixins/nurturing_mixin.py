@@ -27,11 +27,11 @@ class NurturingMixin:
     # ── 养成菜单注入 ──
 
     def _build_nurturing_menu(self):
-        """在右键菜单里注入"喂食 / 工作 / 状态"子菜单
+        """在右键菜单「玩法」组注入"喂食 / 工作 / 状态"子菜单
 
         设计点：
         - 仅在 _save_mgr / _item_registry / _work_registry 都已注入时执行
-        - 子菜单插到"❌ 退出"前一项
+        - 注入目标：self._play_menu（玩法组）；老菜单无玩法组时回退插到"❌ 退出"前
         - 失败不摊牌——hasattr / try 已在调用处守护
         """
         if not hasattr(self, '_item_registry') or self._item_registry is None:
@@ -45,23 +45,15 @@ class NurturingMixin:
             # 复用现有 styleSheet，保持视觉一致
             menu_style = self._menu.styleSheet()
 
-            # 找到退出 action 作为锚点
-            quit_action = None
-            for act in self._menu.actions():
-                txt = act.text() or ""
-                if txt.startswith("❌"):
-                    quit_action = act
-                    break
+            # 注入目标：玩法组（分层菜单）
+            play_menu = getattr(self, '_play_menu', None) or self._menu
 
             # 状态摘要（可勾选，明确当前是否 pinned 常驻）
             status_act = QAction("📊 状态", self._menu)
             status_act.setCheckable(True)
             status_act.toggled.connect(self._toggle_status_hud_from_menu)
             self._status_menu_action = status_act
-            if quit_action:
-                self._menu.insertAction(quit_action, status_act)
-            else:
-                self._menu.addAction(status_act)
+            play_menu.addAction(status_act)
 
             # 喂食子菜单
             self._feed_menu = QMenu(self._menu)
@@ -73,10 +65,7 @@ class NurturingMixin:
                     f"{item.icon} {item.name} ({item.price:.0f}G)"
                 )
                 act.triggered.connect(lambda checked=False, it=item: self._feed_item(it))
-            if quit_action:
-                self._menu.insertMenu(quit_action, self._feed_menu)
-            else:
-                self._menu.addMenu(self._feed_menu)
+            play_menu.addMenu(self._feed_menu)
 
             # 工作子菜单
             self._work_menu = QMenu(self._menu)
@@ -93,10 +82,7 @@ class NurturingMixin:
             else:
                 empty = self._work_menu.addAction("（暂无可用工作）")
                 empty.setEnabled(False)
-            if quit_action:
-                self._menu.insertMenu(quit_action, self._work_menu)
-            else:
-                self._menu.addMenu(self._work_menu)
+            play_menu.addMenu(self._work_menu)
         except Exception:
             logger.exception("_build_nurturing_menu failed")
 
@@ -289,7 +275,7 @@ class NurturingMixin:
             _fire()
 
     def _build_mission_menu(self):
-        """创建「📋 任务」子菜单（只在任务系统可用时）"""
+        """创建「📋 任务」子菜单（只在任务系统可用时），挂到「玩法」组"""
         if not getattr(self, '_mission_mgr', None):
             return
         if not hasattr(self, '_menu') or self._menu is None:
@@ -298,15 +284,19 @@ class NurturingMixin:
             from PySide6.QtWidgets import QMenu
             self._mission_submenu = QMenu("📋 任务", self._menu)
             self._mission_submenu.setStyleSheet(self._menu.styleSheet())
-            quit_action = None
-            for act in self._menu.actions():
-                if (act.text() or "").startswith("❌"):
-                    quit_action = act
-                    break
-            if quit_action:
-                self._menu.insertMenu(quit_action, self._mission_submenu)
+            play_menu = getattr(self, '_play_menu', None)
+            if play_menu is not None:
+                play_menu.addMenu(self._mission_submenu)
             else:
-                self._menu.addMenu(self._mission_submenu)
+                quit_action = None
+                for act in self._menu.actions():
+                    if (act.text() or "").startswith("❌"):
+                        quit_action = act
+                        break
+                if quit_action:
+                    self._menu.insertMenu(quit_action, self._mission_submenu)
+                else:
+                    self._menu.addMenu(self._mission_submenu)
             self._refresh_mission_menu()
         except Exception:
             logger.exception("_build_mission_menu failed")
