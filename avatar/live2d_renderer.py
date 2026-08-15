@@ -896,22 +896,51 @@ class Live2DRenderer(AvatarRenderer):
         self._motion_started_at = time.monotonic()
 
     def _force_idle(self) -> None:
-        """StopAllMotions 后重启 idle。
+        """StopAllMotions 后用 NORMAL 优先级重启 idle（不再用 IDLE 优先级）。
 
-        idle 用 IDLE 优先级，打不过正在播的 NORMAL 手势（priority too low 会被拒），
-        所以先清空 motion 队列再播。
-        兜底：_start_idle 异常时仍把状态机切回 idle，避免手势状态永远挂住。
+        旧实现用 IDLE 优先级调 StartMotion，但 wrapper 0.7.0.4 的 StopAllMotions
+        在某些模型上不能彻底清掉正在播的 motion 实例，导致 IDLE 优先级接不上、
+        角色在 happy 上"死锁"——这就是用户一直看到的"比心持续"。
+        修：改用 NORMAL 优先级（force 接管），并在调用前多调一次 StopAllMotions
+        增加清理力度，同时把状态机也强制切回 idle。
         """
+        # 双重 StopAllMotions：某些 wrapper 实现需要两次才彻底清
         try:
             if hasattr(self._model, "StopAllMotions"):
                 self._model.StopAllMotions()
         except Exception:
             pass
         try:
-            self._start_idle()
+            if hasattr(self._model, "StopAllMotions"):
+                self._model.StopAllMotions()
+        except Exception:
+            pass
+        # 用 NORMAL 优先级播 idle，确保能接管
+        try:
+            if not self._model:
+                self._note_motion_started("force_idle_no_model", is_idle=True)
+                return
+            motions = self._model.GetMotions()
+            if motions:
+                group = next((g for g in motions if g), next(iter(motions), ""))
+                motion_list = motions.get(group, [])
+                if motion_list:
+                    idx = 0
+                    for i, m in enumerate(motion_list):
+                        if isinstance(m, dict) and "idle" in m.get("File", "").lower():
+                            idx = i
+                            break
+                    fname = (motion_list[idx].get("File", "")
+                             if isinstance(motion_list[idx], dict) else "idle")
+                    # 关键：用 NORMAL 优先级（不再是 IDLE），确保能强制接管当前 motion
+                    self._model.StartMotion(group, idx, self._live2d.MotionPriority.NORMAL)
+                    self._note_motion_started(fname, is_idle=True)
+                    logger.info("Live2DRenderer: _force_idle 成功播放 idle（idx=%d, NORMAL 优先级）", idx)
+                    return
         except Exception as e:
-            logger.warning("Live2DRenderer: _start_idle 失败，兜底状态回 idle: %s", e)
-            self._note_motion_started("force_idle_fallback", is_idle=True)
+            logger.warning("Live2DRenderer: _force_idle 强切 idle 失败: %s", e)
+        # 兜底：状态机切回 idle（即使没真播放，UI 状态对）
+        self._note_motion_started("force_idle_fallback", is_idle=True)
 
     def _start_idle(self) -> None:
         if not self._model:
