@@ -1390,6 +1390,17 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
 
         # 委托给渲染器加载帧序列，优先使用 sprite_dir
         self._renderer.load(char_id, sprite_dir=self._sprite_dir)
+        # sprite 角色：帧尺寸已知，直接贴合窗口（Live2D 用 HitDrawable 测量，
+        # 这里用帧尺寸×scale + 15% margin——窗口不再是 458x520 大热区包小图）
+        if hasattr(self._renderer, "desired_window_size"):
+            try:
+                dw, dh = self._renderer.desired_window_size()
+                if dw and dh:
+                    logger.info("PetWindow: sprite fit 目标 %dx%d (帧 %s)",
+                                dw, dh, self._renderer._get_frame_size())
+                    self.fit_window_to_model(dw, dh)
+            except Exception as e:
+                logger.warning("PetWindow: sprite fit 失败: %s", e)
         # 渲染器不支持时明确提示用户（如 VRM 占位）
         if getattr(self._renderer, "unsupported", False):
             self._show_bubble(

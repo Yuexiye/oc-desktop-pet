@@ -71,8 +71,9 @@ class SpriteRenderer(AvatarRenderer):
         # 角色图片 Label
         self.char_label = QLabel(parent)
         self.char_label.setAlignment(Qt.AlignCenter)
-        self.char_label.setFixedSize(192, 208)  # atlas 默认格子尺寸
-        self.char_label.move(10, 0)
+        # 初始占位尺寸；load() 后由 _apply_frame_size 更新为实际帧尺寸
+        self.char_label.setFixedSize(192, 208)
+        self.char_label.move(0, 0)
         self.char_label.lower()
         self.char_label.installEventFilter(parent)
 
@@ -102,7 +103,8 @@ class SpriteRenderer(AvatarRenderer):
         self._gaze_target_x: float = 0.0  # 目标偏移
         self._gaze_target_y: float = 0.0
         self._gaze_enabled: bool = True
-        self._base_label_pos: QPoint = QPoint(10, 70)  # 角色 label 的基准位置
+        # 角色 label 基准位置（居中锚点；fit 后由 _center_label 更新，不再硬编码）
+        self._base_label_pos: QPoint = QPoint(0, 0)
 
         # 透明度（情绪过渡：TransitionEngine 调用 set_alpha）
         # 用 QGraphicsOpacityEffect：不影响 _show_frame 的渲染逻辑
@@ -650,6 +652,53 @@ class SpriteRenderer(AvatarRenderer):
         """获取角色渲染尺寸"""
         return (self.char_label.width(), self.char_label.height())
 
+    def _center_label(self, win_w: int = 0, win_h: int = 0) -> None:
+        """把角色 label 在窗口内居中（水平+垂直），并更新视线跟随基准点。
+
+        替代旧硬编码 move(10, 0)——旧写法把角色钉在左上角，导致窗口热区
+        远大于角色（用户反馈：窗口比桌宠大很多）。窗口尺寸取实参，缺省时
+        从父窗口 geometry 读取。
+        """
+        if not win_w or not win_h:
+            parent = self._parent
+            geo = parent.geometry() if parent is not None else None
+            if geo is None:
+                return
+            win_w, win_h = geo.width(), geo.height()
+        cw = max(1, self.char_label.width())
+        ch = max(1, self.char_label.height())
+        x = max(0, (win_w - cw) // 2)
+        y = max(0, (win_h - ch) // 2)
+        self.char_label.move(x, y)
+        self._base_label_pos = QPoint(x, y)
+
+    def fit_to_window(self, win_w: int, win_h: int) -> None:
+        """窗口贴合/缩放后，重算角色尺寸并居中（sprite 版的 fit 回调）。
+
+        与 Live2D 的 fit_window_to_model 语义对齐：窗口已按角色目标尺寸
+        （帧尺寸×scale + margin）resize 完毕，这里把 label 居中放置。
+        """
+        try:
+            base_w, base_h = self._get_frame_size()
+            cw = int(base_w * self._scale)
+            ch = int(base_h * self._scale)
+            self.char_label.setFixedSize(cw, ch)
+            self._center_label(win_w, win_h)
+            self._show_frame()
+        except Exception as e:
+            logger.warning("SpriteRenderer.fit_to_window 失败: %s", e)
+
+    def desired_window_size(self) -> tuple[int, int]:
+        """角色期望的窗口尺寸（未缩放基准）：帧尺寸 + 15% margin。
+
+        返回的是**基准值**（不乘 scale）：PetWindow.fit_window_to_model 会
+        统一应用 _pet_scale（与 Live2D 路径语义一致，避免双重缩放）。
+        """
+        base_w, base_h = self._get_frame_size()
+        pad_w = max(14, int(base_w * 0.15))
+        pad_h = max(26, int(base_h * 0.15))
+        return (base_w + pad_w, base_h + pad_h)
+
     def set_scale(self, scale: float) -> None:
         """缩放角色 — 尺寸从实际帧数据计算"""
         self._scale = scale
@@ -657,9 +706,7 @@ class SpriteRenderer(AvatarRenderer):
         cw = int(base_w * scale)
         ch = int(base_h * scale)
         self.char_label.setFixedSize(cw, ch)
-        # 垂直居中偏移
-        self.char_label.move(10, 0)
-        self._base_label_pos = QPoint(10, 0)
+        self._center_label()
         self._show_frame()
 
     def _get_frame_size(self) -> tuple[int, int]:
@@ -674,13 +721,12 @@ class SpriteRenderer(AvatarRenderer):
         return self._scale
 
     def recalc_geometry(self, window_w: int, window_h: int):
-        """窗口尺寸变化时重算角色尺寸"""
+        """窗口尺寸变化时重算角色尺寸并居中"""
         base_w, base_h = self._get_frame_size()
         cw = int(base_w * self._scale)
         ch = int(base_h * self._scale)
         self.char_label.setFixedSize(cw, ch)
-        self.char_label.move(10, 0)
-        self._base_label_pos = QPoint(10, 0)
+        self._center_label(window_w, window_h)
         self._show_frame()
 
     # ── 朝向 ──
