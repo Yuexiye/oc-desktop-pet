@@ -354,15 +354,19 @@ class Live2DRenderer(AvatarRenderer):
         找非透明像素的最小外接矩形。窗口尺寸 = bbox + 1px 安全边距。
         """
         if not self._model or not self._ready:
+            logger.debug("Live2DRenderer: fit 跳过（模型未就绪）")
             return
         try:
             mm = getattr(self._model, "_model", None) or self._model
             if not hasattr(mm, "HitDrawable"):
+                logger.debug("Live2DRenderer: fit 跳过（无 HitDrawable）")
                 return
             gl_w = int(getattr(self, "_gl_w", 0) or self._renderer_w() or 0)
             gl_h = int(getattr(self, "_gl_h", 0) or self._renderer_h() or 0)
             if gl_w <= 0 or gl_h <= 0:
+                logger.debug("Live2DRenderer: fit 跳过（视口无效 %dx%d）", gl_w, gl_h)
                 return
+            logger.info("Live2DRenderer: fit 开始 gl=%dx%d", gl_w, gl_h)
             self._model.Update()
             self._model.Draw()
             STEP = 2

@@ -17,8 +17,8 @@ DEFAULT_CONFIG = {
     "behavior": "normal",
     "theme_mode": "auto",  # "auto" | "light" | "dark" — 主题模式（桌宠主题系统）
     "window": {
-        "width": 200,
-        "height": 300,
+        "width": 458,
+        "height": 520,
         "x": -1,
         "y": -1
     },

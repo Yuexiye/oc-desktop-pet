@@ -623,9 +623,10 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         # 默认 458x520（角色正方形画布按高度缩放后渲染宽 = 高×0.882）
         self._base_w = int(self.config.get("window", {}).get("width", 458))
         self._base_h = int(self.config.get("window", {}).get("height", 520))
-        # 防脏数据：<200 的尺寸视为误存（设置面板可能把小值写进来），
-        # 用默认值兜底——否则窗口比角色还小，模型被压扁+裁脚。
-        if self._base_w < 200 or self._base_h < 240:
+        # 防脏数据：<250/300 的尺寸视为误存（config 默认 200x300 是过小的演示值，
+        # 设置面板也可能把小值写进来），用默认值兜底——否则窗口比角色还小，
+        # 模型被压扁+裁脚。
+        if self._base_w < 250 or self._base_h < 300:
             logger.warning("config.window 尺寸异常 (%dx%d)，使用默认 458x520",
                            self._base_w, self._base_h)
             self._base_w, self._base_h = 458, 520
