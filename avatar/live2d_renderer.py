@@ -377,23 +377,10 @@ class Live2DRenderer(AvatarRenderer):
                 return
             bw = max_x - min_x + 1
             bh = max_y - min_y + 1
-            # 居中：模型在画布里常固位偏右（moc3 作者的留白），导致缩放后贴边。
-            # 用 SetOffsetX 把摆动中心平移到视口中心（一次性，fit 只触发一次）。
-            # 实测校准：1 offset 单位 = 0.591 视口宽（130px@220 视口），正=右移、负=左移。
-            # 摆动对称绕中心，摆动幅度不变，居中后窗口仍包住摆动范围。
-            try:
-                center_x = (min_x + max_x) / 2.0
-                shift_px = gl_w / 2.0 - center_x
-                offx = shift_px / (0.591 * gl_w)
-                offx = max(-0.9, min(0.9, offx))
-                self._model.SetOffsetX(offx)
-                logger.info(
-                    "Live2DRenderer: 居中补偿 中心x=%.0f→%.0f shift=%+.0fpx offx=%+.3f",
-                    center_x, gl_w / 2.0, shift_px, offx,
-                )
-            except Exception as _e:
-                logger.debug("居中补偿失败（跳过）: %s", _e)
-            # 边距：给 idle 摆幅留余量（窗口尺寸用摆动范围 bw，居中平移不影响 bw）。
+            # 注意：这里不能用 SetOffsetX 居中。实测 offset 会改 modelMatrix，
+            # 后续表情/动作/TTS 口型等 model 操作与 offset 状态结合会触发 C++ 层
+            # 段错误（闪退无 traceback）。模型在画布里的固位偏移靠大边距吸收。
+            # 边距：给 idle 摆幅留余量（窗口尺寸用摆动范围 bw）。
             pad_w = max(14, int(bw * 0.28))
             pad_h = max(14, int(bh * 0.28))
             target_w = max(40, bw + pad_w)
