@@ -395,6 +395,7 @@ class PetManager:
                 sprite_dir=sprite_dir,
                 position=agent_cfg.get("position"),
                 scale=_scale,
+                agent_config=agent_cfg,  # 含 tts / dialog 等 agent 级覆盖（per-pet 独立配置）
                 on_position_change=lambda x, y, aid=agent_id: self.update_agent_cfg(aid, position={"x": x, "y": y}),
                 pet_manager=self,
             )

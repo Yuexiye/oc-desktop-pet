@@ -187,6 +187,94 @@ class SettingsDialog(QDialog):
         
         basic_layout.addWidget(render_group)
 
+        # ── 桌宠独立配置（per-pet：每个桌宠自己的 TTS 引擎/音色/助手） ──
+        per_pet_group = QGroupBox("桌宠独立配置")
+        per_pet_layout = QVBoxLayout(per_pet_group)
+        per_pet_hint = QLabel(
+            "每个桌宠可单独指定 TTS 引擎/音色与对话助手（不配置则沿用全局默认）。"
+            "保存后对当前桌宠立即生效，其他桌宠不受影响。"
+        )
+        per_pet_hint.setWordWrap(True)
+        per_pet_hint.setStyleSheet("color: rgb(%s); font-size: 10px;" % rgb(self._ui_theme, "text_muted"))
+        per_pet_layout.addWidget(per_pet_hint)
+
+        # 逐 agent 配置行：<agent_id> [TTS引擎] [音色] [助手]
+        self._per_pet_rows: dict[str, tuple] = {}
+        try:
+            from avatar.factory import detect_format  # noqa: F401
+            from core.character_package import CharacterPackageManager
+            pkg_mgr = CharacterPackageManager()
+            agents = self._config.get("agents", [])
+            # 若配置里无 agents（老用户/默认），至少展示当前角色
+            agent_ids = [a.get("id", "") for a in agents if a.get("id")]
+            cur = self._config.get("character", "")
+            if cur and cur not in agent_ids:
+                agent_ids.append(cur)
+            if not agent_ids:
+                agent_ids = ["yuexinmiao"]
+
+            for aid in agent_ids:
+                row = QHBoxLayout()
+                row.setSpacing(6)
+                row.addWidget(QLabel(f"{aid}:"))
+
+                # TTS 引擎下拉（agent 级覆盖）
+                eng = QComboBox()
+                eng.addItems(["沿用全局", "CosyVoice 本地", "微软 Edge (免费)", "MIMO TTS", "API 调用"])
+                eng_map = {"": 0, "cosyvoice": 1, "edge": 2, "mimo": 3, "api": 4}
+                ac = next((a for a in agents if a.get("id") == aid), {})
+                agent_tts = ac.get("tts", {}) if isinstance(ac.get("tts"), dict) else {}
+                cur_eng = agent_tts.get("provider", "")
+                eng.setCurrentIndex(eng_map.get(cur_eng, 0))
+
+                # 音色下拉（Edge 音色 + CosyVoice 参考音色）
+                voice = QComboBox()
+                voice.setEditable(True)
+                voice.setMinimumWidth(150)
+                try:
+                    from tts_provider.edge_tts import EDGE_VOICES
+                    edge_voices = EDGE_VOICES
+                except Exception:
+                    edge_voices = ["zh-CN-XiaoxiaoNeural"]
+                for item in ([f"edge|{v}" for v in edge_voices] +
+                             ["cosy|ophelia", "cosy|luoqixi", "cosy|aimis", "cosy|alice", "cosy|glados", "cosy|rebecca"]):
+                    voice.addItem(item)
+                cur_voice = agent_tts.get("voice", "") or agent_tts.get("edge_voice", "")
+                if cur_voice:
+                    tag = f"{cur_eng or 'cosy'}|{cur_voice}"
+                    v_idx = voice.findText(tag)
+                    if v_idx >= 0:
+                        voice.setCurrentIndex(v_idx)
+                    else:
+                        voice.setEditText(cur_voice)
+
+                # 助手下拉（服务端可用 agent）
+                ag = QComboBox()
+                ag.addItem("沿用全局", "")
+                try:
+                    from pathlib import Path
+                    discovered = []
+                    agents_dir = Path.home() / ".hanako" / "agents"
+                    if agents_dir.is_dir():
+                        discovered = sorted(d.name for d in agents_dir.iterdir() if d.is_dir())
+                    for dname in discovered:
+                        ag.addItem(dname, dname)
+                    agent_dialog = (ac.get("dialog", {}) or {}).get("agent_id", "")
+                    d_idx = ag.findData(agent_dialog)
+                    ag.setCurrentIndex(d_idx if d_idx >= 0 else 0)
+                except Exception:
+                    pass
+
+                row.addWidget(eng, 1)
+                row.addWidget(voice, 2)
+                row.addWidget(ag, 1)
+                per_pet_layout.addLayout(row)
+                self._per_pet_rows[aid] = (eng, voice, ag)
+        except Exception as e:
+            logger.warning("per-pet 配置区构建失败: %s", e)
+
+        basic_layout.addWidget(per_pet_group)
+
         basic_layout.addStretch()
         self._main_tabs.addTab(basic_tab, "基础")
 
@@ -1231,6 +1319,47 @@ class SettingsDialog(QDialog):
                 c["render_format"] = fmt_data
             else:
                 c.pop("render_format", None)
+
+        # 桌宠独立配置（per-pet）：写回 agents[].tts / agents[].dialog.agent_id
+        if getattr(self, '_per_pet_rows', None):
+            eng_map_inv = ["", "cosyvoice", "edge", "mimo", "api"]
+            agents_out = c.setdefault("agents", [])
+            for aid, (eng_cb, voice_cb, agent_cb) in self._per_pet_rows.items():
+                ac = next((a for a in agents_out if a.get("id") == aid), None)
+                if ac is None:
+                    ac = {"id": aid, "enabled": False}
+                    agents_out.append(ac)
+                eng = eng_map_inv[eng_cb.currentIndex()]
+                # 解析音色："edge|xxx" 或 "cosy|xxx"；空则移除该字段
+                vtxt = voice_cb.currentText()
+                vtag, _, vname = vtxt.partition("|")
+                if not eng:
+                    # 沿用全局：清掉 agent 级 tts（仅移除我们管理的键，保留其他）
+                    if isinstance(ac.get("tts"), dict):
+                        ac["tts"].pop("provider", None)
+                        ac["tts"].pop("voice", None)
+                        ac["tts"].pop("edge_voice", None)
+                        if not ac["tts"]:
+                            ac.pop("tts", None)
+                else:
+                    ac.setdefault("tts", {})["provider"] = eng
+                    if eng == "edge":
+                        if vtag == "edge" and vname:
+                            ac["tts"]["edge_voice"] = vname
+                        ac["tts"].pop("voice", None) if isinstance(ac["tts"], dict) else None
+                    else:
+                        if vtag == "cosy" and vname:
+                            ac["tts"]["voice"] = vname
+                        ac["tts"].pop("edge_voice", None)
+                # 助手绑定：空 = 沿用全局
+                selected_agent = agent_cb.currentData()
+                if selected_agent:
+                    ac.setdefault("dialog", {})["agent_id"] = selected_agent
+                else:
+                    if isinstance(ac.get("dialog"), dict):
+                        ac["dialog"].pop("agent_id", None)
+                        if not ac["dialog"]:
+                            ac.pop("dialog", None)
 
         self.accept()
 

@@ -106,9 +106,16 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
     def __init__(self, agent_id: str = "yuexinmiao", sprite_dir: str = None,
                  position: dict = None, scale: float = 1.0,
                  on_position_change: callable = None,
+                 agent_config: dict = None,
                  pet_manager=None):
         super().__init__()
         self.config = load_config()
+        self._agent_config = agent_config or {}  # agent 级覆盖（含 tts/dialog，per-pet 独立配置）
+        # per-pet 合并：agent 级 tts/dialog 覆盖全局（每个桌宠独立引擎+助手）
+        try:
+            self._merge_agent_config()
+        except Exception as e:
+            logger.warning("agent_config 合并失败: %s", e)
         self._agent_id = agent_id
         self._sprite_dir = sprite_dir  # None = 用默认 characters/ 目录
         self._on_position_change = on_position_change  # 位置变化回调
@@ -602,7 +609,6 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
             except Exception:
                 pass
             logger.info("F5: 首次启动自动绑定对话 assistant=%s (角色=%s)", tid, self._current_char)
-            self._refresh_agent_menu()
         except Exception as e:
             logger.warning("F5: 引导失败: %s", e)
 
@@ -1185,10 +1191,9 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self._menu.addAction("📜 活动流", self._open_activity_feed)
         # M4: 新建对话入口（仅在 Hanako WS 模式下有意义）
         self._new_session_action = self._menu.addAction("🔄 新对话", self._create_new_session)
-        # F4: 切换对话后端助手（动态列服务端 agent，零硬编码）
-        self._agent_submenu = self._menu.addMenu("🤖 切换助手")
-        self._agent_actions = {}  # agent_id -> QAction
-        self._build_agent_submenu()
+        # 注：不再提供全局“切换助手”菜单——助手绑定已 per-pet 化
+        # （每个桌宠在设置面板独立配置，见“桌宠独立配置”组）
+        # 全局切换会破坏各桌宠自己的绑定，故移除。
 
         # 主题子菜单
         self._theme_submenu = self._menu.addMenu("🎨 主题")
@@ -1641,6 +1646,36 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         except Exception as e:
             logger.warning("_do_tool_progress error: %s", e)
 
+    # ── per-pet 配置合并（每个桌宠独立引擎+助手） ──
+
+    def _merge_agent_config(self):
+        """把 agent 级配置合并进 self.config（agent 覆盖全局）。
+
+        支持段：tts（引擎/音色）、dialog（助手绑定）。
+        原则：agent 级字段存在则覆盖全局，缺省则沿用全局默认——
+        老配置文件（无 agent 段）完全不受影响。
+        """
+        ac = self._agent_config or {}
+
+        # tts 段：浅合并（只覆盖 agent 提供的键）
+        at = ac.get("tts") if isinstance(ac.get("tts"), dict) else None
+        if at:
+            self.config.setdefault("tts", {}).update(at)
+            logger.info(
+                "per-pet tts: %s 覆盖 tts=%s", self._agent_id,
+                {k: v for k, v in at.items() if k in ("provider", "edge_voice", "voice")},
+            )
+
+        # dialog 段：助手绑定（agent 指定则用，未指定保持全局/F5 引导）
+        ad = ac.get("dialog") if isinstance(ac.get("dialog"), dict) else None
+        if ad and ad.get("agent_id"):
+            self.config.setdefault("dialog", {})["agent_id"] = ad["agent_id"]
+            logger.info("per-pet dialog: %s 绑定 agent=%s", self._agent_id, ad["agent_id"])
+
+    def _effective_tts(self) -> dict:
+        """当前桌宠生效的 TTS 配置（= 全局 tts + agent 级覆盖）。"""
+        return self.config.get("tts", {}) or {}
+
     # ── F4: 切换对话后端助手 ──
 
     def _available_agents(self) -> list[dict]:
@@ -1669,72 +1704,18 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         return []
 
     def _build_agent_submenu(self):
-        """构建切换助手子菜单（动态列服务端 agent）"""
-        self._agent_submenu.clear()
-        self._agent_actions = {}
-        agents = self._available_agents()
-        current = getattr(self._engine, 'agent_id', None) if hasattr(self, "_engine") and self._engine else None
-        if not agents:
-            empty = self._agent_submenu.addAction("（未发现可用助手）")
-            empty.setEnabled(False)
-            return
-        for agent in agents:
-            aid = agent.get("id", "")
-            name = agent.get("name", aid)
-            if not aid:
-                continue
-            a = self._agent_submenu.addAction(name)
-            a.setCheckable(True)
-            a.setChecked(aid == current)
-            a.triggered.connect(lambda checked=False, a_id=aid: self._switch_agent(a_id))
-            self._agent_actions[aid] = a
+        """已废弃：助手绑定已 per-pet 化（设置面板逐桌宠配置），
+        全局切换会破坏各自绑定，此入口不再提供。保留空实现防外部调用。"""
+        pass
 
     def _switch_agent(self, agent_id: str):
-        """切换对话后端 agent（F4）"""
-        self._mark_user_interaction()
-        if not hasattr(self, '_engine') or self._engine is None:
-            self._show_bubble("引擎还没起来", emotion="thinking")
-            return
-        # 持久化到配置（零硬编码：用所选 agent_id）
-        try:
-            from config import load_config, save_config
-            cfg = load_config()
-            cfg.setdefault("dialog", {}).setdefault("agent_id", "")
-            prev = cfg["dialog"]["agent_id"]
-            cfg["dialog"]["agent_id"] = agent_id
-            save_config(cfg)
-            # 同步 self.config 快照，避免退出时 async_config_saver 用旧值覆盖
-            try:
-                self.config = cfg
-            except Exception:
-                pass
-            logger.info("dialog.agent_id: %s -> %s", prev or "(未绑定)", agent_id)
-        except Exception as e:
-            logger.warning("保存 dialog.agent_id 失败: %s", e)
-        # 切换引擎对话后端
-        try:
-            ok = self._engine.switch_agent(agent_id)
-        except Exception as e:
-            logger.error("switch_agent 异常: %s", e)
-            ok = False
-        # 刷新菜单勾选
-        self._refresh_agent_menu()
-        if ok:
-            name = agent_id
-            for ag in self._available_agents():
-                if ag.get("id") == agent_id:
-                    name = ag.get("name", agent_id)
-                    break
-            self._show_bubble(f"🤖 已切换助手：{name}", emotion="happy")
-        else:
-            self._show_bubble("助手切换失败", emotion="sad")
+        """已废弃：见 _build_agent_submenu。
+        真正的绑定在设置面板“桌宠独立配置”或首次启动 F5 引导。"""
+        logger.info("_switch_agent 已废弃，忽略（agent=%s）——请到设置面板配置桌宠独立绑定", agent_id)
 
     def _refresh_agent_menu(self):
-        """刷新切换助手子菜单的勾选状态"""
-        current = getattr(self._engine, 'agent_id', None) if hasattr(self, "_engine") and self._engine else None
-        for aid, action in self._agent_actions.items():
-            action.setChecked(aid == current)
-
+        """已废弃：见 _build_agent_submenu。"""
+        pass
     # ── 右键菜单 ──
 
     # ── PhysicsCallbacks 接口 ──
