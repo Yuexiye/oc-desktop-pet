@@ -198,7 +198,40 @@ class BehaviorMixin:
             self._show_bubble("⏳ 思考中...", emotion="thinking")
             self._is_thinking = True
 
-        # 触发动画
+        # 触发动画：主动动作是用户的明确意图（proactive 调度器判定后触发），
+        # 必须【无视 emotion 冷却】强制播放挥手/比心——否则屏幕感知反复推 happy
+        # 进入冷却后，proactive 触发只会"闪过思考气泡"但角色继续 idle 摇摆，
+        # 用户感受"没动作"（实际是手势被冷却抑制了）。
+        # 做法：先 force_idle 清掉可能占用优先级的旧 motion，再用 NORMAL 优先级播放 waving。
+        try:
+            renderer = getattr(self, "_renderer", None)
+            if renderer is not None:
+                # 清掉当前 gesture（不调用 _force_idle，避免和 emotion 冷却打架）
+                if hasattr(renderer, "_model") and renderer._model is not None:
+                    try:
+                        if hasattr(renderer._model, "StopAllMotions"):
+                            renderer._model.StopAllMotions()
+                    except Exception:
+                        pass
+                # 重置 emotion 冷却记录，让 _play_motion_kw 内部能正常触发
+                if hasattr(renderer, "_emotion_motion_cooldown"):
+                    renderer._emotion_motion_cooldown.clear()
+                if hasattr(renderer, "_last_gesture_at"):
+                    renderer._last_gesture_at = 0.0
+                # 强制播放 waving（绕过 _set_anim_seq 的情绪同步路径，避免再触发表情 → 表情同步是次要的）
+                if hasattr(renderer, "_play_motion_kw"):
+                    # miku 的 motion 有 waving.motion3.json；其它模型走 happy 兜底
+                    if not renderer._play_motion_kw("waving"):
+                        renderer._play_motion_kw("happy")
+                # 触发"动作正在播"超时计时（3s 后自动回 idle）
+                if hasattr(renderer, "_note_motion_started"):
+                    renderer._note_motion_started("proactive", is_idle=False)
+                # 标记表情同步（让人物表情也跟着变化）
+                if hasattr(renderer, "set_emotion_expression_only"):
+                    renderer.set_emotion_expression_only("happy")
+        except Exception as e:
+            logger.debug("Proactive 主动动作触发失败: %s", e)
+        # 同时记录 sprite 路径的 _anim_seq（保持向后兼容）
         self._set_anim_seq("waving", emotion="happy", style=get_transition_style("happy"))
 
     # ── 鼠标交互反应 ──

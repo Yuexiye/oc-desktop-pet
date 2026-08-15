@@ -1056,13 +1056,13 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
                     async_config_saver.schedule(self.config)
                 except Exception:
                     pass
-                # 缩放反馈：不占用对话气泡。
-                # 直接 set_text 会覆盖正在显示的对话回复（用户以为“没气泡”）。
-                # 窗口尺寸变化本身就是缩放反馈；若气泡正空闲才弹一次 🔍。
+                # 缩放反馈：立即更新气泡（缩放是用户主动行为，优先级 ≥ 已显示的对对话气泡）。
+                # 旧逻辑：仅当 bubble 不可见才弹 → 10 秒对话气泡存在期间任何缩放都不会更新。
+                # 用户反馈"滚轮缩放一直显示 65%"就是这个 bug。
+                # 仍保留 1.2s 节流防快速重复刷屏（同一缩放操作只弹一次）。
                 _now = time.time()
                 if (_now - getattr(self, "_last_zoom_bubble_ts", 0) > 1.2
-                        and not getattr(self, "_is_thinking", False)
-                        and not (hasattr(self, "bubble") and self.bubble.isVisible())):
+                        and not getattr(self, "_is_thinking", False)):
                     self._show_bubble(f"🔍 {int(new_scale*100)}%", emotion="neutral", priority=0)
                     self._last_zoom_bubble_ts = _now
             event.accept()
