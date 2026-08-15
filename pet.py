@@ -770,18 +770,43 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
     def _apply_penetration(self):
         """应用当前鼠标穿透状态。
 
-        WA_TransparentForMouseEvents 是 Qt 官方支持的顶层窗口穿透属性，
-        对 FramelessWindowHint | Tool 窗口同样生效（已实测验证）。
-        对角色渲染控件(GLCharWidget)与状态标签也同步设置，避免子控件吸收事件。
-        注意：本属性控制“整个窗口（含角色实体）都穿透”，即穿透后点击角色身体
-        也会直接落到桌面。若需“仅透明区域穿透、角色实体可点”，需改用
-        鼠标像素命中测试方案（见 _toggle_passthrough 说明）。
+        WA_TransparentForMouseEvents 在 Windows 上对【顶层窗口】经常不生效
+        （Qt 已知坑：该属性对子控件有效、对顶层窗口依赖平台实现）。
+        用户实测"开启后无法互动桌宠后面的内容"就是没穿透成功。
+        这里改用 Windows 原生 WS_EX_TRANSPARENT 扩展样式（GWL_EXSTYLE），
+        对顶层窗口稳定生效；同时保留 attribute 设置作为跨平台补充。
         """
         self.setAttribute(Qt.WA_TransparentForMouseEvents, self._mousePassthrough)
         if hasattr(self, 'char_label') and self.char_label:
             self.char_label.setAttribute(Qt.WA_TransparentForMouseEvents, self._mousePassthrough)
         if hasattr(self, 'status_label') and self.status_label:
             self.status_label.setAttribute(Qt.WA_TransparentForMouseEvents, self._mousePassthrough)
+
+        # ── Windows 原生穿透（关键）──
+        # WS_EX_TRANSPARENT(0x20)：鼠标事件直接穿透到下层窗口；
+        # WS_EX_LAYERED(0x80000)：配合透明窗口使用（FramelessWindowHint 的 Qt 窗口
+        #   已经是 layered，设置透明样式即可）。
+        # 注意：必须拿到真实的 winId()，且窗口 show 之后才能改（setWindowFlags 会重建窗口）。
+        try:
+            import ctypes
+            from ctypes import wintypes
+            hwnd = int(self.winId())
+            GWL_EXSTYLE = -20
+            WS_EX_TRANSPARENT = 0x00000020
+            WS_EX_LAYERED = 0x00080000
+            WS_EX_APPWINDOW = 0x00040000
+            user32 = ctypes.windll.user32
+            cur = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            if self._mousePassthrough:
+                new_style = cur | WS_EX_TRANSPARENT
+            else:
+                new_style = cur & ~WS_EX_TRANSPARENT
+            # 保证 layered（透明窗口必需）与 appwindow（避免被任务栏/Alt+Tab 吞掉）
+            new_style |= WS_EX_LAYERED | WS_EX_APPWINDOW
+            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, new_style)
+            logger.info("鼠标穿透: %s (exstyle=0x%x → 0x%x)", "开启" if self._mousePassthrough else "关闭", cur, new_style)
+        except Exception as e:
+            logger.warning("Windows 原生穿透设置失败（降级 attribute）: %s", e)
 
     def _toggle_passthrough(self):
         """切换鼠标穿透"""

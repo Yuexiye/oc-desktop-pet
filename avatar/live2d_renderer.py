@@ -861,10 +861,12 @@ class Live2DRenderer(AvatarRenderer):
         self._gaze_cur_ball_x += (self._gaze_target_ball_x - self._gaze_cur_ball_x) * s
         self._gaze_cur_ball_y += (self._gaze_target_ball_y - self._gaze_cur_ball_y) * s
         try:
-            self._model.SetParameterValue(P.ParamAngleX, self._gaze_cur_angle_x, 0.3)
-            self._model.SetParameterValue(P.ParamAngleY, self._gaze_cur_angle_y, 0.3)
-            self._model.SetParameterValue(P.ParamEyeBallX, self._gaze_cur_ball_x, 0.3)
-            self._model.SetParameterValue(P.ParamEyeBallY, self._gaze_cur_ball_y, 0.3)
+            # weight 用 1.0：之前 0.3 只有 30% 生效，head/eye 摆动微弱到用户看不到
+            # （"设置面板有视线跟随但没效果"的根因之一）。
+            self._model.SetParameterValue(P.ParamAngleX, self._gaze_cur_angle_x, 1.0)
+            self._model.SetParameterValue(P.ParamAngleY, self._gaze_cur_angle_y, 1.0)
+            self._model.SetParameterValue(P.ParamEyeBallX, self._gaze_cur_ball_x, 1.0)
+            self._model.SetParameterValue(P.ParamEyeBallY, self._gaze_cur_ball_y, 1.0)
         except Exception:
             pass
 
