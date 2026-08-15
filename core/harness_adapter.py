@@ -415,12 +415,30 @@ class HanakoPetAdapter:
         """从文本解析 [emotion:xxx]，返回 (cleaned_text, emotion)
 
         全文匹配所有 [emotion:xxx]，取最后一个出现的 emotion。
+        额外剥离：agent 思考/MOOD 块（[ Vibe: ... ] 等），避免气泡显示内部思考。
         """
         if not text:
             return "", "neutral"
         em_matches = re.findall(r"\[emotion:(\w+)\]", text, flags=re.IGNORECASE)
         emotion = em_matches[-1].lower() if em_matches else "neutral"
         cleaned = re.sub(r"\s*\[emotion:\w+\]\s*", "", text, flags=re.IGNORECASE)
+        # 剥离 agent 思考/MOOD 块：以 [ Vibe:/Sparks:/Reflections:/Will: 开头的成块内容。
+        # 先剥闭合块（到 ] 为止，可跨行），再剥未闭合残余（到文本末尾）。
+        # 注意不能依赖 MULTILINE 的 $ 作边界（会在块内第一行行尾提前停下）。
+        cleaned = re.sub(
+            r"^\[\s*(?:Vibe|Sparks|Reflections|Will)\b[\s\S]*?\]",
+            "", cleaned, flags=re.IGNORECASE | re.MULTILINE | re.DOTALL
+        )
+        cleaned = re.sub(
+            r"^\[\s*(?:Vibe|Sparks|Reflections|Will)\b[\s\S]*$",
+            "", cleaned, flags=re.IGNORECASE | re.MULTILINE | re.DOTALL
+        ).strip()
+        # 剥离表情包 XML 段：<parameter name=...>值</parameter> 整段剥掉
+        cleaned = re.sub(r"<parameter[^>]*>.*?</parameter>", "", cleaned, flags=re.S)
+        # 剥离其余残留标签（<brioqingbao_express> 等）
+        cleaned = re.sub(r"<[^>]+>", "", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        return cleaned, emotion
         # 剥离表情包 XML 段：<parameter name=...>值</parameter> 整段剥掉
         cleaned = re.sub(r"<parameter[^>]*>.*?</parameter>", "", cleaned, flags=re.S)
         # 剥离其余残留标签（<brioqingbao_express> 等）

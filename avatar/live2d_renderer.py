@@ -568,16 +568,29 @@ class Live2DRenderer(AvatarRenderer):
                     self._model.SetScale(fit)
             else:
                 self._model.SetScale(fit)
-            # 居中：SetScale 之后应用缓存的水平偏移（保证 SetScale→SetOffsetX 顺序，
-            # 实测稳定；offset 是画布单位，模型偏移比例固定，各视口下都保持居中）。
+            # 居中：SetScale 之后应用水平偏移（保证 SetScale→SetOffsetX 顺序，实测稳定）。
+            # 水平 = 自动居中补偿(_center_offset_x) + pet.json 的 live2d.offset[0]，二者叠加。
             _offx = getattr(self, "_center_offset_x", 0.0)
-            if _offx:
-                try:
-                    self._model.SetOffsetX(_offx)
-                except Exception:
-                    pass
-            logger.debug("Live2DRenderer: 缩放 fit=%.3f sx=%.3f (gl=%sx%s, canvas_px=%sx%s)",
-                         fit, self._gl_w, self._gl_h, cw_px, ch_px)
+            _os = getattr(self, "_offset_scale", (0.0, 0.0))
+            try:
+                _ox = float(_offx) + float(_os[0] if len(_os) > 0 else 0.0)
+                self._model.SetOffsetX(_ox)
+            except Exception:
+                pass
+            # 垂直偏移：pet.json 的 live2d.offset[1]（脚贴地微调）。
+            # Live2D 模型坐标 Y 轴向上，SetOffsetY 正值=上移、负值=下移；
+            # fit 会故意在底部留白(pad_h≈0.38*角色高)防脚部被裁，导致角色悬空，
+            # 故用负值把模型整体下移，让脚部贴近窗口下边缘(地面)。缺 offset 默认 0 不生效。
+            try:
+                _oy = float(_os[1] if len(_os) > 1 else 0.0)
+                if _oy:
+                    self._model.SetOffsetY(_oy)
+            except Exception:
+                pass
+            logger.debug("Live2DRenderer: 缩放 fit=%.3f sx=%.3f offx=%.3f offy=%.3f (gl=%sx%s, canvas_px=%sx%s)",
+                         fit, sx, float(_offx) + float(_os[0] if len(_os) > 0 else 0.0),
+                         float(_os[1] if len(_os) > 1 else 0.0),
+                         self._gl_w, self._gl_h, cw_px, ch_px)
         except Exception as e:
             logger.warning("Live2DRenderer: 缩放计算失败: %s", e)
 
@@ -927,11 +940,22 @@ class Live2DRenderer(AvatarRenderer):
             return False
 
     def _start_motion_at(self, idx: int, priority=None) -> bool:
-        """按索引播 motion 并记录起始状态（卡手势超时兜底用）。"""
+        """按索引播 motion 并记录起始状态（卡手势超时兜底用）。
+
+        去重：同一 motion 已在播（Loop=True 帧动画）时不重复 StartMotion、
+        也不重置计时——否则 emotion 周期刷新（happy 每 3s 续期）会不断
+        重置 _motion_started_at，卡手势超时兜底永不触发（比心/挥手持久）。
+        """
         try:
             fname = self._motion_files[idx] if idx < len(self._motion_files) else ""
+            cur_idx = getattr(self, "_current_motion_idx", None)
+            if idx == cur_idx and not getattr(self, "_motion_is_idle", False):
+                if getattr(self, "_debug", False):
+                    logger.debug("Live2DRenderer: 同一 motion 已在播(idx=%d)，去重跳过", idx)
+                return True  # 继续播（Loop），不计时不受影响
             prio = priority if priority is not None else self._live2d.MotionPriority.NORMAL
             self._model.StartMotion(self._motion_group_name, idx, prio)
+            self._current_motion_idx = idx
             self._note_motion_started(fname)
             return True
         except Exception as e:

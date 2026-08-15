@@ -171,9 +171,18 @@ class SettingsDialog(QDialog):
         self.render_format_select.addItem("精灵图 (Sprite)", "sprite")
         self.render_format_select.addItem("Live2D", "live2d")
         # 读取当前角色格式
+        # 注意：配置顶层没有 agent_id 键（角色在 character / agents[].id），
+        # 之前用 self._config.get("agent_id", "yuexinmiao") 永远回退到 yuexinmiao
+        # → 非 yuexinmiao 角色（如 miku/live2d）也永远显示精灵图。改用 character 键。
         try:
             from avatar.factory import detect_format
-            current_format = detect_format(self._config.get("agent_id", "yuexinmiao"))
+            _cur_char = str(self._config.get("character") or "yuexinmiao")
+            # 用户手动指定过的 render_format 优先（auto=未指定，走自动检测）
+            _saved_fmt = self._config.get("render_format")
+            if _saved_fmt in ("sprite", "live2d"):
+                current_format = _saved_fmt
+            else:
+                current_format = detect_format(_cur_char)
             fmt_map = {"sprite": 1, "live2d": 2, "auto": 0}
             self.render_format_select.setCurrentIndex(fmt_map.get(current_format, 0))
         except Exception:

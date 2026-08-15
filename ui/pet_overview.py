@@ -237,6 +237,20 @@ class PetOverviewDialog(QDialog):
         right = QHBoxLayout()
         right.setSpacing(4)
 
+        if not running:
+            # 未运行：仅一个「启动」按钮（关闭后可从总览恢复，避免桌宠"没了"）
+            launch_btn = QPushButton("▶ 启动")
+            launch_btn.setFixedWidth(64)
+            launch_btn.setFixedHeight(26)
+            launch_btn.setStyleSheet(self._btn_style("primary"))
+            launch_btn.setToolTip("重新启动该桌宠窗口")
+            launch_btn.clicked.connect(
+                lambda _, a=aid: self._api.launch_window(a)
+            )
+            right.addWidget(launch_btn)
+            h.addLayout(right)
+            return container
+
         def make_btn(label: str, disabled: bool, click_cb, obj_name: str = "") -> QPushButton:
             btn = QPushButton(label)
             btn.setFixedWidth(32)
@@ -265,15 +279,31 @@ class PetOverviewDialog(QDialog):
         vis_btn.setToolTip("显示/隐藏窗口")
         right.addWidget(vis_btn)
 
-        # ✖️ 关闭
+        # ✖️ 关闭（防误触：二次确认）
         close_btn = make_btn("✖", False,
-                             lambda _, a=aid: self._api.close_window(a),
+                             lambda _, a=aid: self._confirm_close(a),
                              obj_name="close_btn")
-        close_btn.setToolTip("关闭该桌宠窗口")
+        close_btn.setToolTip("关闭该桌宠窗口（可在总览中重新启动）")
         right.addWidget(close_btn)
 
         h.addLayout(right)
         return container
+
+    def _confirm_close(self, agent_id: str):
+        """关闭桌宠窗口前二次确认（防误触，关掉后有「启动」按钮可恢复）。"""
+        from PySide6.QtWidgets import QMessageBox
+        ret = QMessageBox.question(
+            self, "关闭桌宠",
+            f"确定关闭桌宠「{agent_id}」吗？\n关闭后仍可从总览面板重新启动。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if ret == QMessageBox.Yes:
+            try:
+                self._api.close_window(agent_id)
+            except Exception as e:
+                logger.warning("close_window(%s) failed: %s", agent_id, e)
+            self.refresh()
 
     # ── 行为 ──
 
