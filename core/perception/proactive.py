@@ -21,6 +21,7 @@
 """
 from __future__ import annotations
 
+import ctypes
 import logging
 import random
 import time
@@ -35,8 +36,9 @@ DEFAULT_RULES = [
     {"idle_min": 5,  "foreground": ["writing", "development", "browsing"], "prompt": "写了这么久，休息一下吧？", "weight": 0.7},
     {"idle_min": 15, "foreground": ["gaming", "entertainment"],             "prompt": "带我一起玩嘛～",          "weight": 0.5},
     {"idle_min": 30, "foreground": ["communication"],                       "prompt": "还在忙吗？想和你说说话～", "weight": 0.3},
-    {"idle_min": 60, "foreground": ["*"],                                    "prompt": "好安静啊……你在做什么呢？",  "weight": 0.3},
 ]
+# 注意：idle_min=60 的兜底规则（"好安静啊……你在做什么呢？"）已被移除——
+# P1 intent 的 chat_idle 场景（60 分钟没说话）已覆盖该时长，保留会导致重复触发同类文案。
 
 # 打扰成本乘数（活动状态 → 权重衰减）
 COST_TYPING = 0.2    # 打字中：打断成本最高
@@ -48,6 +50,13 @@ TYPING_SUPPRESS_SECONDS = 60.0
 
 # P1 意图触发的最低置信度（低于此值不触发，退回规则引擎）
 INTENT_MIN_CONFIDENCE = 0.6
+
+# P6 每日主动对话总量上限（load_config 可用 daily_limit 覆盖）
+DAILY_LIMIT = 20
+
+# P6 自适应冷却边界：被无视惩罚上限 / 用户回应奖励下限（分钟）
+COOLDOWN_MAX_MINUTES = 60.0
+COOLDOWN_MIN_MINUTES = 5.0
 
 
 class ProactiveScheduler:
@@ -64,14 +73,82 @@ class ProactiveScheduler:
         self._typing_since: float | None = None  # 连续打字起始时间（None=不在打字）
         self.on_proactive: callable = on_proactive or (lambda text: None)
 
+        # ── P6 自适应冷却：动态冷却（无视→翻倍惩罚 / 回应→减半奖励）──
+        self._current_cooldown: float = 10.0  # 动态冷却，初始同静态默认
+        self._last_proactive_at: float = 0.0  # 上次主动触发时间
+        self._user_replied_since_last: bool = True  # 上次触发后用户是否回应过（初始视为可触发）
+
+        # ── P6 每日总量限制 ──
+        self._daily_limit: int = DAILY_LIMIT
+        self._daily_count: int = 0
+        self._daily_date: str = ""
+
     def load_config(self, config: dict):
         self._enabled = config.get("enabled", True)
         self._cooldown_minutes = config.get("cooldown_minutes", 10)
+        self._current_cooldown = float(config.get("cooldown_minutes", 10))
         self._rules = config.get("rules", list(DEFAULT_RULES))
+        self._daily_limit = config.get("daily_limit", DAILY_LIMIT)
 
-    def mark_conversation(self):
-        """标记用户刚和桌宠对话过"""
+    def mark_conversation(self, user_reply: bool = False):
+        """标记对话发生。
+
+        Args:
+            user_reply: True=用户真实回应（奖励：冷却减半，下限 5 分钟）；
+                        False=proactive 自身触发后的记录（只重置空闲计时，
+                        不影响 _user_replied_since_last 与动态冷却）。
+        """
         self._last_conversation = time.time()
+        if user_reply:
+            self._user_replied_since_last = True
+            self._current_cooldown = max(COOLDOWN_MIN_MINUTES, self._current_cooldown * 0.5)
+
+    def _record_proactive_trigger(self, now: float) -> None:
+        """统一处理"主动触发成功"的簿记（P6）。
+
+        - 用户此前没回应过（_user_replied_since_last=False）→ 被无视惩罚：冷却翻倍
+        - 用户刚回应过（_user_replied_since_last=True）→ 合理触发，不翻倍
+        - 记录 _last_proactive_at / 重置 _user_replied_since_last / 更新冷却截止 / 每日计数
+        - 达到每日上限时 logger.info 一次（当天后续 tick 直接静默返回）
+        """
+        if not self._user_replied_since_last:
+            # 上次触发后用户一直没回应 → 学乖：冷却翻倍（上限 60 分钟）
+            self._current_cooldown = min(COOLDOWN_MAX_MINUTES, self._current_cooldown * 2.0)
+        self._last_proactive_at = now
+        self._user_replied_since_last = False
+        self._daily_count += 1
+        self._cooldown_until = now + self._current_cooldown * 60
+        if self._daily_count == self._daily_limit:
+            logger.info("Proactive daily limit reached (%d), no more triggers today", self._daily_count)
+
+    def _is_fullscreen(self) -> bool:
+        """检测当前前台窗口是否全屏（游戏/视频全屏不打扰）。
+
+        Returns:
+            True=前台窗口为真正全屏（覆盖 ≥95% 屏幕且原点在 (0,0)）；
+            False=非全屏（含最大化窗口）或检测失败。
+        """
+        try:
+            from motion.foreground_watcher import _get_foreground_window_rect
+            rect = _get_foreground_window_rect()
+            if not rect:
+                return False
+            x, y, width, height = rect
+            screen_w = ctypes.windll.user32.GetSystemMetrics(0)  # SM_CXSCREEN
+            screen_h = ctypes.windll.user32.GetSystemMetrics(1)  # SM_CYSCREEN
+            if screen_w <= 0 or screen_h <= 0:
+                return False
+            # 几何判据：覆盖 ≥95% 屏幕。额外要求原点非负——Windows 最大化窗口的
+            # rect 会因隐形边框带负坐标（如 -7,-7），并非真正的全屏（游戏/视频
+            # 全屏原点为 0,0）。避免把最大化 IDE/终端误判成全屏而一直不搭话。
+            return (
+                x >= 0 and y >= 0
+                and width >= screen_w * 0.95
+                and height >= screen_h * 0.95
+            )
+        except Exception as e:
+            logger.debug("Fullscreen detection failed: %s", e)
+            return False
 
     @property
     def enabled(self) -> bool:
@@ -84,7 +161,7 @@ class ProactiveScheduler:
         self._enabled = False
 
     def reset(self):
-        self._cooldown_until = time.time() + self._cooldown_minutes * 60
+        self._cooldown_until = time.time() + self._current_cooldown * 60
 
     def _collect_signals(self, now: float) -> dict:
         """收集意图分类所需信号（时间/前台/活动/持续时长）。"""
@@ -137,7 +214,7 @@ class ProactiveScheduler:
             # 深夜加班类场景：即使打字也值得提醒（强度高）
             reaction = get_reaction(scenario, intensity=confidence)
             prompt = reaction["text"]
-            self._cooldown_until = now + self._cooldown_minutes * 60
+            self._record_proactive_trigger(now)
             logger.info(
                 "Proactive intent triggered: scenario=%s intent=%s conf=%.2f %s",
                 scenario, intent.get("intent"), confidence, intent.get("reason"),
@@ -152,6 +229,15 @@ class ProactiveScheduler:
         if not self._enabled or not self._rules:
             return None
         now = time.time()
+
+        # ── P6 每日总量限制：跨天重置；达到上限当天不再触发 ──
+        today = time.strftime("%Y-%m-%d")
+        if today != self._daily_date:
+            self._daily_date = today
+            self._daily_count = 0
+        if self._daily_count >= self._daily_limit:
+            return None
+
         if now < self._cooldown_until:
             return None
 
@@ -186,6 +272,11 @@ class ProactiveScheduler:
         else:
             self._typing_since = None
 
+        # ── P6 全屏检测：游戏/视频全屏不打扰（communication 豁免）──
+        if category != "communication" and self._is_fullscreen():
+            logger.debug("Proactive suppressed: fullscreen fg=%s", category)
+            return None
+
         # ── P1 意图分类优先触发 ──
         signals = self._collect_signals(now)
         intent_prompt = self._try_intent(now, signals)
@@ -206,7 +297,7 @@ class ProactiveScheduler:
                 if random.random() < weight:
                     prompt = rule.get("prompt", "")
                     if prompt:
-                        self._cooldown_until = now + self._cooldown_minutes * 60
+                        self._record_proactive_trigger(now)
                         logger.info(
                             "Proactive triggered: idle=%ds fg=%s act=%s w=%.2f rule='%s'",
                             int(conversation_idle), category, activity, weight, prompt,

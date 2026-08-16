@@ -201,11 +201,13 @@ class BehaviorMixin:
         self._show_bubble(prompt_text, emotion=emotion)
 
         # 记录对话空闲计时：主动对话也算一次"对话"，让 proactive 冷却正常
+        # （user_reply=False：proactive 自身触发后的记录，非用户回应，不重置
+        #   _user_replied_since_last，也不触发冷却减半奖励）
         try:
             if getattr(self, "_perception", None) is not None:
                 proactive = getattr(self._perception, "proactive", None)
                 if proactive is not None:
-                    proactive.mark_conversation()
+                    proactive.mark_conversation(user_reply=False)
         except Exception:
             pass
 

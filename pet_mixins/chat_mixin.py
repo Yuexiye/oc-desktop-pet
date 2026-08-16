@@ -234,9 +234,9 @@ class ChatMixin:
         except Exception:
             pass
 
-        # 标记对话时间（主动对话用）
+        # 标记对话时间（主动对话用）——用户真实回应：冷却减半奖励
         if self._perception.proactive:
-            self._perception.proactive.mark_conversation()
+            self._perception.proactive.mark_conversation(user_reply=True)
 
         # P2 关系：记录用户话题到陪伴记忆（隔天能接上）
         self._record_topic(text)
