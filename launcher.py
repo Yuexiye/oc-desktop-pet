@@ -97,6 +97,13 @@ def main() -> int:
         stopping = True
         log.info("收到退出信号 %s，停止监督", signum)
         _terminate_child()
+        # 退出前清理就绪哨兵：子进程可能已写 ready_<pid>.flag，
+        # 残留文件在 pid 复用（极低概率）时会造成下次"瞬时就绪"误判。
+        if child is not None:
+            try:
+                _remove_ready_flag(child.pid)
+            except Exception:
+                pass
         sys.exit(0)
 
     signal.signal(signal.SIGINT, _on_signal)
