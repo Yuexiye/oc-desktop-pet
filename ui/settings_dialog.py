@@ -127,7 +127,8 @@ class SettingsDialog(QDialog):
         win_layout.addRow("透明度", op_row)
 
         self.scale = QSlider(Qt.Horizontal)
-        self.scale.setRange(50, 200)
+        # 下限 30%（0.3），与滚轮/快捷键缩放下限一致；上限保持 200%
+        self.scale.setRange(30, 200)
         self.scale.setValue(int(self._config.get("scale", 1.0) * 100))
         self._scale_label = QLabel(f"{self.scale.value()}%")
         self.scale.valueChanged.connect(lambda v: self._scale_label.setText(f"{v}%"))

@@ -387,7 +387,8 @@ class PetManager:
         except Exception:
             _global_scale = None
         _scale = _global_scale if _global_scale is not None else (_agent_scale if _agent_scale is not None else 1.0)
-        _scale = max(0.5, min(3.0, float(_scale)))
+        # 下限 0.3（与 pet.py 滚轮缩放一致），否则保存的 0.3 会在重启时被拉回 0.5
+        _scale = max(0.3, min(3.0, float(_scale)))
 
         try:
             window = PetWindow(

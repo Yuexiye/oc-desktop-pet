@@ -886,8 +886,8 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         # 边界约束：config 里可能存了越界坐标（如窗口尺寸变化前的旧 x），
         # 让窗口始终完整落在屏幕可用区域内，避免“一启动就贴边/出屏幕”。
         try:
-            tw = max(self._base_w, int(self._base_w * getattr(self, "_pet_scale", 1.0)))
-            th = max(self._base_h, int(self._base_h * getattr(self, "_pet_scale", 1.0)))
+            tw = max(60, int(self._base_w * getattr(self, "_pet_scale", 1.0)))
+            th = max(60, int(self._base_h * getattr(self, "_pet_scale", 1.0)))
             tx = max(sg.left(), min(tx, sg.right() - tw + 1))
             ty = max(sg.top(), min(ty, sg.bottom() - th + 1))
         except Exception:
@@ -1142,8 +1142,10 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         # 基准尺寸来自 _setup_window 读的 config.window（默认 458x520）。
         # 放大后角色更大更清晰。setFixedSize 默认左上角锚定（向右下扩展），
         # 会让模型中心漂移；这里先记中心，resize 后对齐回原位置。
-        w = max(self._base_w, int(self._base_w * self._pet_scale))
-        h = max(self._base_h, int(self._base_h * self._pet_scale))
+        # 注意：不能用 max(base_w, ...)——那会让 scale<1 时窗口被拉回基准宽，
+        # 用户滚轮缩不下去（"只能缩小到那么大"）。改用 60px 安全下限防缩没。
+        w = max(60, int(self._base_w * self._pet_scale))
+        h = max(60, int(self._base_h * self._pet_scale))
         _center = self.frameGeometry().center()
         self.setFixedSize(w, h)
         if self.isVisible():
@@ -1162,7 +1164,7 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
     def wheelEvent(self, event: QWheelEvent):
         """滚轮缩放桌宠：上滚放大，下滚缩小。
 
-        范围 0.5~3.0，实时生效并持久化到 config.scale。
+        范围 0.3~3.0，实时生效并持久化到 config.scale。
         按住 Ctrl + 滚轮同样触发（避免与悬浮窗滚动冲突）。
         """
         try:
@@ -1172,7 +1174,8 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
                 return
             step = 0.1 if abs(delta) < 120 else 0.15  # 高分辨率滚轮每格更精细
             new_scale = self._pet_scale + (step if delta > 0 else -step)
-            new_scale = round(max(0.5, min(3.0, new_scale)), 2)
+            # 下限 0.3（允许缩小到 30%）；0.5 会让用户觉得"缩不小"
+            new_scale = round(max(0.3, min(3.0, new_scale)), 2)
             if new_scale != self._pet_scale:
                 self._pet_scale = new_scale
                 self._apply_scale()
@@ -1199,7 +1202,8 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
 
     def _zoom_pet(self, factor: float):
         """按系数缩放桌宠（供菜单/快捷键调用）"""
-        new_scale = round(max(0.5, min(3.0, self._pet_scale * factor)), 2)
+        # 与 wheelEvent 保持同一下限 0.3，否则菜单/快捷键缩放缩不到 30%
+        new_scale = round(max(0.3, min(3.0, self._pet_scale * factor)), 2)
         if new_scale != self._pet_scale:
             self._pet_scale = new_scale
             self._apply_scale()
