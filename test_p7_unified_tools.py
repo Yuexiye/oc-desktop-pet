@@ -178,7 +178,7 @@ def test_static_capability_priority():
 
 
 def test_static_miss_falls_back_to_none():
-    """静态未命中且无插件关键词（"放首歌"不在静态触发词内）→ None（兜底 LLM）"""
+    """静态未命中且无插件关键词（"今天天气如何"不在静态触发词内）→ None（兜底 LLM）"""
     reg = _make_registry()
     executor = MagicMock()
     static = CapabilityRouter(
@@ -188,8 +188,25 @@ def test_static_miss_falls_back_to_none():
     )
     router = UnifiedToolRouter(tool_executor=executor)
     router.refresh(reg)
-    result = router.route("放首歌", tool_registry=reg, static_router=static)
+    result = router.route("今天天气如何", tool_registry=reg, static_router=static)
     assert result is None, "静态未命中 + 无插件关键词 → 兜底 LLM"
+
+
+def test_fangshouge_hits_play_music():
+    """口语变体"放首歌/放个歌"应命中 play_music（P7 后续补充的触发词）"""
+    reg = _make_registry()
+    executor = MagicMock()
+    static = CapabilityRouter(
+        perception=MagicMock(),
+        tool_registry=reg,
+        tool_executor=executor,
+    )
+    router = UnifiedToolRouter(tool_executor=executor)
+    router.refresh(reg)
+    for phrase in ("放首歌", "放个歌", "来首歌", "放首歌听听"):
+        result = router.route(phrase, tool_registry=reg, static_router=static)
+        assert result is not None and result.capability == "play_music", \
+            f"{phrase} 应命中 play_music，实际 {result.capability if result else None}"
 
 
 def test_no_match_fallback():
