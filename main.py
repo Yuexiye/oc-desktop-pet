@@ -96,14 +96,23 @@ _setup_file_logging()
 def _install_excepthook():
     import traceback as _tb
     _root = logging.getLogger()
+    # 链式：取当前已安装的钩子（crash_collector.install() 已先运行，这里拿到的是
+    # crash_collector 的收集钩子；若它未安装则为默认 sys.__excepthook__）。
+    # 不能直接调 sys.__excepthook__——那会跳过 crash_collector，导致 Python 异常
+    # 退出时崩溃现场不再自动打包。
+    _prev = getattr(sys, "excepthook", sys.__excepthook__)
     def _hook(etype, exc, tb):
         try:
             _root.critical("未捕获异常导致进程即将退出:\n%s",
                            "".join(_tb.format_exception(etype, exc, tb)))
         except Exception:
             pass
-        # 仍交给默认钩子，保证 stderr 也有输出、退出码正确
-        sys.__excepthook__(etype, exc, tb)
+        # 先调前一个钩子（crash_collector 收集 + 默认钩子保证 stderr/退出码），
+        # 两个钩子都执行，崩溃现场仍能自动打包。
+        try:
+            _prev(etype, exc, tb)
+        except Exception:
+            pass
     sys.excepthook = _hook
 _install_excepthook()
 
