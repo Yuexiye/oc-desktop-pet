@@ -86,6 +86,9 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
     engine_reply_signal = Signal(str, str, str, str)  # reply, emotion, anim, audio_path
     engine_status_signal = Signal(str)  # status message
     voice_status_signal = Signal(str)  # voice input status
+    # 跨线程截停 TTS：ASR 后台线程不得直调 _tts_player（QMediaPlayer 是 COM 组件，
+    # 跨线程调用会触发 RPC_E_SERVERCALL_RETRYLATER 0x8001010D），必须经信号绕回主线程。
+    tts_stop_signal = Signal()  # 请求在主线程停止 TTS 播放
     screen_emotion_signal = Signal(str, float)  # emotion, intensity
     screen_proactive_signal = Signal(str)  # prompt
     screen_update_signal = Signal(str)  # screen analysis update (description)
@@ -410,6 +413,7 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self.engine_reply_signal.connect(self._do_engine_reply)
         self.engine_status_signal.connect(self._do_engine_status)
         self.voice_status_signal.connect(self._do_voice_status)
+        self.tts_stop_signal.connect(self._do_tts_stop)
         self.screen_emotion_signal.connect(self._do_screen_emotion)
         self.screen_proactive_signal.connect(self._do_screen_proactive)
         self.screen_update_signal.connect(self._do_screen_update)
@@ -1907,6 +1911,20 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
                 self.bubble.hide_bubble()
             except Exception:
                 pass
+
+    def _do_tts_stop(self):
+        """主线程槽：截停 TTS 播放（由 tts_stop_signal 从后台线程绕回主线程）。
+
+        QMediaPlayer（Windows 后端=Media Foundation，纯 COM）只能在创建它的
+        主线程操作；任何后台线程（ASR 识别完成、持续监听）需要停 TTS 时一律
+        通过 emit tts_stop_signal 走到这里。
+        """
+        try:
+            player = getattr(self, "_tts_player", None)
+            if player is not None:
+                player.stop()
+        except Exception as e:
+            logger.warning("_do_tts_stop error: %s", e)
 
     # ── M4: 工具进度 + 新对话入口 ──
 

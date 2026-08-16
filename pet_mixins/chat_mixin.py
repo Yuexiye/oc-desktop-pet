@@ -68,8 +68,9 @@ class ChatMixin:
                     logger.info("Voice input sent: %s", text[:30])
                     # 不显示输入文字，隐藏气泡
                     self.voice_status_signal.emit("")
-                    # 截停 TTS
-                    self._tts_player.stop()
+                    # 截停 TTS：QMediaPlayer 是 COM 组件，不能在后台线程直调 stop()
+                    # （会触发 0x8001010D），经 tts_stop_signal 绕回主线程执行。
+                    self.tts_stop_signal.emit()
                     self._is_thinking = True
                     self._pending_chat = True
                     self._pending_user_msg = text
