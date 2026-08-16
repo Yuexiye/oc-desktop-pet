@@ -126,6 +126,13 @@ class Live2DRenderer(AvatarRenderer):
         self._live2d = None
         self._motion_groups: dict = {}
         self._expression_names: list = []
+        # 表情超时重置（P4-1）：非中性表情（比心/葱/唱歌/前倾等贴图开关）设置后
+        # 在 GESTURE_TIMEOUT 内若无新表情则自动 ResetExpressions——否则表情永远挂着，
+        # 用户看到的"一直比心"就是这个（motion 有超时兜底，expression 之前没有）。
+        self._expression_set_at: float = 0.0
+        self._expression_active: bool = False
+        self._last_expression: str = ""
+        self._expression_suppress_until: float = 0.0
 
     # ── 生命周期 ──
 
@@ -700,6 +707,13 @@ class Live2DRenderer(AvatarRenderer):
             except Exception as e:
                 logger.warning("Live2DRenderer.motion 超时检查异常: %s", e)
 
+        # P4-1 表情超时兜底：比心/葱/唱歌等贴图开关表情播满 GESTURE_TIMEOUT 自动重置，
+        # 与上方 motion 超时对称（之前只有 motion 有兜底，表情没有 → "一直比心"）。
+        try:
+            self._expire_expression_if_stale()
+        except Exception as e:
+            logger.warning("Live2DRenderer.expression 超时检查异常: %s", e)
+
         # 完整帧更新：绕过 live2d-py 0.7.0.4 wrapper 残缺的 Update()（motion/blink/呼吸全被注释），
         # 直接驱动 C++ Model 的完整更新序列（UpdateMotion → Blink → Breath → Physics → Pose）。
         try:
@@ -1197,15 +1211,56 @@ class Live2DRenderer(AvatarRenderer):
         self._apply_expression(emotion)
 
     def _apply_expression(self, emotion: str) -> None:
-        """应用情绪对应的表情（不碰 motion）。"""
+        """应用情绪对应的表情（不碰 motion）。
+
+        P4-1 表情超时重置（根治"一直比心"）：
+        - 模型如 miku 用 Param131-137 贴图开关做"比心/葱/唱歌/前倾"等手势表情。
+        - 旧逻辑：happy 情绪每帧 set_emotion → SetExpression("比心") → 表情永不重置。
+        - 修：同表情激活中不刷新超时（让手势自然过期）；超时后 ResetExpressions 回默认；
+          重置后同表情进入冷却期，防止情绪持续时"3秒亮/3秒灭"闪烁。
+        """
         expr = self._match_expression(emotion)
         try:
             if expr is None:
-                self._model.ResetExpressions()
-            else:
-                self._model.SetExpression(expr)
+                if self._expression_active:
+                    self._model.ResetExpressions()
+                self._expression_active = False
+                self._last_expression = ""
+                return
+            now = time.monotonic()
+            # 同表情已激活：不重复设置、不刷新超时（让手势自然过期重置）
+            if self._expression_active and expr == self._last_expression:
+                return
+            # 刚被超时重置的同表情，冷却期内不重播（防闪烁）
+            if expr == self._last_expression and now < self._expression_suppress_until:
+                return
+            self._model.SetExpression(expr)
+            self._expression_active = True
+            self._expression_set_at = now
+            self._last_expression = expr
         except Exception as e:
             logger.warning("Live2DRenderer: 设置表情失败: %s", e)
+
+    def _expire_expression_if_stale(self) -> None:
+        """表情超时兜底：非中性表情设置超过 GESTURE_TIMEOUT 则自动重置回默认。
+
+        与 motion 的 GESTURE_TIMEOUT 兜底对称——避免"比心/葱/唱歌"等贴图开关表情
+        因情绪持续 happy 而永久显示（用户反复反馈的"一直比心"）。
+        重置后进入冷却期（GESTURE_TIMEOUT），期间 _apply_expression 不会重播同表情，
+        防止情绪持续时"3秒亮/3秒灭"的闪烁。
+        """
+        if not self._expression_active or not self._model:
+            return
+        now = time.monotonic()
+        if now - self._expression_set_at > self.GESTURE_TIMEOUT:
+            try:
+                self._model.ResetExpressions()
+            except Exception:
+                pass
+            self._expression_active = False
+            self._expression_suppress_until = now + self.GESTURE_TIMEOUT
+            logger.debug("Live2DRenderer: 表情超时(%ds)，已自动重置回默认，%s 秒冷却",
+                         self.GESTURE_TIMEOUT, self.GESTURE_TIMEOUT)
 
     def set_emotion(self, emotion: str, intensity: float = 1.0) -> None:
         # 同一 emotion 短时间内重复调用：直接同步表情，不重播 motion。
