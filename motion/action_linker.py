@@ -16,11 +16,17 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# 串行化 outbox.json 读-改-写（进程内线程锁 + 原子写；B2-8）
+_OUTBOX_LOCK = threading.Lock()
 
 
 # ── 动作定义 ──────────────────────────────────────────────
@@ -116,6 +122,41 @@ class ActionLinker:
                 return a
         return None
 
+    @staticmethod
+    def _locked_append(outbox_file: Path, msg: dict) -> None:
+        """串行化读-改-写 outbox.json + 原子写（B2-8）。
+
+        原实现直接 read_text -> append -> write_text，多宠/双击并发时
+        读-改-写不原子，会丢事件或写坏文件。这里：
+        1) 进程内线程锁串行化（双击/同进程多线程）；
+        2) tempfile + os.replace 原子写（跨进程不产生半截文件）。
+        """
+        with _OUTBOX_LOCK:
+            msgs = []
+            if outbox_file.exists():
+                try:
+                    loaded = json.loads(outbox_file.read_text("utf-8"))
+                    if isinstance(loaded, list):
+                        msgs = loaded
+                except Exception:
+                    msgs = []  # 文件损坏则丢弃旧内容，不阻塞写入
+            msgs.append(msg)
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                dir=str(outbox_file.parent), suffix=".outbox.tmp"
+            )
+            try:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                    json.dump(msgs, f, ensure_ascii=False)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, outbox_file)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+
     def trigger_action(self, outbox_dir: Path, action_id: str) -> dict | None:
         """用户点击动作项 → 写入特殊消息到 outbox，供 Agent 处理。
 
@@ -143,9 +184,7 @@ class ActionLinker:
         try:
             outbox_dir.mkdir(parents=True, exist_ok=True)
             outbox_file = outbox_dir / "outbox.json"
-            msgs = json.loads(outbox_file.read_text("utf-8")) if outbox_file.exists() else []
-            msgs.append(msg)
-            outbox_file.write_text(json.dumps(msgs, ensure_ascii=False), "utf-8")
+            self._locked_append(outbox_file, msg)
 
             # 写待处理标记
             (outbox_dir / ".pending").write_text("1", "utf-8")
