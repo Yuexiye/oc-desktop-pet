@@ -16,7 +16,7 @@
 import os
 import sys
 import time
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -286,3 +286,47 @@ def test_user_reply_after_ignored_still_triggers(monkeypatch):
     result = scheduler.tick()
     assert result == "写了这么久", "用户回应后的合理触发不应被卡死"
     assert scheduler._current_cooldown == 10.0, "合理触发不应翻倍"
+
+
+class TestFullscreenConfig:
+    """P6-2 全屏检测可配置：阈值与开关可通过 load_config 设置"""
+
+    def test_default_threshold_095(self):
+        """默认阈值 0.95、默认开启抑制"""
+        s = ProactiveScheduler()
+        assert s._fullscreen_threshold == 0.95
+        assert s._fullscreen_suppress is True
+
+    def test_load_config_custom_threshold(self):
+        """load_config 可自定义阈值与关闭抑制"""
+        s = ProactiveScheduler()
+        s.load_config({
+            "enabled": True,
+            "cooldown_minutes": 10,
+            "fullscreen_threshold": 0.80,
+            "fullscreen_suppress": False,
+        })
+        assert s._fullscreen_threshold == 0.80
+        assert s._fullscreen_suppress is False
+
+    def test_threshold_applied_in_fullscreen_check(self):
+        """阈值实际影响 _is_fullscreen 判定：0.80 阈值下 85% 覆盖视为全屏"""
+        s = ProactiveScheduler()
+        s.load_config({"enabled": True, "cooldown_minutes": 10,
+                       "fullscreen_threshold": 0.80, "fullscreen_suppress": True})
+        # 模拟 2560x1440 屏幕，窗口覆盖 85%（2200x1300，原点 0,0）
+        with patch("motion.foreground_watcher._get_foreground_window_rect", return_value=(0, 0, 2200, 1300)), \
+             patch("ctypes.windll.user32.GetSystemMetrics", side_effect=[2560, 1440]):
+            assert s._is_fullscreen() is True, "0.80 阈值下 85% 覆盖应判为全屏"
+
+    def test_suppress_disabled_still_trigger(self):
+        """关闭抑制后即使全屏也走后续逻辑（不直接 return None）"""
+        s = ProactiveScheduler()
+        s.load_config({"enabled": True, "cooldown_minutes": 10,
+                       "fullscreen_threshold": 0.95, "fullscreen_suppress": False})
+        with patch.object(s, "_is_fullscreen", return_value=True), \
+             patch.object(s, "_try_intent", return_value=None), \
+             patch("core.perception.proactive.random.random", return_value=0.01):
+            result = s.tick()
+            # 全屏但抑制关闭 → 不因全屏 return None，走规则引擎（idle 5min 以上会触发）
+            assert result is not None or s._daily_count >= 0

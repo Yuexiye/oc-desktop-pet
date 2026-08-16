@@ -411,6 +411,23 @@ class SettingsDialog(QDialog):
         self.pro_cooldown.setValue(self._config.get("proactive", {}).get("cooldown_minutes", 10))
         pro_layout.addRow("冷却时间", self.pro_cooldown)
 
+        # 全屏检测：游戏/视频全屏时不打扰（阈值可调 + 可关）
+        self.pro_fullscreen_suppress = QCheckBox("全屏时不主动搭话（游戏/视频）")
+        self.pro_fullscreen_suppress.setChecked(
+            self._config.get("proactive", {}).get("fullscreen_suppress", True)
+        )
+        pro_layout.addRow(self.pro_fullscreen_suppress)
+
+        self.pro_fullscreen_threshold = QDoubleSpinBox()
+        self.pro_fullscreen_threshold.setRange(0.5, 1.0)
+        self.pro_fullscreen_threshold.setSingleStep(0.05)
+        self.pro_fullscreen_threshold.setDecimals(2)
+        self.pro_fullscreen_threshold.setSuffix(" 倍屏")
+        self.pro_fullscreen_threshold.setValue(
+            self._config.get("proactive", {}).get("fullscreen_threshold", 0.95)
+        )
+        pro_layout.addRow("全屏判定阈值", self.pro_fullscreen_threshold)
+
         interact_layout.addWidget(pro_group)
 
         # 屏幕感知
@@ -1276,6 +1293,8 @@ class SettingsDialog(QDialog):
         # 主动对话
         c.setdefault("proactive", {})["enabled"] = self.pro_enabled.isChecked()
         c["proactive"]["cooldown_minutes"] = self.pro_cooldown.value()
+        c["proactive"]["fullscreen_suppress"] = self.pro_fullscreen_suppress.isChecked()
+        c["proactive"]["fullscreen_threshold"] = round(self.pro_fullscreen_threshold.value(), 2)
 
         # 屏幕感知
         c.setdefault("screen", {})["enabled"] = self.screen_enabled.isChecked()

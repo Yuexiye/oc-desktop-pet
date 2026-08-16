@@ -83,12 +83,19 @@ class ProactiveScheduler:
         self._daily_count: int = 0
         self._daily_date: str = ""
 
+        # ── P6 全屏检测（游戏/视频全屏不打扰）──
+        self._fullscreen_threshold: float = 0.95  # 窗口覆盖屏幕比例阈值（可配置）
+        self._fullscreen_suppress: bool = True    # 全屏时是否抑制主动搭话（可配置）
+
     def load_config(self, config: dict):
         self._enabled = config.get("enabled", True)
         self._cooldown_minutes = config.get("cooldown_minutes", 10)
         self._current_cooldown = float(config.get("cooldown_minutes", 10))
         self._rules = config.get("rules", list(DEFAULT_RULES))
         self._daily_limit = config.get("daily_limit", DAILY_LIMIT)
+        # P6-2 全屏检测可配置：阈值（覆盖比例，默认 0.95）与总开关（默认开启）
+        self._fullscreen_threshold = float(config.get("fullscreen_threshold", 0.95))
+        self._fullscreen_suppress = bool(config.get("fullscreen_suppress", True))
 
     def mark_conversation(self, user_reply: bool = False):
         """标记对话发生。
@@ -125,7 +132,7 @@ class ProactiveScheduler:
         """检测当前前台窗口是否全屏（游戏/视频全屏不打扰）。
 
         Returns:
-            True=前台窗口为真正全屏（覆盖 ≥95% 屏幕且原点在 (0,0)）；
+            True=前台窗口为真正全屏（覆盖 ≥fullscreen_threshold 屏幕且原点在 (0,0)）；
             False=非全屏（含最大化窗口）或检测失败。
         """
         try:
@@ -138,13 +145,14 @@ class ProactiveScheduler:
             screen_h = ctypes.windll.user32.GetSystemMetrics(1)  # SM_CYSCREEN
             if screen_w <= 0 or screen_h <= 0:
                 return False
-            # 几何判据：覆盖 ≥95% 屏幕。额外要求原点非负——Windows 最大化窗口的
-            # rect 会因隐形边框带负坐标（如 -7,-7），并非真正的全屏（游戏/视频
-            # 全屏原点为 0,0）。避免把最大化 IDE/终端误判成全屏而一直不搭话。
+            # 几何判据：覆盖 ≥fullscreen_threshold 屏幕（用户可在设置面板调阈值）。
+            # 额外要求原点非负——Windows 最大化窗口的 rect 会因隐形边框带负坐标
+            # （如 -7,-7），并非真正的全屏（游戏/视频全屏原点为 0,0）。避免把
+            # 最大化 IDE/终端误判成全屏而一直不搭话。
             return (
                 x >= 0 and y >= 0
-                and width >= screen_w * 0.95
-                and height >= screen_h * 0.95
+                and width >= screen_w * self._fullscreen_threshold
+                and height >= screen_h * self._fullscreen_threshold
             )
         except Exception as e:
             logger.debug("Fullscreen detection failed: %s", e)
@@ -272,8 +280,8 @@ class ProactiveScheduler:
         else:
             self._typing_since = None
 
-        # ── P6 全屏检测：游戏/视频全屏不打扰（communication 豁免）──
-        if category != "communication" and self._is_fullscreen():
+        # ── P6 全屏检测：游戏/视频全屏不打扰（communication 豁免；可在设置面板关闭）──
+        if self._fullscreen_suppress and category != "communication" and self._is_fullscreen():
             logger.debug("Proactive suppressed: fullscreen fg=%s", category)
             return None
 
