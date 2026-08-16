@@ -1708,7 +1708,11 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self._anim_frame_tops = self._renderer._frame_tops
 
         # 更新托盘图标
-        self._tray.setIcon(QIcon(self._make_tray_icon()))
+        # OC_DISABLE_TRAY=1 时 _setup_tray 被跳过，_tray 不存在——必须判空，
+        # 否则 load_character 启动即 AttributeError 崩溃。
+        tray = getattr(self, "_tray", None)
+        if tray is not None:
+            tray.setIcon(QIcon(self._make_tray_icon()))
 
         # 启动画面
         self._startup_screen.show_for_character(char_id)
