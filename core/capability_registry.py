@@ -90,7 +90,7 @@ CAPABILITIES: list[Capability] = [
     # ── 音乐 ──
     Capability(
         name="play_music",
-        patterns=["放歌", "播放", "放一首", "来首", "听歌", "来点音乐", "play"],
+        patterns=["放歌", "放首歌", "放个歌", "播放", "放一首", "来首", "听歌", "来点音乐", "play"],
         handler="tool",
         tool_name="play",
         plugin_id="hanako-audio-player",
