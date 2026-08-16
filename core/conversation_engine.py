@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import collections
 import json
 import logging
 import os
@@ -58,7 +59,9 @@ class ConversationEngine:
         self._perception = perception or PerceptionController(character_id)  # 外部注入优先
         self._session_manager = session_manager  # 可选注入；PetManager 也可在 start() 后注入
         self._session_unsubscribers: list[callable] = []
-        self._queue: list[dict] = []
+        # 有界消息队列：maxlen=200，满时丢最旧（防异常场景下无限堆积内存）。
+        # deque 的 popleft/appendleft 与 list 的 pop(0)/insert(0) 语义对齐。
+        self._queue: "collections.deque[dict]" = collections.deque(maxlen=200)
         self._lock = threading.Lock()
         self._running = False
 
@@ -389,7 +392,8 @@ class ConversationEngine:
                 "gen": self._generation,
             }
             if source in ("proactive", "idle"):
-                self._queue.insert(0, item)
+                # 插队到最前面；deque 有界时丢最旧（与 append 的丢弃策略一致）
+                self._queue.appendleft(item)
             else:
                 self._queue.append(item)
 
@@ -424,7 +428,12 @@ class ConversationEngine:
             self._last_interrupt_state = state
             self._last_interrupt_reason = reason
             # 清掉非用户消息（proactive/idle 的可丢），保留最新用户消息
-            self._queue = [m for m in self._queue if m.get("source") == "user"]
+            # 注意：_queue 是有界 deque，必须重建为 deque 而不是 list，
+            # 否则后续 popleft/maxlen 语义全丢。
+            self._queue = collections.deque(
+                (m for m in self._queue if m.get("source") == "user"),
+                maxlen=200,
+            )
         # 打断 Hanako WS 的 LLM 思考（若当前在 Hanako 上）
         try:
             sm = self._session_manager
@@ -451,48 +460,77 @@ class ConversationEngine:
         with self._lock:
             tts = self._tts
         if tts:
-            tts.preload()
-            with self._lock:
-                self._tts_ready = tts.is_ready
+            # 单步保护：preload 失败只告警，不阻断引擎启动
+            try:
+                tts.preload()
+            except Exception as e:
+                logger.warning("TTS 预加载失败（继续启动，语音稍后不可用）: %s", e)
+            try:
+                with self._lock:
+                    self._tts_ready = tts.is_ready
+            except Exception as e:
+                logger.warning("TTS 就绪状态读取失败: %s", e)
         self.on_status("")
         self.on_tts_ready()
 
         # 刷新日程 + 启动屏幕感知（interval 从 config 读，支持随机范围）
-        self._perception.tick()
+        try:
+            self._perception.tick()
+        except Exception as e:
+            logger.warning("日程感知刷新失败（继续启动）: %s", e)
         try:
             from config import load_config
             screen_cfg = load_config().get("screen", {}) or {}
             interval = int(screen_cfg.get("interval", 120) or 120)
         except Exception:
             interval = 120
-        self._perception.start_screen(interval=interval)
+        try:
+            self._perception.start_screen(interval=interval)
+        except Exception as e:
+            logger.warning("屏幕感知启动失败（继续启动）: %s", e)
 
         # 发现插件工具
-        self._tool_registry.discover()
-        self._tools = self._tool_registry.get_tools()
+        try:
+            self._tool_registry.discover()
+        except Exception as e:
+            logger.warning("插件工具发现失败（继续启动）: %s", e)
+        try:
+            self._tools = self._tool_registry.get_tools()
+        except Exception as e:
+            logger.warning("读取工具列表失败: %s", e)
+            self._tools = []
         if self._tools:
             logger.info("Plugin tools available: %d", len(self._tools))
         # P7: 构建统一路由关键词索引（插件工具显式/关键词直达）
-        self._unified_router.refresh(self._tool_registry)
+        try:
+            self._unified_router.refresh(self._tool_registry)
+        except Exception as e:
+            logger.warning("统一路由索引刷新失败（继续启动）: %s", e)
 
         logger.info("对话引擎启动完成")
 
         while self._running:
-            # P7: 插件热刷新（每 30s 检测；新增/删除插件无需重启）
+            # 整个循环体包 try/except：任何单条消息处理异常都不能杀死引擎线程
+            #（线程死亡 = 桌宠永久失语）。记录堆栈后继续跑下一条。
             try:
-                if self._unified_router.should_refresh(interval=self._tool_refresh_interval):
-                    self._hot_refresh_tools()
-            except Exception as e:
-                logger.warning("插件热刷新检测失败: %s", e)
-            # 取消息
-            msg = None
-            with self._lock:
-                if self._queue:
-                    msg = self._queue.pop(0)
+                # P7: 插件热刷新（每 30s 检测；新增/删除插件无需重启）
+                try:
+                    if self._unified_router.should_refresh(interval=self._tool_refresh_interval):
+                        self._hot_refresh_tools()
+                except Exception as e:
+                    logger.warning("插件热刷新检测失败: %s", e)
+                # 取消息
+                msg = None
+                with self._lock:
+                    if self._queue:
+                        msg = self._queue.popleft()
 
-            if msg:
-                self._process_message(msg)
-            else:
+                if msg:
+                    self._process_message(msg)
+                else:
+                    time.sleep(0.2)
+            except Exception:
+                logger.exception("对话引擎主循环异常，已记录并继续")
                 time.sleep(0.2)
 
     def _hot_refresh_tools(self) -> None:
