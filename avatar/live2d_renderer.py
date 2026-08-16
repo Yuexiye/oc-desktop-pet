@@ -947,6 +947,13 @@ class Live2DRenderer(AvatarRenderer):
                 self._model.SetParameterValue(P.ParamMouthForm, cur["mouth"], 0.6)
             except Exception:
                 pass
+            # 身体微动：情绪越强身体越前倾/后仰（有 ParamBodyAngleX/Y 的模型生效）
+            try:
+                body_tilt = cur["brow"] * 4.0   # 情绪强烈时身体倾角
+                self._model.SetParameterValue(P.ParamBodyAngleX, body_tilt, 0.4)
+                self._model.SetParameterValue(P.ParamBodyAngleY, body_tilt * 0.5, 0.4)
+            except Exception:
+                pass
             # 头发微动：慢正弦（轻盈呼吸感）
             now = time.monotonic()
             hair = math.sin(now * 0.8) * 3.0
