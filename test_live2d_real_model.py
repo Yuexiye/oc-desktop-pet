@@ -106,6 +106,8 @@ def test_miku_motion_list():
     files = [f for f in os.listdir(motions_dir) if f.endswith(".motion3.json")]
     print(f"miku 模型动作文件: {files}")
     # 关键：每个动作的时长 + 是否 Loop
+    # 仅 idle 应 Loop=True（持续呼吸），其余表情/手势 Loop=False（播完回 idle）
+    loop_expect = {"idle": True}
     for f in sorted(files):
         with open(os.path.join(motions_dir, f), encoding="utf-8") as fp:
             data = json.load(fp)
@@ -113,7 +115,9 @@ def test_miku_motion_list():
         dur = meta.get("Duration", "N/A")
         loop = meta.get("Loop", "N/A")
         print(f"  {f}: duration={dur}s, Loop={loop}")
-        assert loop is True, f"{f} 应是 Loop=True（miku 模型所有动作都是循环）"
+        name = f.replace(".motion3.json", "")
+        expected_loop = loop_expect.get(name, False)
+        assert loop is expected_loop, f"{f} 应是 Loop={expected_loop}（idle 循环、其余单次）"
 
 
 if __name__ == "__main__":
