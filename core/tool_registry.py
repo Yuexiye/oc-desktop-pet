@@ -62,6 +62,16 @@ class ToolRegistry:
         self._tools: dict[str, ToolDef] = {}  # name -> ToolDef
         self._name_map: dict[str, str] = {}  # sanitized_name -> original_name
 
+    def refresh(self):
+        """重新扫描插件目录（清空旧索引后重建），供热刷新调用。
+
+        新增/删除插件后调用，30 秒内生效，无需重启桌宠。
+        注意：先清空 _tools/_name_map 再 discover()，否则旧工具残留。
+        """
+        self._tools.clear()
+        self._name_map.clear()
+        self.discover()
+
     def discover(self):
         """扫描所有插件目录，提取工具定义"""
         # 扫描 Hanako 全局插件 + oc-pet 本地插件

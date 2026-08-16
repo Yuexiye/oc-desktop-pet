@@ -95,6 +95,15 @@ class ConversationEngine:
             tool_executor=self._tool_executor,
         )
 
+        # P7: 统一工具调度层——静态能力优先(15个)，其次本地插件工具(显式/关键词直达)，
+        # 未命中兜底 LLM/Hanako 服务端。插件支持 30s 热刷新（新增/删除即生效，无需重启）。
+        from .unified_tool_router import UnifiedToolRouter
+        self._unified_router = UnifiedToolRouter(
+            perception=self._perception,
+            tool_executor=self._tool_executor,
+        )
+        self._tool_refresh_interval: float = 30.0  # 插件热刷新周期（秒）
+
         # ── M3: 记忆快照管理器 ──
         self._memory_snapshot_mgr = None
         try:
@@ -463,10 +472,18 @@ class ConversationEngine:
         self._tools = self._tool_registry.get_tools()
         if self._tools:
             logger.info("Plugin tools available: %d", len(self._tools))
+        # P7: 构建统一路由关键词索引（插件工具显式/关键词直达）
+        self._unified_router.refresh(self._tool_registry)
 
         logger.info("对话引擎启动完成")
 
         while self._running:
+            # P7: 插件热刷新（每 30s 检测；新增/删除插件无需重启）
+            try:
+                if self._unified_router.should_refresh(interval=self._tool_refresh_interval):
+                    self._hot_refresh_tools()
+            except Exception as e:
+                logger.warning("插件热刷新检测失败: %s", e)
             # 取消息
             msg = None
             with self._lock:
@@ -477,6 +494,22 @@ class ConversationEngine:
                 self._process_message(msg)
             else:
                 time.sleep(0.2)
+
+    def _hot_refresh_tools(self) -> None:
+        """热刷新插件工具：重新 discover + 重建统一路由索引 + 刷新 LLM 工具列表。
+
+        P7：新增/删除插件 30 秒内生效，无需重启桌宠。
+        """
+        try:
+            before = self._tool_registry.tool_count
+            self._tool_registry.refresh()
+            self._unified_router.refresh(self._tool_registry)
+            self._tools = self._tool_registry.get_tools()
+            after = self._tool_registry.tool_count
+            if before != after:
+                logger.info("插件热刷新: 工具数 %d -> %d", before, after)
+        except Exception as e:
+            logger.warning("插件热刷新失败: %s", e)
 
     def _is_stale(self, gen: int) -> bool:
         """检查消息代际是否已过期（用户已打断/发新消息）。
@@ -512,12 +545,20 @@ class ConversationEngine:
             self.on_reply(help_text, emotion, anim, "")
             return
 
-        # 快速路径：能力路由器（仅用户消息，主动/idle 消息跳过）
+        # 快速路径：统一工具调度（仅用户消息，主动/idle 消息跳过）
+        # P7: 静态能力(15个) 优先 → 插件工具(显式/关键词) → 兜底 LLM/Hanako 服务端
         is_user_msg = msg.get("source", "user") == "user"
-        route_result = self._capability_router.route(text) if is_user_msg else None
+        if is_user_msg:
+            route_result = self._unified_router.route(
+                text,
+                tool_registry=self._tool_registry,
+                static_router=self._capability_router,
+            )
+        else:
+            route_result = None
         if route_result:
             anim = route_result.anim or "idle"
-            logger.info("Capability routed: %s -> %s", route_result.capability, route_result.text[:50])
+            logger.info("Unified routed: %s -> %s", route_result.capability, route_result.text[:50])
             self.on_reply(route_result.text, route_result.emotion, anim, route_result.audio_path)
             return
 
