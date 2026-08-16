@@ -155,13 +155,22 @@ class HanakoPetAdapter:
     def model_config(self) -> dict:
         return dict(self._model_cfg)
 
-    def chat_direct(self, message: str, inject_memory: bool = True, extra_context: str = "", tools: list = None) -> tuple:
+    def chat_direct(self, message: str, inject_memory: bool = True, extra_context: str = "", tools: list = None, source: str = "user") -> tuple:
         """直接调用 LLM API（不走 Hanako WS） - 原 chat() 的完整实现
 
         由 chat() 路由器在 Hanako 不可用或 transport_mode==direct 时调用。
+
+        source 标记消息来源：user（用户主动）/ proactive（桌宠主动搭话）/
+        idle（闲置闲聊）。proactive/idle 消息会加 [source] 前缀，让 LLM 能
+        区分说话人，避免把桌宠自己的主动文案当成用户消息计入上下文。
         """
         if not self._base_url or not self._api_key:
             return "...(模型未配置,请在设置中配置模型)", "neutral"
+
+        # 来源标记：proactive/idle 加 [source] 前缀；user 保持原样（不破坏现有 prompt 结构）
+        user_content = message.strip()
+        if source in ("proactive", "idle"):
+            user_content = f"[{source}] {user_content}"
 
         messages = [{"role": "system", "content": self._system_prompt + "\n\n[输出规则] 1. 回复简短自然，不超过 2 句话。2. 在回复中嵌入情绪标签，格式 [emotion:xxx]，可选值：happy/sad/angry/surprised/thinking/neutral/cute/missing。可以在句末或句中。例如：'你回来啦！[emotion:happy]' 或 '[emotion:thinking]让我想想……'"}]
 
@@ -185,7 +194,7 @@ class HanakoPetAdapter:
         for turn in self._history[-10:]:
             messages.append(turn)
 
-        messages.append({"role": "user", "content": message.strip()})
+        messages.append({"role": "user", "content": user_content})
 
         try:
             resp = self._call_api(messages, tools=tools)
@@ -193,7 +202,7 @@ class HanakoPetAdapter:
             # 检查是否是 tool_calls 响应
             if isinstance(resp, dict) and resp.get("tool_calls"):
                 # 保存用户消息到历史
-                self._history.append({"role": "user", "content": message.strip()})
+                self._history.append({"role": "user", "content": user_content})
                 return resp, None  # 返回 tool_calls 给调用方处理
 
             text = resp.strip() if resp and resp.strip() else ""
@@ -203,14 +212,14 @@ class HanakoPetAdapter:
                 parsed = self._parse_function_in_content(text)
                 if parsed:
                     logger.info("Parsed tool call from content (non-standard)")
-                    self._history.append({"role": "user", "content": message.strip()})
+                    self._history.append({"role": "user", "content": user_content})
                     return {"tool_calls": parsed, "message": {"content": text}}, None
 
             if not text:
                 logger.warning("LLM returned empty: %s", repr(resp[:100] if resp else None))
                 text = "(......想不起来要说什么了)"
                 emotion = "thinking"
-                self._history.append({"role": "user", "content": message.strip()})
+                self._history.append({"role": "user", "content": user_content})
                 self._history.append({"role": "assistant", "content": text})
                 return text, emotion
 
@@ -218,7 +227,7 @@ class HanakoPetAdapter:
             text, emotion = self.parse_emotion(text)
 
             # 保存到历史
-            self._history.append({"role": "user", "content": message.strip()})
+            self._history.append({"role": "user", "content": user_content})
             self._history.append({"role": "assistant", "content": text})
 
             return text, emotion
@@ -264,14 +273,14 @@ class HanakoPetAdapter:
         if source in ("proactive", "idle"):
             if self.transport_mode != "direct" and self._session_manager is not None:
                 try:
-                    return self.chat_via_hanako(message, False, extra_context, tools=None)
+                    return self.chat_via_hanako(message, False, extra_context, tools=None, source=source)
                 except HanakoUnavailableBeforeSend:
                     if self.transport_mode == "hanako_only":
                         return "…", "neutral"
                     # prefer_hanako → 回退直接 LLM
                 except HanakoUnavailableAfterSend:
                     return "…", "neutral"
-            return self.chat_direct(message, False, extra_context, tools=None)
+            return self.chat_direct(message, False, extra_context, tools=None, source=source)
 
         # direct 模式：跳过 Hanako
         if self.transport_mode == "direct":
@@ -299,12 +308,16 @@ class HanakoPetAdapter:
         extra_context: str = "",
         tools: list = None,
         timeout: float = None,
+        source: str = "user",
     ) -> tuple:
         """通过 Hanako WS Session 发送消息
 
         Fallback 边界：
         - send_and_wait() 之前失败 -> raise HanakoUnavailableBeforeSend（chat() 可 fallback）
         - send_and_wait() 之后失败 -> raise HanakoUnavailableAfterSend（绝不能 fallback）
+
+        source 通过 ui_context 透传给 Hanako（proactive/idle/user），
+        同时保留 client="oc-pet" 标识来源客户端。
         """
         if self._session_manager is None:
             raise HanakoUnavailableBeforeSend(
@@ -351,7 +364,7 @@ class HanakoPetAdapter:
                     text,
                     timeout=timeout if timeout is not None else self._reply_timeout,
                     display_text=message.strip(),
-                    ui_context={"source": "oc-pet", "agentId": self.agent_id},
+                    ui_context={"source": source, "client": "oc-pet", "agentId": self.agent_id},
                 )
                 break  # 成功
             except HanakoUnavailableBeforeSend:
