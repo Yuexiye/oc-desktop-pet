@@ -136,43 +136,36 @@ class TestProactiveScheduler:
         sched._cooldown_until = time.time() + 999
         assert sched.tick() is None
 
-    def test_short_idle_does_not_trigger(self):
+    def test_short_idle_does_not_trigger(self, monkeypatch):
         sched = ProactiveScheduler(on_proactive=lambda t: None)
         sched.load_config({"rules": [{"idle_min": 5, "foreground": ["*"], "prompt": "test", "weight": 1.0}]})
-        # 模拟 60 秒空闲（< 180 秒阈值）
-        import ctypes
-        orig_get_last_input = ctypes.windll.user32.GetLastInputInfo
-        orig_get_tick = ctypes.windll.kernel32.GetTickCount
-        try:
-            ctypes.windll.kernel32.GetTickCount.return_value = 60000
-            assert sched.tick() is None
-        finally:
-            ctypes.windll.user32.GetLastInputInfo = orig_get_last_input
-            ctypes.windll.kernel32.GetTickCount = orig_get_tick
+        # 固定意图分类结果为低置信度（不命中任何场景），强制走规则引擎路径：
+        # 避免清晨(morning)时段 classify_intent 命中 morning_first(conf=0.7 >= 0.6)
+        # 抢先触发，导致测试随当前时间 flaky。
+        monkeypatch.setattr(
+            "core.perception.proactive.classify_intent",
+            lambda **kw: {"intent": "work", "scenario": "chat_idle", "confidence": 0.0, "reason": "test"},
+        )
+        # 模拟 60 秒空闲（< idle_min=5 分钟 = 300 秒阈值）——直接基于 time.time()，
+        # 不依赖已过时的 ctypes.GetTickCount mock（实现已改用 time.time()）。
+        sched._last_conversation = time.time() - 60
+        assert sched.tick() is None
 
-    def test_rule_match_triggers(self):
+    def test_rule_match_triggers(self, monkeypatch):
         triggered = []
         sched = ProactiveScheduler(on_proactive=lambda t: triggered.append(t))
         sched.load_config({"rules": [{"idle_min": 0, "foreground": ["*"], "prompt": "hi", "weight": 1.0}]})
-        # 模拟 200 秒空闲（> 180 秒阈值）
-        # 直接 patch _get_idle_seconds 太复杂，改为直接设置内部状态
-        # 验证规则匹配逻辑：idle_min=0 + weight=1.0 + foreground=*
-        # 只要 idle > 180 就触发
-        import ctypes
-        class LASTINPUTINFO(ctypes.Structure):
-            _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
-        lii = LASTINPUTINFO()
-        lii.cbSize = ctypes.sizeof(LASTINPUTINFO)
-        lii.dwTime = 0  # 很久没输入
-        orig = ctypes.windll.user32.GetLastInputInfo
-        try:
-            ctypes.windll.user32.GetLastInputInfo = lambda ptr: True
-            ctypes.windll.kernel32.GetTickCount = lambda: 200000
-            result = sched.tick()
-            assert result == "hi"
-            assert triggered == ["hi"]
-        finally:
-            ctypes.windll.user32.GetLastInputInfo = orig
+        # 同上：固定意图分类为低置信度，确保走规则引擎（idle_min=0 + weight=1.0
+        # 必然命中），避免清晨(morning)时段 morning_first 抢先返回其它文案导致断言失败。
+        monkeypatch.setattr(
+            "core.perception.proactive.classify_intent",
+            lambda **kw: {"intent": "work", "scenario": "chat_idle", "confidence": 0.0, "reason": "test"},
+        )
+        # 空闲足够长（规则 idle_min=0 无下限），不依赖 ctypes mock
+        sched._last_conversation = time.time() - 200
+        result = sched.tick()
+        assert result == "hi"
+        assert triggered == ["hi"]
 
     def test_enable_disable(self):
         sched = ProactiveScheduler()
