@@ -160,6 +160,7 @@ class MemorySnapshotManager:
                 "memories.recent": self._ctx.read_memory,
                 "memories.today": self._ctx.read_today,
                 "memories.longterm": self._ctx.read_longterm,
+                "memories.facts": self._ctx.read_facts,
             }
             reader = reader_map.get(key)
             if reader:
