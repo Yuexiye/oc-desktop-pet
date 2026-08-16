@@ -65,6 +65,11 @@ class MissionManager:
                     len(self._pool.active))
 
     def stop(self) -> None:
+        # 退订事件总线：防止关闭后全局注册表累积 + 回调已销毁实例（B2-2）
+        try:
+            self._tracker.unsubscribe()
+        except Exception:
+            logger.debug("mission tracker unsubscribe failed", exc_info=True)
         self._save_state()
 
     # -------------------------------------------------------------- 查询/刷新
@@ -79,6 +84,16 @@ class MissionManager:
                 (m, self._pool.get_progress(m.id))
                 for m in self._pool.active_missions()
             ]
+
+    def owns_mission(self, mission_id: str) -> bool:
+        """该 mission_id 是否属于本实例的任务池（多桌宠事件隔离用）"""
+        if not mission_id:
+            return False
+        try:
+            with self._lock:
+                return self._pool.get_mission(mission_id) is not None
+        except Exception:
+            return False
 
     # -------------------------------------------------------------- 盲盒
     def open_gacha(self, pool: Optional[GachaPool] = None,

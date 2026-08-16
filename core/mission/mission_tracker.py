@@ -45,11 +45,25 @@ class MissionTracker:
         self._pool = pool
         self._grantor = grantor
         self._lock = threading.RLock()
+        self._subscribers: dict[str, callable] = {}  # evt -> handler（供 unsubscribe）
 
     # -------------------------------------------------------------- 订阅
     def subscribe(self) -> None:
+        if self._subscribers:
+            return  # 幂等：已订阅不重复注册（防多开累积）
         for evt in self.EVENT_TO_CONDITION:
-            EventBus.on(evt, self._handler_for(evt))
+            handler = self._handler_for(evt)
+            self._subscribers[evt] = handler
+            EventBus.on(evt, handler)
+
+    def unsubscribe(self) -> None:
+        """取消全部订阅（关闭/stop 时调用，防止全局注册表累积 + 回调已销毁实例）。"""
+        for evt, handler in list(self._subscribers.items()):
+            try:
+                EventBus.off(evt, handler)
+            except Exception:
+                logger.debug("EventBus.off 失败: %s", evt, exc_info=True)
+        self._subscribers.clear()
 
     def _handler_for(self, evt: str):
         def _h(**data):

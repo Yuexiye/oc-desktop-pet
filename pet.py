@@ -722,7 +722,11 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
                 from core.mission.mission_manager import MissionManager
                 self._mission_mgr = MissionManager(save_mgr=save_mgr, state_mgr=state_mgr)
                 self._mission_mgr.start()
-                EventBus.on("mission_completed", self._on_mission_completed_bubble)
+                # 保存 handler 引用，closeEvent 时 off() 退订（防止全局注册表累积、
+                # 多桌宠串扰、回调持有已销毁实例）
+                self._mission_completed_handler = self._on_mission_completed_bubble
+                EventBus.on("mission_completed", self._mission_completed_handler)
+                self._mission_subscribed = True
 
                 # 解耦升级事件：把"升级"钩子接到事件总线（延迟发射，避免奖励结算重入 add_exp 递归）
                 save_mgr.on_level_up = self._emit_level_up
@@ -2131,6 +2135,19 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
                 save_mgr.save_to_disk()
             except Exception:
                 logger.exception("save_to_disk failed on close")
+
+        # ── B2-2: 任务系统退订事件总线（防止多宠/反复开关累积订阅、回调已销毁实例）──
+        try:
+            if getattr(self, '_mission_subscribed', False):
+                from core.event_bus import EventBus
+                handler = getattr(self, '_mission_completed_handler', None)
+                if handler is not None:
+                    EventBus.off("mission_completed", handler)
+                self._mission_subscribed = False
+            if getattr(self, '_mission_mgr', None) is not None:
+                self._mission_mgr.stop()
+        except Exception:
+            logger.exception("mission unsubscribe failed on close")
 
         if hasattr(self, '_tray'):
             try:

@@ -201,7 +201,19 @@ class NurturingMixin:
         （multi_pet_event -> mission_tracker -> mission_completed），而这里会创建
         QTimer(self) 并 start——QTimer 必须在主线程创建/启动。跨线程调用走
         mission_bubble_signal 绕回主线程（与 _show_bubble 同模式）。
+
+        多桌宠隔离：mission_completed 是全局事件，A 宠任务完成也会广播给所有宠。
+        这里校验 mission_id 是否属于本实例的 MissionManager（自己的任务池），
+        不是自己的任务不弹气泡——避免 A 宠完成触发所有宠气泡。
         """
+        # 归属校验：仅响应本实例任务池里的任务
+        mgr = getattr(self, "_mission_mgr", None)
+        if mgr is not None:
+            try:
+                if mission_id and not mgr.owns_mission(mission_id):
+                    return
+            except Exception:
+                pass
         from PySide6.QtCore import QThread
         if QThread.currentThread() is not self.thread():
             self.mission_bubble_signal.emit(str(mission_id), str(name), rewards)
