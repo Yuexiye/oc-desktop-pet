@@ -12,6 +12,7 @@
 import json
 import logging
 import os
+import re
 import shutil
 import zipfile
 from pathlib import Path
@@ -249,6 +250,11 @@ class CharacterPackageManager:
                         )
 
                 agent_id = manifest.agent_id
+                # 防 zip-slip：agent_id 白名单 [A-Za-z0-9_-]，杜绝 "../x" 越界写
+                if not agent_id or not re.fullmatch(r"[A-Za-z0-9_-]+", agent_id):
+                    raise PackageValidationError(
+                        f"非法 agent_id: {agent_id!r}（仅允许字母/数字/下划线/连字符）"
+                    )
                 install_target = target_dir / agent_id
 
                 # 版本兼容性检查
@@ -267,6 +273,16 @@ class CharacterPackageManager:
                         )
                     logger.info("覆盖已有角色: %s", agent_id)
                     shutil.rmtree(install_target)
+
+                # 防 zip-slip：解压前校验每个成员路径落在 install_target 内，
+                # 拒绝 "../"、绝对路径、符号链接逃逸等越界成员
+                target_resolved = install_target.resolve()
+                for member in zf.infolist():
+                    member_path = (install_target / member.filename).resolve()
+                    if not member_path.is_relative_to(target_resolved):
+                        raise PackageValidationError(
+                            f"角色包包含越界路径: {member.filename}"
+                        )
 
                 # 解压所有文件
                 zf.extractall(install_target)
