@@ -150,6 +150,10 @@ def _make_scheduler(foreground_category="development", fg_min=120.0,
                                    activity_tracker=at)
     scheduler._last_conversation = time.time() - conv_idle_min * 60
     scheduler._cooldown_until = 0.0  # 无冷却
+    # 全屏检测依赖真实前台窗口（ctypes），测试环境可能恰逢全屏窗口导致
+    # tick 提前返回 None——这些测试验证意图/规则触发，与全屏无关，固定放行
+    # （与 test_p6_proactive_advanced 的 mock 模式一致）。
+    scheduler._is_fullscreen = lambda: False
     return scheduler, fw, at
 
 

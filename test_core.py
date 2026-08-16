@@ -163,6 +163,10 @@ class TestProactiveScheduler:
         )
         # 空闲足够长（规则 idle_min=0 无下限），不依赖 ctypes mock
         sched._last_conversation = time.time() - 200
+        # 全屏检测依赖真实前台窗口（ctypes），测试环境可能恰逢全屏窗口导致
+        # tick 提前返回 None——本测试验证规则命中，与全屏无关，固定放行
+        # （与 test_p6_proactive_advanced 的 mock 模式一致）。
+        sched._is_fullscreen = lambda: False
         result = sched.tick()
         assert result == "hi"
         assert triggered == ["hi"]
