@@ -1233,37 +1233,29 @@ class SettingsDialog(QDialog):
         return re.sub(r"\s{2,}\[[^\]]+\]\s*$", "", text).strip()
 
     def _save_env(self):
-        from env_config import ENV_PATH
-        lines = [
-            "# OC Desktop Pet - API 配置",
-            "# 留空则回退到 Hanako 的默认配置",
-            "",
-            "# LLM",
-            f"LLM_PROVIDER={self.llm_provider_select.currentData() or ''}",
-            f"LLM_BASE_URL={self.llm_url.text().strip()}",
-            f"LLM_API_KEY={self.llm_key.text().strip()}",
-            f"LLM_MODEL={self._strip_provider_suffix(self.llm_model.currentText())}",
-            "",
-            "# TTS API",
-            f"TTS_PROVIDER={self.tts_provider_select.currentData() or ''}",
-            f"TTS_BASE_URL={self.tts_url.text().strip()}",
-            f"TTS_API_KEY={self.tts_key.text().strip()}",
-            f"TTS_MODEL={self.tts_model.currentText().strip()}",
-            f"TTS_VOICE={self.tts_voice.currentText().strip()}",
-            "",
-            "# ASR API",
-            f"ASR_PROVIDER={self.asr_provider_select.currentData() or ''}",
-            f"ASR_BASE_URL={self.asr_url.text().strip()}",
-            f"ASR_API_KEY={self.asr_key.text().strip()}",
-            f"ASR_MODEL={self.asr_model.currentText().strip()}",
-            "",
-            "# Vision API（屏幕感知专用，留空用 LLM 配置）",
-            f"VISION_PROVIDER={self.vision_provider_select.currentData() or ''}",
-            f"VISION_BASE_URL={self.vision_url.text().strip()}",
-            f"VISION_API_KEY={self.vision_key.text().strip()}",
-            f"VISION_MODEL={self.vision_model.currentText().strip()}",
-        ]
-        ENV_PATH.write_text("\n".join(lines) + "\n", "utf-8")
+        # 合并式写入：保留 .env 中未在对话框里的键（HANAKO_*/PHONE_*/OC_PET_* 等），
+        # 只更新已知字段——整文件覆写会丢掉 PHONE_AUTH_TOKEN（认证降级）和
+        # OC_PET_COSYVOICE_DIR（cosyvoice 回退硬编码路径）等关键配置。
+        from env_config import update_env
+        update_env({
+            "LLM_PROVIDER": self.llm_provider_select.currentData() or "",
+            "LLM_BASE_URL": self.llm_url.text().strip(),
+            "LLM_API_KEY": self.llm_key.text().strip(),
+            "LLM_MODEL": self._strip_provider_suffix(self.llm_model.currentText()),
+            "TTS_PROVIDER": self.tts_provider_select.currentData() or "",
+            "TTS_BASE_URL": self.tts_url.text().strip(),
+            "TTS_API_KEY": self.tts_key.text().strip(),
+            "TTS_MODEL": self.tts_model.currentText().strip(),
+            "TTS_VOICE": self.tts_voice.currentText().strip(),
+            "ASR_PROVIDER": self.asr_provider_select.currentData() or "",
+            "ASR_BASE_URL": self.asr_url.text().strip(),
+            "ASR_API_KEY": self.asr_key.text().strip(),
+            "ASR_MODEL": self.asr_model.currentText().strip(),
+            "VISION_PROVIDER": self.vision_provider_select.currentData() or "",
+            "VISION_BASE_URL": self.vision_url.text().strip(),
+            "VISION_API_KEY": self.vision_key.text().strip(),
+            "VISION_MODEL": self.vision_model.currentText().strip(),
+        })
 
     # ── 保存 ──
 

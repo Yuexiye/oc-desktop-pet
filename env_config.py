@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -215,6 +216,74 @@ def get_vision_config() -> dict:
     return {}
 
 
+def update_env(updates: dict[str, str]) -> None:
+    """合并式更新 .env：保留未知键/注释/空行，仅更新或追加 updates 中的键。
+
+    原实现（save_env / settings_dialog._save_env）整文件覆写，只写对话框已知字段，
+    会丢掉 HANAKO_BASE_URL / HANAKO_API_TOKEN / HANAKO_TRANSPORT_MODE /
+    PHONE_RECEIVER_PORT / PHONE_AUTH_TOKEN / OC_PET_COSYVOICE_DIR /
+    FRAMEBAKER_PATH 等所有未知键。PHONE_AUTH_TOKEN 丢失会让 phone_receiver
+    空 token 直接放行（认证降级）；OC_PET_COSYVOICE_DIR 丢失会让 cosyvoice
+    回退硬编码路径。本函数改为：读原文件逐行保留，仅替换 updates 中的键，
+    新键追加到末尾，最后原子写回（tempfile + os.replace）。
+
+    Args:
+        updates: {KEY: value} 映射。value 为空字符串也照写（允许清空字段）。
+    """
+    lines: list[str] = []
+    if ENV_PATH.exists():
+        try:
+            lines = ENV_PATH.read_text("utf-8").splitlines()
+        except Exception as e:
+            logger.warning("读取 .env 失败（将按新配置重建）: %s", e)
+            lines = []
+
+    updated_keys = set(updates)
+    seen: set[str] = set()
+    out: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            out.append(line)  # 注释/空行/非法行原样保留
+            continue
+        key = stripped.partition("=")[0].strip()
+        if key in updated_keys:
+            if key not in seen:
+                out.append(f"{key}={updates[key]}")
+                seen.add(key)
+            # 重复键：旧值行丢弃（保留第一个新值位置）
+        else:
+            out.append(line)  # 未知键原样保留
+
+    # 追加尚未出现的更新键（新字段）
+    for key, value in updates.items():
+        if key not in seen:
+            out.append(f"{key}={value}")
+
+    try:
+        ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=str(ENV_PATH.parent), suffix=".env.tmp"
+        )
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                f.write("\n".join(out) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, ENV_PATH)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        logger.info("Saved .env config (%d keys updated)", len(updates))
+        # 重新加载
+        _load_env(force=True)
+    except Exception as e:
+        logger.error("Failed to save .env: %s", e)
+
+
 def save_env(
     llm_provider: str = "",
     llm_base_url: str = "",
@@ -231,50 +300,43 @@ def save_env(
     vision_api_key: str = "",
     vision_model: str = "",
 ):
-    """保存 API 配置到 .env 文件"""
-    lines = []
-    
+    """保存 API 配置到 .env 文件（合并式：保留未知键，仅更新已知键）"""
+    updates: dict[str, str] = {}
+
     # LLM
     if llm_provider:
-        lines.append(f"LLM_PROVIDER={llm_provider}")
+        updates["LLM_PROVIDER"] = llm_provider
     if llm_base_url:
-        lines.append(f"LLM_BASE_URL={llm_base_url}")
+        updates["LLM_BASE_URL"] = llm_base_url
     if llm_api_key:
-        lines.append(f"LLM_API_KEY={llm_api_key}")
+        updates["LLM_API_KEY"] = llm_api_key
     if llm_model:
-        lines.append(f"LLM_MODEL={llm_model}")
-    
+        updates["LLM_MODEL"] = llm_model
+
     # TTS
     if tts_base_url:
-        lines.append(f"TTS_BASE_URL={tts_base_url}")
+        updates["TTS_BASE_URL"] = tts_base_url
     if tts_api_key:
-        lines.append(f"TTS_API_KEY={tts_api_key}")
+        updates["TTS_API_KEY"] = tts_api_key
     if tts_model:
-        lines.append(f"TTS_MODEL={tts_model}")
+        updates["TTS_MODEL"] = tts_model
     if tts_voice:
-        lines.append(f"TTS_VOICE={tts_voice}")
-    
+        updates["TTS_VOICE"] = tts_voice
+
     # ASR
     if asr_base_url:
-        lines.append(f"ASR_BASE_URL={asr_base_url}")
+        updates["ASR_BASE_URL"] = asr_base_url
     if asr_api_key:
-        lines.append(f"ASR_API_KEY={asr_api_key}")
+        updates["ASR_API_KEY"] = asr_api_key
     if asr_model:
-        lines.append(f"ASR_MODEL={asr_model}")
-    
+        updates["ASR_MODEL"] = asr_model
+
     # Vision
     if vision_base_url:
-        lines.append(f"VISION_BASE_URL={vision_base_url}")
+        updates["VISION_BASE_URL"] = vision_base_url
     if vision_api_key:
-        lines.append(f"VISION_API_KEY={vision_api_key}")
+        updates["VISION_API_KEY"] = vision_api_key
     if vision_model:
-        lines.append(f"VISION_MODEL={vision_model}")
-    
-    # 写入文件
-    try:
-        ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        logger.info("Saved .env config")
-        # 重新加载
-        _load_env(force=True)
-    except Exception as e:
-        logger.error("Failed to save .env: %s", e)
+        updates["VISION_MODEL"] = vision_model
+
+    update_env(updates)
