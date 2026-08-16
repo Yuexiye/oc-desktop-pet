@@ -276,6 +276,10 @@ class PetSaveManager:
         直接加会让属性瞬间爆表，动画/状态机来不及响应。
         所以先堆到 pending_xxx，每个 tick 按 ratio 转正到主属性。
 
+        注意：运行时实际回流由 PetStateManager._drain_pending() 驱动
+        （本方法为兼容接口，仅自检调用）。两套行为已统一：pending 可正可负，
+        负值（伤害）同样按比例回流，浮点残留 <0.01 清零。
+
         Args:
             ratio: 每次回流比例，默认 0.1（即每 tick 转 10%）。
                    设 1.0 等价于"立刻全部转正"。
@@ -285,7 +289,10 @@ class PetSaveManager:
 
         for pending_field, main_field, max_field in _PENDING_TRANSFERS:
             pending = getattr(self.save, pending_field)
-            if pending <= 0:
+            # 正负都回流：负值（伤害/惩罚）同样按比例扣主属性；
+            # 浮点残留直接清零，避免永不收敛（与 PetStateManager._drain_pending 一致）
+            if abs(pending) < 0.01:
+                setattr(self.save, pending_field, 0.0)
                 continue
 
             # ratio=1.0 时一次性清空 pending

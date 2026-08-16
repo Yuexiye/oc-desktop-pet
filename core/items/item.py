@@ -5,7 +5,8 @@ Feeling/Health/Likability）+ `RealPrice` + `IsOverLoad` 防超模检测。
 
 核心约束：
 - 物品效果不直接加到属性，而是加到挂起池（pending_xxx），
-  由 PetSaveManager.store_take() 每 tick 回流到主属性。
+  由 PetStateManager._drain_pending() 每 tick 回流到主属性
+  （PetSaveManager.store_take() 仅为兼容接口，运行时无调用方）。
   这是 VPet 的"挂起池"设计——避免一次性大额属性变化导致动画/状态机
   来不及响应（一口吃撑）。
 - 价格必须通过 is_balanced() 检查，防止 MOD/插件注册超模物品。
@@ -261,12 +262,13 @@ def use_item(save: PetSave, item: Item) -> dict:
     """使用物品——把效果灌入挂起池，返回动画/摘要
 
     关键设计：效果加到 pending_xxx（不直接加到主属性）。
-    主属性回流由 PetSaveManager.store_take() 在 tick 里完成，
+    主属性回流由 PetStateManager._drain_pending() 在 tick 里完成
+    （PetSaveManager.store_take 仅为兼容接口，运行时无调用方），
     这样大量使用苹果不会瞬间把 hunger 顶满、动画/状态机来不及响应。
 
-    exp 例外：直接累加到 save.exp，不走挂起池。
-    因为经验值不会被 PetSaveManager 的 store_take 处理（它有自己的
-    add_exp 走升级检查），且经验通常累积不瞬时。
+    exp/energy 例外：直接累加，不走挂起池。
+    因为经验/精力不会被 PetStateManager 的挂起池处理（经验走 add_exp
+    升级检查、精力没有 pending_energy 字段），且经验/精力通常累积不瞬时。
 
     Returns:
         包含物品名/图标/动画/有效效果字典的摘要，UI 据此播放动画+飘字。
