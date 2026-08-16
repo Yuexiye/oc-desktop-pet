@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 class BubbleMixin:
     """气泡显示与 Hanako 状态呈现。"""
 
-    def _show_bubble(self, text: str, emotion: str = "neutral", priority: int = 0):
+    def _show_bubble(self, text: str, emotion: str = "neutral", priority: int = 0, duration_ms: int = 0):
         """显示消息气泡 —— 线程安全入口。
 
         MultiPetBridge 的 dispatcher 线程（pet_enter 事件 -> mission_tracker
@@ -33,13 +33,15 @@ class BubbleMixin:
             QObject::startTimer: Timers cannot be started from another thread
         比警告更糟的是定时器压根没起来，气泡就再也不会自动隐藏。
         所以这里先做线程判定，跨线程一律走信号绕回主线程。
+
+        duration_ms > 0 时覆盖默认时长（如缩放提示 1500ms 短气泡）。
         """
         if not text or not hasattr(self, 'bubble'):
             return
         if QThread.currentThread() is not self.thread():
             self.bubble_signal.emit(str(text), str(emotion), int(priority))
             return
-        self._show_bubble_impl(text, emotion, priority)
+        self._show_bubble_impl(text, emotion, priority, duration_ms)
 
     def _bubble_duration(self, text: str) -> int:
         """根据文本长度计算气泡显示时长（base 10s + 字数系数，封顶 30s）。"""
@@ -48,22 +50,25 @@ class BubbleMixin:
         extra = int(n / 8) * 1000   # 每 8 字加 1s
         return min(base + extra, 30000)
 
-    def _show_bubble_impl(self, text: str, emotion: str = "neutral", priority: int = 0):
-        """气泡实现体（仅限主线程调用；相同内容不重复刷新，高优先级不被低优先级覆盖）"""
+    def _show_bubble_impl(self, text: str, emotion: str = "neutral", priority: int = 0, duration_ms: int = 0):
+        """气泡实现体（仅限主线程调用；相同内容不重复刷新，高优先级不被低优先级覆盖）
+
+        duration_ms > 0 时覆盖默认时长（如缩放提示短气泡）。
+        """
         if not text or not hasattr(self, 'bubble'):
             return
         # P0-2: 去重逻辑——2 秒内相同文本只打印一次日志
         now = time.time()
         if text == getattr(self, '_last_bubble_text', '') and (now - getattr(self, '_last_bubble_time', 0)) < 2.0:
             logger.debug("Bubble dedupe: same text within 2s, skipping log")
-            self._bubble_timer.start(self._bubble_duration(text))  # 只续期
+            self._bubble_timer.start(duration_ms if duration_ms > 0 else self._bubble_duration(text))  # 只续期
             return
         self._last_bubble_text = text
         self._last_bubble_time = now
         # 节流：相同内容且气泡可见时不重复设置
         if text == self._bubble_message and self.bubble.isVisible():
             logger.debug("Bubble throttle: same text still visible")
-            self._bubble_timer.start(self._bubble_duration(text))  # 只续期
+            self._bubble_timer.start(duration_ms if duration_ms > 0 else self._bubble_duration(text))  # 只续期
             return
         # 高优先级正在显示时，低优先级先排队
         if self.bubble.isVisible() and self._bubble_priority > priority:
@@ -80,7 +85,7 @@ class BubbleMixin:
             self._reposition_bubble()
             self.bubble.show()
             self.bubble.raise_()
-            self._bubble_timer.start(self._bubble_duration(text))
+            self._bubble_timer.start(duration_ms if duration_ms > 0 else self._bubble_duration(text))
         except Exception:
             logger.exception("Show bubble failed")
 

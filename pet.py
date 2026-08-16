@@ -1190,10 +1190,11 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
                 # 旧逻辑：仅当 bubble 不可见才弹 → 10 秒对话气泡存在期间任何缩放都不会更新。
                 # 用户反馈"滚轮缩放一直显示 65%"就是这个 bug。
                 # 仍保留 1.2s 节流防快速重复刷屏（同一缩放操作只弹一次）。
+                # 缩放提示是轻量反馈，1500ms 就消失（用户反馈"提示存在太久"）。
                 _now = time.time()
                 if (_now - getattr(self, "_last_zoom_bubble_ts", 0) > 1.2
                         and not getattr(self, "_is_thinking", False)):
-                    self._show_bubble(f"🔍 {int(new_scale*100)}%", emotion="neutral", priority=0)
+                    self._show_bubble(f"🔍 {int(new_scale*100)}%", emotion="neutral", priority=0, duration_ms=1500)
                     self._last_zoom_bubble_ts = _now
             event.accept()
         except Exception as e:
