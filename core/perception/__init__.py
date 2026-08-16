@@ -49,6 +49,7 @@ from .screen import (
     SCREENSHOT_PROCESS_BLACKLIST,
     SCREENSHOT_TITLE_BLACKLIST,
     _is_screen_blacklisted,
+    build_vision_prompt,
 )
 
 # ── 主动对话调度 ──
@@ -78,6 +79,7 @@ __all__ = [
     "SCREEN_EMOTION_MAP",
     "SCREENSHOT_PROCESS_BLACKLIST",
     "SCREENSHOT_TITLE_BLACKLIST",
+    "build_vision_prompt",
     # 主动对话
     "ProactiveScheduler",
     "DEFAULT_RULES",

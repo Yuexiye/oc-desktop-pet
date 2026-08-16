@@ -20,6 +20,7 @@ from PySide6.QtCore import QTimer
 
 from config import EXPRESSION_MAP, get_transition_style
 from core.event_bus import EventBus
+from core.perception.scenarios import get_bubble_emotion_for_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -184,19 +185,29 @@ class BehaviorMixin:
     # ── 主动对话 ──
 
     def _on_proactive_trigger(self, prompt_text: str):
-        """Proactive 调度器触发 -> 发送给模型生成回复 + TTS"""
+        """Proactive 调度器触发 -> 直接弹场景文案气泡 + 动作（P5 即时化）。
+
+        P5 优化：proactive 文案本身就是桌宠要说的话，直接显示即可获得"即时感"，
+        不再走 engine.send 等 2-5 秒 LLM 往返，也不把"[主动对话触发]…"指令包装
+        以 user 身份写进 Hanako 会话历史（长期污染记忆）。LLM 不再参与本路径。
+        """
         logger.info("Proactive trigger: %s", prompt_text)
         EventBus.emit("proactive_triggered", target="scheduler")
 
-        # 将触发条件发送给对话引擎，让模型生成符合人格的回复
-        if self._engine:
-            # 包装成用户输入，让模型生成回复
-            proactive_prompt = f"[主动对话触发] {prompt_text}\n\n请根据你的人格设定，生成一段简短的、有个性的回应。不要复述触发消息，而是自然地表达你的想法。"
-            self._engine.send(proactive_prompt, character=self._current_char, source="proactive")
+        # 场景文案 → 气泡情绪（不依赖 LLM 返回的 emotion 标签）
+        emotion = get_bubble_emotion_for_prompt(prompt_text)
 
-            # 显示思考中气泡
-            self._show_bubble("⏳ 思考中...", emotion="thinking")
-            self._is_thinking = True
+        # 直接显示场景文案气泡（prompt_text 即要显示的话，无需 LLM）
+        self._show_bubble(prompt_text, emotion=emotion)
+
+        # 记录对话空闲计时：主动对话也算一次"对话"，让 proactive 冷却正常
+        try:
+            if getattr(self, "_perception", None) is not None:
+                proactive = getattr(self._perception, "proactive", None)
+                if proactive is not None:
+                    proactive.mark_conversation()
+        except Exception:
+            pass
 
         # 触发动画：主动动作是用户的明确意图（proactive 调度器判定后触发），
         # 必须【无视 emotion 冷却】强制播放挥手/比心——否则屏幕感知反复推 happy
@@ -226,13 +237,13 @@ class BehaviorMixin:
                 # 触发"动作正在播"超时计时（3s 后自动回 idle）
                 if hasattr(renderer, "_note_motion_started"):
                     renderer._note_motion_started("proactive", is_idle=False)
-                # 标记表情同步（让人物表情也跟着变化）
+                # 标记表情同步（让人物表情也跟着场景情绪变化）
                 if hasattr(renderer, "set_emotion_expression_only"):
-                    renderer.set_emotion_expression_only("happy")
+                    renderer.set_emotion_expression_only(emotion)
         except Exception as e:
             logger.debug("Proactive 主动动作触发失败: %s", e)
-        # 同时记录 sprite 路径的 _anim_seq（保持向后兼容）
-        self._set_anim_seq("waving", emotion="happy", style=get_transition_style("happy"))
+        # 同时记录 sprite 路径的 _anim_seq（保持向后兼容；动作沿用 waving）
+        self._set_anim_seq("waving", emotion=emotion, style=get_transition_style(emotion))
 
     # ── 鼠标交互反应 ──
 

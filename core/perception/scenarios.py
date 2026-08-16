@@ -84,6 +84,35 @@ SCENARIO_REACTIONS: dict[str, list[dict]] = {
     ],
 }
 
+# ── 场景 → 气泡情绪映射（P5 主动对话即时化）────────────────
+# proactive 触发文案直接弹气泡时使用（不再依赖 LLM 返回的 emotion 标签）。
+# 深夜加班/长时工作 → 思考/关心；游戏/看视频 → 开心；频繁切窗 → 惊讶。
+SCENARIO_BUBBLE_EMOTION: dict[str, str] = {
+    "late_night_work": "thinking",
+    "long_work_break": "thinking",
+    "gaming": "happy",
+    "video_watching": "happy",
+    "window_switch": "surprised",
+}
+
+
+def get_bubble_emotion_for_prompt(prompt_text: str) -> str:
+    """根据 proactive 触发文案反查场景，返回气泡情绪。
+
+    文案可能来自 SCENARIO_REACTIONS（意图分类）或 DEFAULT_RULES（规则引擎），
+    用包含关系做容错匹配（规则文案通常是场景文案的子串/前缀）。
+    未命中任何场景时返回中性情绪 "neutral"。
+    """
+    if not prompt_text:
+        return "neutral"
+    for scenario, pool in SCENARIO_REACTIONS.items():
+        for item in pool:
+            text = item.get("text", "")
+            if text and (prompt_text in text or text in prompt_text):
+                return SCENARIO_BUBBLE_EMOTION.get(scenario, "neutral")
+    return "neutral"
+
+
 # 场景 → 是否适合在用户"打字中"触发（打扰成本高）
 SCENARIO_DISRUPTIVE: dict[str, bool] = {
     "late_night_work": True,     # 深夜提醒值得打扰

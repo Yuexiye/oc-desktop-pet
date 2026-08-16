@@ -55,6 +55,22 @@ VISION_PROMPT = """分析用户当前屏幕内容，以 JSON 格式返回。尽�
 - 如果屏幕包含敏感信息，返回 {"activity": "private", "category": "other", "summary": "处理私密信息", "confidence": 0.9}
 - 只返回 JSON，不要其他文字"""
 
+
+def build_vision_prompt(app: str = "", title: str = "") -> str:
+    """构造发给视觉模型的提示词（P5：拼接窗口名提示）。
+
+    app/title 至少有一个时，在 JSON 格式要求之后追加 [当前窗口] 提示，让视觉
+    模型优先结合窗口名判断用户在做什么（避免多开/相似界面认错）；窗口名与截图
+    内容矛盾时以窗口名为准。无窗口名时原样返回 VISION_PROMPT（不影响格式约束）。
+    """
+    if not app and not title:
+        return VISION_PROMPT
+    window_hint = (
+        f"\n[当前窗口] 进程={app or '未知'}, 标题={title or '未知'}\n"
+        "规则：优先结合窗口名判断用户在做什么；窗口名与截图内容矛盾时以窗口名为准，并说明判断依据。"
+    )
+    return VISION_PROMPT + window_hint
+
 # 屏幕内容→情绪映射
 SCREEN_EMOTION_MAP = {
     # 关键词 → (情绪, 强度)
@@ -456,6 +472,9 @@ class ScreenPerception:
                 self._vision_skip_logged = True
             return None
 
+        # P5: 窗口名拼接进视觉提示（视觉模型优先结合窗口名判断，避免多开/相似界面认错）
+        vision_text = build_vision_prompt(app, title)
+
         try:
             resp = requests.post(
                 api_url,
@@ -463,7 +482,7 @@ class ScreenPerception:
                 json={
                     "model": model,
                     "messages": [{"role": "user", "content": [
-                        {"type": "text", "text": VISION_PROMPT},
+                        {"type": "text", "text": vision_text},
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
                     ]}],
                     "max_tokens": 1000,

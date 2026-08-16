@@ -268,18 +268,11 @@ class HanakoPetAdapter:
         - user 消息：走 Hanako session（工具、记忆、多轮）
         - proactive/idle 消息：直接走 LLM API（轻量快速，不占 session）
         """
-        # 主动消息：优先走 Hanako（与用户消息共用有效凭证），
-        # Hanako 不可用再回退到直接 LLM。这样不会依赖 .env 里可能过期的直连 token。
+        # 主动消息：不走 Hanako session（避免"[主动对话触发]"指令包装以 user 身份
+        # 写进 Hanako 会话历史污染记忆）。直接走本地 LLM 直连——chat_direct 已有
+        # [proactive]/[idle] 前缀机制区分说话人。任务一已保证 proactive 触发直接弹
+        # 文案，即使 chat_direct 因未配置模型不可用，返回 ("…", "neutral") 也可接受。
         if source in ("proactive", "idle"):
-            if self.transport_mode != "direct" and self._session_manager is not None:
-                try:
-                    return self.chat_via_hanako(message, False, extra_context, tools=None, source=source)
-                except HanakoUnavailableBeforeSend:
-                    if self.transport_mode == "hanako_only":
-                        return "…", "neutral"
-                    # prefer_hanako → 回退直接 LLM
-                except HanakoUnavailableAfterSend:
-                    return "…", "neutral"
             return self.chat_direct(message, False, extra_context, tools=None, source=source)
 
         # direct 模式：跳过 Hanako
