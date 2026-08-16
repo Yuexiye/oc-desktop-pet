@@ -71,11 +71,9 @@ class ChatMixin:
                     # 截停 TTS：QMediaPlayer 是 COM 组件，不能在后台线程直调 stop()
                     # （会触发 0x8001010D），经 tts_stop_signal 绕回主线程执行。
                     self.tts_stop_signal.emit()
-                    self._is_thinking = True
-                    self._pending_chat = True
-                    self._pending_user_msg = text
-                    # P2 关系：记录语音话题到陪伴记忆
-                    self._record_topic(text)
+                    # 聊天状态（_is_thinking/_pending_*/_record_topic）也经信号绕回
+                    # 主线程执行，避免后台线程直写实例属性造成主线程读到中间态（B3-2）。
+                    self.chat_state_signal.emit(text)
                 else:
                     self.voice_status_signal.emit("没听清...")
 

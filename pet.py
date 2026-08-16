@@ -89,6 +89,9 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
     # 跨线程截停 TTS：ASR 后台线程不得直调 _tts_player（QMediaPlayer 是 COM 组件，
     # 跨线程调用会触发 RPC_E_SERVERCALL_RETRYLATER 0x8001010D），必须经信号绕回主线程。
     tts_stop_signal = Signal()  # 请求在主线程停止 TTS 播放
+    # 语音识别完成后（后台线程）的状态写入：_is_thinking/_pending_* 与
+    # _record_topic 一并经信号挪到主线程执行，避免主线程同帧读到中间态（B3-2）。
+    chat_state_signal = Signal(str)  # 语音输入文本 -> 主线程更新聊天状态
     screen_emotion_signal = Signal(str, float)  # emotion, intensity
     screen_proactive_signal = Signal(str)  # prompt
     screen_update_signal = Signal(str)  # screen analysis update (description)
@@ -414,6 +417,7 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self.engine_status_signal.connect(self._do_engine_status)
         self.voice_status_signal.connect(self._do_voice_status)
         self.tts_stop_signal.connect(self._do_tts_stop)
+        self.chat_state_signal.connect(self._do_chat_state)
         self.screen_emotion_signal.connect(self._do_screen_emotion)
         self.screen_proactive_signal.connect(self._do_screen_proactive)
         self.screen_update_signal.connect(self._do_screen_update)
@@ -1933,6 +1937,24 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
                 player.stop()
         except Exception as e:
             logger.warning("_do_tts_stop error: %s", e)
+
+    def _do_chat_state(self, text: str):
+        """主线程槽：语音识别完成后更新聊天状态（由 chat_state_signal 绕回主线程）。
+
+        原实现在 _do_asr 后台线程直写 _is_thinking/_pending_chat/_pending_user_msg
+        并调 _record_topic（内部写文件/列表），主线程同帧可能读到中间态。
+        这里统一在主线程更新状态 + 记录话题，语义与文字输入 _send_message 一致。
+        """
+        if not text:
+            return
+        self._is_thinking = True
+        self._pending_chat = True
+        self._pending_user_msg = text
+        # P2 关系：记录语音话题到陪伴记忆（主线程执行，避免后台写文件/列表）
+        try:
+            self._record_topic(text)
+        except Exception as e:
+            logger.warning("_do_chat_state record_topic error: %s", e)
 
     # ── M4: 工具进度 + 新对话入口 ──
 
