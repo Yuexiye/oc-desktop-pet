@@ -88,7 +88,10 @@ _WORKER = Path(__file__).with_name("cosyvoice_worker.py")
 
 # 首次加载实测 ~48s（import 17s + 模型 31s），冷启动留足余量
 LOAD_TIMEOUT = 600.0
-SYNTH_TIMEOUT = 180.0
+# 合成超时：CPU 环境下单句实测 60-150s（无 CUDA 时），180s 偏紧——长句/低配
+# 机器可能误超时，导致 worker 仍在合成但客户端已放弃（脏队列假死）。放宽到 300s，
+# 与 LOAD_TIMEOUT 的“给 CPU 环境留足余量”策略一致。
+SYNTH_TIMEOUT = 300.0
 
 
 def _project_venv_python() -> Optional[str]:
@@ -294,6 +297,21 @@ class CosyVoiceProvider(TTSProvider):
         except Exception:
             pass
 
+    def _drain_replies(self) -> int:
+        """清空响应队列，返回丢弃条数。
+
+        超时/异常后调用：把 worker 迟到的陈旧响应全部丢弃，避免“超时后下一条
+        请求配到旧响应”的脏队列问题（配错 id 后永久假死）。
+        """
+        drained = 0
+        while True:
+            try:
+                self._replies.get_nowait()
+                drained += 1
+            except queue.Empty:
+                break
+        return drained
+
     def _request(self, payload: dict, timeout: float) -> Optional[dict]:
         """发一条请求并等待同 id 响应；失败返回 None。"""
         with self._lock:
@@ -316,11 +334,21 @@ class CosyVoiceProvider(TTSProvider):
                 except queue.Empty:
                     logger.warning("CosyVoice worker 响应超时 (cmd=%s, %.0fs)",
                                    payload.get("cmd"), timeout)
+                    # 超时后必须清空响应队列 + 置 _loaded=False：
+                    # 1) 陈旧响应（本次请求的超时响应）若留着，会配给下一条请求的
+                    #    同 id 检查，导致“拿旧响应当新结果”甚至假死；
+                    # 2) 置 _loaded=False 让 is_ready 变 False，下次 synthesize 前
+                    #    preload 会重新 load/重启 worker，而不是继续用脏状态。
+                    self._loaded = False
+                    _drained = self._drain_replies()
+                    if _drained:
+                        logger.warning("CosyVoice 超时后丢弃 %d 条陈旧响应", _drained)
                     return None
                 if msg is None:                      # 子进程死了
                     if not self._closing:
                         logger.warning("CosyVoice worker 意外退出")
                     self._loaded = False
+                    self._drain_replies()
                     return None
                 if msg.get("id") == rid:
                     return msg
