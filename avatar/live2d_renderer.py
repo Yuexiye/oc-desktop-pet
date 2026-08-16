@@ -718,6 +718,11 @@ class Live2DRenderer(AvatarRenderer):
                 self._update_mouth()
             except Exception as e:
                 logger.warning("Live2DRenderer.mouth 异常: %s", e)
+            # P4: 程序化自主动作层（情绪表情 + 头发微动）
+            try:
+                self._update_procedural_emotion()
+            except Exception as e:
+                logger.warning("Live2DRenderer.procedural 异常: %s", e)
 
         try:
             self._model.Draw()
@@ -884,6 +889,72 @@ class Live2DRenderer(AvatarRenderer):
             val = 0.0
         try:
             self._model.SetParameterValue(P.ParamMouthOpenY, val, 1.0)
+        except Exception:
+            pass
+
+    # ── P4: 程序化自主动作层（让 Live2D 真正"活"，不依赖 motion 文件）──
+
+    def _update_procedural_emotion(self) -> None:
+        """每帧程序化驱动情绪表情 + 头发微动（叠加在 motion 之上）。
+
+        背景：miku 模型的 7 个 motion 文件曾全是同一份占位（只动 5 个数字参数），
+        眼睛/嘴巴/眉毛/头发从没被驱动过——角色像静态图。
+        这里在 motion 更新之后、Draw 之前，用 StandardParams 实时驱动：
+          - 情绪表情：眯眼(EyeSmile)/皱眉(BrowAngle)/嘴形(MouthForm) 组合
+          - 头发微动：ParamHairFront/Side 慢正弦（轻盈感）
+        weight 用 0.6 与 motion 混合（motion 为主、此层为辅），避免打架。
+        情绪值经 _proc_cur 平滑插值，避免瞬跳。
+        """
+        if not self._model:
+            return
+        P = self._live2d.StandardParams
+        try:
+            # 情绪目标值（中性 = 全 0）
+            emo = getattr(self, "_current_emotion", "neutral") or "neutral"
+            targets = {
+                "happy":     {"smile": 0.6, "brow": 0.3, "mouth": 0.4},
+                "sad":       {"smile": -0.3, "brow": -0.5, "mouth": -0.4},
+                "angry":     {"smile": -0.2, "brow": -0.7, "mouth": -0.3},
+                "surprised": {"smile": 0.2, "brow": 0.6, "mouth": 0.6},
+                "thinking":  {"smile": 0.1, "brow": 0.2, "mouth": -0.2},
+                "cute":      {"smile": 0.5, "brow": 0.2, "mouth": 0.3},
+                "neutral":   {"smile": 0.0, "brow": 0.0, "mouth": 0.0},
+            }
+            t = targets.get(emo, targets["neutral"])
+            # 平滑插值
+            s = 0.08
+            cur = getattr(self, "_proc_cur", {"smile": 0.0, "brow": 0.0, "mouth": 0.0})
+            for k in ("smile", "brow", "mouth"):
+                cur[k] += (t[k] - cur[k]) * s
+            self._proc_cur = cur
+
+            # 眯眼（微笑时眼睛变细）
+            try:
+                self._model.SetParameterValue(P.ParamEyeLSmile, cur["smile"], 0.6)
+                self._model.SetParameterValue(P.ParamEyeRSmile, cur["smile"], 0.6)
+            except Exception:
+                pass
+            # 眉毛角度（生气皱眉负 / 惊讶挑眉正）
+            try:
+                self._model.SetParameterValue(P.ParamBrowLAngle, cur["brow"], 0.6)
+                self._model.SetParameterValue(P.ParamBrowRAngle, cur["brow"], 0.6)
+                self._model.SetParameterValue(P.ParamBrowLForm, cur["brow"] * 0.5, 0.6)
+                self._model.SetParameterValue(P.ParamBrowRForm, cur["brow"] * 0.5, 0.6)
+            except Exception:
+                pass
+            # 嘴形（笑 / 撇嘴）
+            try:
+                self._model.SetParameterValue(P.ParamMouthForm, cur["mouth"], 0.6)
+            except Exception:
+                pass
+            # 头发微动：慢正弦（轻盈呼吸感）
+            now = time.monotonic()
+            hair = math.sin(now * 0.8) * 3.0
+            try:
+                self._model.SetParameterValue(P.ParamHairFront, hair * 0.6, 0.5)
+                self._model.SetParameterValue(P.ParamHairSide, hair * 0.4, 0.5)
+            except Exception:
+                pass
         except Exception:
             pass
 
