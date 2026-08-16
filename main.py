@@ -186,6 +186,20 @@ def main():
 
     manager.launch_all()
 
+    # ── 业务就绪哨兵：通知 launcher 子进程“业务已就绪”。──
+    # launcher 据此区分“启动期崩溃”（import/初始化期可能 30s+，此期崩溃不算
+    # 健康运行）与“健康运行后偶发崩溃”，避免启动期崩溃被误判为健康而无限重启。
+    try:
+        from pathlib import Path
+        import time as _time
+        _logs_dir = Path(__file__).resolve().parent / "logs"
+        _logs_dir.mkdir(exist_ok=True)
+        _ready_flag = _logs_dir / f"ready_{os.getpid()}.flag"
+        _ready_flag.write_text(_time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
+        logging.getLogger(__name__).info("业务就绪哨兵已写入: %s", _ready_flag)
+    except Exception as _e:
+        logging.getLogger(__name__).warning("写入业务就绪哨兵失败（不影响运行）: %s", _e)
+
     rc = app.exec()
     # 退出前 flush 防抖写盘，避免丢失最后一次位置保存
     try:

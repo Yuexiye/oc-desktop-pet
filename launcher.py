@@ -42,7 +42,24 @@ else:
 RESTART_DELAY = 3.0          # 崩溃后等待秒数再重启
 MAX_RESTARTS_PER_WINDOW = 20 # 时间窗内最多重启次数
 RESTART_WINDOW = 600.0       # 重启计数时间窗（秒，默认 10 分钟）
-HEALTHY_UPTIME = 30.0        # 运行超过此秒数视为健康，重置重启计数
+HEALTHY_UPTIME = 30.0        # 收到就绪哨兵后运行超过此秒数视为健康，重置重启计数
+READY_TIMEOUT = 120.0        # 子进程业务就绪超时（秒）：import/初始化超过此时间视为启动失败，kill
+READY_POLL_INTERVAL = 0.5    # 就绪哨兵轮询间隔（秒）
+
+
+def _ready_flag_path(pid: int) -> Path:
+    """子进程业务就绪哨兵路径：logs/ready_<pid>.flag（由 main.py 在业务就绪后写入）。"""
+    return HERE / "logs" / f"ready_{pid}.flag"
+
+
+def _remove_ready_flag(pid: int) -> None:
+    """删除就绪哨兵（子进程退出后兜底清理，防残留）。"""
+    try:
+        flag = _ready_flag_path(pid)
+        if flag.exists():
+            flag.unlink()
+    except Exception:
+        pass
 
 
 def _resolve_python() -> str:
@@ -111,7 +128,30 @@ def main() -> int:
             time.sleep(RESTART_DELAY)
             continue
 
+        # ── 等待业务就绪哨兵（logs/ready_<pid>.flag）──
+        # 只有收到哨兵后才开始计 uptime。子进程 import/初始化期可能长达 30s+，
+        # 此期间崩溃属于“启动失败”，不能当作“健康运行后偶发崩溃”而重置重启计数
+        # （否则启动期反复崩溃会无限重启）。超过 READY_TIMEOUT 视为启动超时，kill。
+        child_pid = child.pid
+        ready_flag = _ready_flag_path(child_pid)
+        ready_time: "float | None" = None
+        launch_started = time.time()
+        while child.poll() is None:
+            if ready_flag.exists():
+                ready_time = time.time()
+                log.info("子进程业务就绪（pid=%s，启动耗时 %.1fs）",
+                         child_pid, ready_time - launch_started)
+                break
+            if time.time() - launch_started > READY_TIMEOUT:
+                log.error("子进程 %s 在 %ds 内未就绪，判定启动失败，强制终止",
+                          child_pid, int(READY_TIMEOUT))
+                child.kill()
+                break
+            time.sleep(READY_POLL_INTERVAL)
+
         exit_code = child.wait()
+        # 清理就绪哨兵（收到哨兵时已删一次；这里兜底防残留）
+        _remove_ready_flag(child_pid)
         if stopping:
             break
 
@@ -120,11 +160,16 @@ def main() -> int:
             return 0
 
         # 异常退出：记录时间，判断健康度
-        uptime = time.time() - now
+        if ready_time is not None:
+            uptime = time.time() - ready_time
+        else:
+            uptime = time.time() - launch_started
         restart_timestamps.append(time.time())
-        if uptime >= HEALTHY_UPTIME:
-            # 健康运行过一段时间才崩，重置计数（视为偶发）
+        if ready_time is not None and uptime >= HEALTHY_UPTIME:
+            # 收到过就绪哨兵且健康运行过一段时间才崩，视为偶发，重置计数
             restart_timestamps = restart_timestamps[-1:]
+        elif ready_time is None:
+            log.warning("子进程未发出业务就绪哨兵即退出（启动期崩溃），不重置重启计数")
 
         log.warning(
             "子进程异常退出（退出码 %s，运行 %.1fs）。%s 后自动复活…",
