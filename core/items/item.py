@@ -282,6 +282,12 @@ def use_item(save: PetSave, item: Item) -> dict:
     # ---- 经验直接累加 ----
     save.exp += item.effect_exp
 
+    # ---- 精力直接累加（与 exp 对齐）----
+    # 精力没有挂起池字段（pending_energy 不存在），且咖啡/能量饮料的
+    # effect_energy 必须真正生效——直接加到 save.energy 并夹紧到 [0, 100]。
+    # （原实现只在 effects 摘要里告知 UI，精力零变化：飘字 +30 实际没加。）
+    save.energy = max(0.0, min((save.energy or 0.0) + item.effect_energy, 100.0))
+
     # ---- 构造效果摘要（过滤 0 值，减小 payload）----
     effects = {
         k: v for k, v in {

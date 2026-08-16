@@ -108,6 +108,11 @@ class PetStateManager:
         with self._lock:
             s = self.save
             for attr, value in item_effects.items():
+                if attr == "energy":
+                    # energy 无挂起池字段（pending_energy 不存在），直接加主属性
+                    # 并夹紧到 [0, 100]（与 core/items/item.use_item 对齐）
+                    s.energy = max(0.0, min((s.energy or 0.0) + value, 100.0))
+                    continue
                 pending_attr = f"pending_{attr}"
                 if not hasattr(s, pending_attr):
                     logger.debug("ignore unknown attr: %s", attr)
