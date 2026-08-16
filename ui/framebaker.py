@@ -26,6 +26,9 @@ FRAMEBAKER_PATH = os.environ.get("FRAMEBAKER_PATH", "")  # 用户安装路径
 FRAMEBAKER_URL = "http://localhost:3000"  # 默认服务地址
 FRAMEBAKER_MCP_ENDPOINT = f"{FRAMEBAKER_URL}/mcp"
 
+# 本模块启动的 bun 子进程句柄（stop 时按 PID 定向终止，不误杀其他 bun）
+_framebaker_proc: "Optional[subprocess.Popen]" = None
+
 # 检查 FrameBaker 是否已安装
 def is_framebaker_installed() -> bool:
     """检查 FrameBaker 是否已安装并可用"""
@@ -50,17 +53,19 @@ def is_framebaker_installed() -> bool:
 # 启动 FrameBaker 服务
 def start_framebaker(detach: bool = True) -> bool:
     """启动 FrameBaker 开发服务器
-    
+
     Args:
         detach: True=后台启动，False=前台阻塞
     """
+    global _framebaker_proc
     if not is_framebaker_installed():
         logger.error("FrameBaker 未安装，请先设置 FRAMEBAKER_PATH 环境变量")
         return False
     try:
         cmd = ["bun", "dev"]
         if detach:
-            subprocess.Popen(
+            # 保存子进程句柄，stop 时按 PID 定向终止（B2-6）
+            _framebaker_proc = subprocess.Popen(
                 cmd,
                 cwd=FRAMEBAKER_PATH,
                 stdout=subprocess.DEVNULL,
@@ -76,15 +81,49 @@ def start_framebaker(detach: bool = True) -> bool:
 
 # 停止 FrameBaker 服务
 def stop_framebaker() -> bool:
-    """停止 FrameBaker 服务"""
+    """停止 FrameBaker 服务（定向终止：优先按 PID，其次按 cwd/命令行匹配）
+
+    原实现 `taskkill /F /IM bun.exe` 会杀掉机器上所有 bun 进程（B2-6）。
+    现在优先终止本模块启动并仍存活的进程；未跟踪时按 FRAMEBAKER_PATH 匹配
+    bun 进程的命令行，只停属于 FrameBaker 的那一个。
+    """
+    global _framebaker_proc
     try:
-        # 查找 bun 进程并终止
+        # 1) 优先按 PID 终止本模块启动的进程
+        proc = _framebaker_proc
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            logger.info("FrameBaker 已停止 (pid=%s)", proc.pid)
+            _framebaker_proc = None
+            return True
+        _framebaker_proc = None
+
+        # 2) 兜底：按 FRAMEBAKER_PATH 匹配 bun 进程的命令行（定向，不误杀）
+        if not FRAMEBAKER_PATH:
+            logger.warning("停止 FrameBaker 失败：FRAMEBAKER_PATH 未设置")
+            return False
         import platform
         if platform.system() == "Windows":
-            subprocess.run(["taskkill", "/F", "/IM", "bun.exe"], capture_output=True)
+            ps = (
+                "Get-CimInstance Win32_Process | "
+                f"Where-Object {{ $_.Name -eq 'bun.exe' -and $_.CommandLine -like '*{FRAMEBAKER_PATH}*' }} | "
+                "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+            )
+            subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True)
         else:
-            subprocess.run(["pkill", "-f", "bun dev"], capture_output=True)
-        logger.info("FrameBaker 已停止")
+            # macOS/Linux：pkill -f 匹配 bun 命令行中的 FRAMEBAKER_PATH
+            subprocess.run(["pkill", "-f", f"bun.*{FRAMEBAKER_PATH}"], capture_output=True)
+        logger.info("FrameBaker 已停止（按路径匹配）")
         return True
     except Exception as e:
         logger.warning("停止 FrameBaker 失败: %s", e)
