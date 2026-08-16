@@ -79,7 +79,8 @@ def test_switch_agent_clears_history():
     adapter = _make_adapter("ophelia")
     adapter._history.append({"role": "user", "content": "hi"})
     adapter.switch_agent("rebecca")
-    assert adapter._history == []
+    # _history 改为有界 deque（B2-7 并发安全），用长度断言
+    assert len(adapter._history) == 0
 
 
 # ── F3: per-agent session 保留（切回续聊不新建）──

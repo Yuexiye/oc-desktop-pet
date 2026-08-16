@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import collections
 import json
 import logging
 import re
@@ -87,8 +88,10 @@ class HanakoPetAdapter:
         # 构建 system prompt
         self._system_prompt = self._context.build_prompt()
 
-        # 会话历史(内存)
-        self._history: list[dict] = []
+        # 会话历史(内存)——有界 deque(maxlen=40)：append 原子（GIL），
+        # 消除原 list + 读改写裁剪（self._history = self._history[-40:]）在
+        # engine 后台线程与 idle_chatter 线程并发时的丢消息/交错问题（B2-7）。
+        self._history: "collections.deque[dict]" = collections.deque(maxlen=40)
 
         # 验证
         missing = self._context.validate()
@@ -190,8 +193,8 @@ class HanakoPetAdapter:
                 "content": extra_context,
             })
 
-        # 追加最近对话历史(最多 10 轮)
-        for turn in self._history[-10:]:
+        # 追加最近对话历史(最多 10 轮)——deque 不支持切片，先转 list
+        for turn in list(self._history)[-10:]:
             messages.append(turn)
 
         messages.append({"role": "user", "content": user_content})
@@ -405,12 +408,10 @@ class HanakoPetAdapter:
             logger.info("Reply truncated for bubble: %s", cleaned[:50])
 
         # Hanako 已经执行过 result.tool_calls，绝不能交给桌宠本地再执行一次。
-        # 同步本地 history（向后兼容）
+        # 同步本地 history（向后兼容）——deque(maxlen=40) 自动裁剪，无需读改写
         try:
             self._history.append({"role": "user", "content": message.strip()})
             self._history.append({"role": "assistant", "content": cleaned})
-            if len(self._history) > 40:
-                self._history = self._history[-40:]
         except Exception:
             pass
 
