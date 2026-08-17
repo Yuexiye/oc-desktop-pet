@@ -32,6 +32,7 @@ class WhisperLocalProvider(ASRProvider):
     _loaded = False
     _backend = "whisper"   # whisper | faster_whisper
     _MODEL_SIZE = "small"  # whisper 模型尺寸：base≈中文差, small≈可用, medium≈好（更重）
+    _has_cuda_result: Optional[bool] = None  # 模块级缓存：进程内 CUDA 可用性不变
 
     @classmethod
     def _resolve_model_size(cls) -> str:
@@ -100,11 +101,14 @@ class WhisperLocalProvider(ASRProvider):
 
     @staticmethod
     def _has_cuda() -> bool:
-        try:
-            import torch
-            return torch.cuda.is_available()
-        except Exception:
-            return False
+        # 结果缓存到模块级：torch import 很重（秒级），且进程内 CUDA 可用性不会变化
+        if WhisperLocalProvider._has_cuda_result is None:
+            try:
+                import torch
+                WhisperLocalProvider._has_cuda_result = torch.cuda.is_available()
+            except Exception:
+                WhisperLocalProvider._has_cuda_result = False
+        return WhisperLocalProvider._has_cuda_result
 
     @classmethod
     def _resolve_backend(cls) -> str:
