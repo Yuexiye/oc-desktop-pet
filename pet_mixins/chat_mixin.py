@@ -271,7 +271,7 @@ class ChatMixin:
         # 超时保护：30 秒无回复自动恢复
         if not hasattr(self, '_think_timeout'):
             from PySide6.QtCore import QTimer as _QTimer
-            self._think_timeout = _QTimer()
+            self._think_timeout = _QTimer(self)  # 带 parent，随窗口一起销毁，避免泄漏
             self._think_timeout.setSingleShot(True)
             self._think_timeout.timeout.connect(self._on_think_timeout)
         # M4: Hanako 模式下默认 180 秒（长任务支持）；直连模式保持 30 秒
