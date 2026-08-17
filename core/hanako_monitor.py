@@ -201,10 +201,18 @@ def map_event_to_mood(event: dict) -> tuple:
         emotion = "neutral"
 
     # tool_end 特殊处理（有 success 字段）
+    # G：success → mood="celebrating"（emotion 仍 happy）；failure → 维持 error。
+    # 注意：celebrating 是新增状态键，不替换 happy（happy 词表/表情全保留）。
     if event_type == "tool_end":
-        mood = "happy" if event.get("success", True) else "error"
-        message = "完成啦" if mood == "happy" else "遇到问题"
-        emotion = "happy" if mood == "happy" else "angry"
+        success = event.get("success", True)
+        if success:
+            mood = "celebrating"
+            message = "完成啦"
+            emotion = "happy"
+        else:
+            mood = "error"
+            message = "遇到问题"
+            emotion = "angry"
 
     return (mood, message, emotion)
 
@@ -234,6 +242,7 @@ STATE_LABELS = {
     "error": "⚠️ 异常",
     "cute": "✨ 卖萌",
     "missing": "🔍 张望",
+    "celebrating": "🎉 完成",  # G：庆祝态（状态指示器容忍未知状态，缺失时显示原样）
 }
 
 

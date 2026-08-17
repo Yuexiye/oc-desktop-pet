@@ -513,6 +513,14 @@ class ScreenPerception:
                             self._activity_history.append(activity)
                             if len(self._activity_history) > 50:
                                 self._activity_history.pop(0)
+                    # A 记忆地基：活动事件 → 事件总线（PetWindow 订阅后写事件流）。
+                    # 注意：summary/detail 文本不进流（隐私约束），只发结构化事件。
+                    try:
+                        if activity:
+                            from core.event_bus import EventBus
+                            EventBus.emit("activity_event", event=activity)
+                    except Exception as e:
+                        logger.debug("activity_event emit failed: %s", e)
                     self._consecutive_failures = 0
                     self._consecutive_empty = 0  # 成功一次即重置空响应计数
                     self._interval = self._next_interval()  # 恢复正常（随机）间隔

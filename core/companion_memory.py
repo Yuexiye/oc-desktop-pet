@@ -32,6 +32,7 @@ import time
 from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,8 @@ HISTORY_KEEP_DAYS = 7         # 保留近 7 天摘要
 class CompanionMemory:
     """桌宠长期陪伴记忆（JSON 持久化）"""
 
-    def __init__(self, agent_id: str = "default", memory_dir: str | Path | None = None):
+    def __init__(self, agent_id: str = "default", memory_dir: str | Path | None = None,
+                 emotion_provider: Callable[[], str] | None = None):
         self._agent_id = agent_id
         self._dir = Path(memory_dir) if memory_dir else DEFAULT_MEMORY_DIR
         self._path = self._dir / f"{agent_id}.json"
@@ -57,7 +59,44 @@ class CompanionMemory:
         self._streak_days: int = 0
         self._today_minutes: float = 0.0          # 今日累计在线分钟（近似）
         self._session_start: float = time.time()
+        # ── A/B：事件流（可选注入；未注入时 record_event/read_events/prune_events 为空操作）──
+        self._event_stream = None
+        self._emotion_provider = emotion_provider
         self.load()
+
+    # ── A/B：事件流注入（与旧 JSON 平级的新文件，不破坏旧字段）──
+
+    def set_event_stream(self, event_stream) -> None:
+        """注入 EventStream 实例（A 事件流写入端）。"""
+        self._event_stream = event_stream
+
+    def set_emotion_provider(self, provider: Callable[[], str] | None) -> None:
+        """注入情绪快照提供者（B：事件结束时快照 emotion）。
+
+        provider 为可调用对象，返回当前情绪字符串（如 EmotionStateMachine.current）。
+        """
+        self._emotion_provider = provider
+
+    def _snapshot_emotion(self) -> tuple[str, float]:
+        """取当前情绪快照（纯内存读，线程安全由 provider 保证）。
+
+        Returns:
+            (emotion, intensity)；provider 缺失/异常返回 ("neutral", 0.0)
+        """
+        if self._emotion_provider is None:
+            return ("neutral", 0.0)
+        try:
+            emotion = self._emotion_provider()
+            if not emotion:
+                return ("neutral", 0.0)
+            intensity = 0.0
+            # 若 provider 返回元组 (emotion, intensity) 也兼容
+            if isinstance(emotion, (tuple, list)) and len(emotion) >= 2:
+                emotion, intensity = emotion[0], float(emotion[1] or 0.0)
+            return (str(emotion), intensity)
+        except Exception as e:
+            logger.debug("情绪快照失败（用 neutral）: %s", e)
+            return ("neutral", 0.0)
 
     # ── 加载 / 保存 ──
 
@@ -160,6 +199,74 @@ class CompanionMemory:
         if cleaned:
             self._last_topic = cleaned
             self._last_topic_at = time.time()
+
+    # ── A/B：事件流写入 ──
+
+    def record_event(self, category: str = "", scenario: str = "", intent: str = "",
+                     emotion: str = "", topic: str = "", start_ts: float = 0.0,
+                     end_ts: float = 0.0, source: str = "") -> None:
+        """写入一条事件到事件流（A 事件流 + B 情绪标签）。
+
+        - emotion 为空时由 emotion_provider 自动快照（B 的落地）
+        - topic 隐私截断（≤60 字）
+        - source="vision" 时只记 category/时间，不记 summary/detail 文本（隐私）
+        - 未注入 EventStream 时为空操作（回滚安全）
+
+        Args:
+            category: 前台分类（development/gaming/...）
+            scenario: 意图分类场景名（可空）
+            intent: 意图名（可空）
+            emotion: 情绪名（可空，由 provider 自动填）
+            topic: 最近对话话题（≤60 字，可选，隐私截断）
+            start_ts: 活动开始时间
+            end_ts: 活动结束时间（0 = 用当前时间）
+            source: 来源标记（foreground|vision|topic）
+        """
+        if self._event_stream is None:
+            return
+        try:
+            now = time.time()
+            end = end_ts or now
+            start = start_ts or end
+            emo = emotion
+            intensity = 0.0
+            if not emo:
+                emo, intensity = self._snapshot_emotion()
+            self._event_stream.append({
+                "ts": end,
+                "start_ts": start,
+                "end_ts": end,
+                "category": category or "",
+                "scenario": scenario or "",
+                "intent": intent or "",
+                "emotion": emo or "neutral",
+                "intensity": intensity,
+                "topic": topic or "",
+                "source": source or "",
+            })
+        except Exception as e:
+            logger.debug("record_event 失败: %s", e)
+
+    def read_events(self, days: int = 7) -> list[dict]:
+        """读取最近 days 天的事件（委托 EventStream；未注入返回空列表）。"""
+        if self._event_stream is None:
+            return []
+        try:
+            cutoff = time.time() - float(days) * 86400.0
+            return self._event_stream.read_since(cutoff)
+        except Exception as e:
+            logger.debug("read_events 失败: %s", e)
+            return []
+
+    def prune_events(self) -> int:
+        """裁剪事件流超限（委托 EventStream.prune；未注入返回 0）。"""
+        if self._event_stream is None:
+            return 0
+        try:
+            return self._event_stream.prune()
+        except Exception as e:
+            logger.debug("prune_events 失败: %s", e)
+            return 0
 
     def tick_online(self) -> None:
         """更新今日在线时长（由 tick 周期调用，近似统计）。"""

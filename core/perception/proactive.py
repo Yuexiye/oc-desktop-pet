@@ -29,7 +29,7 @@ import time
 logger = logging.getLogger(__name__)
 
 from .intent import classify_intent, LATE_NIGHT_WORK_MINUTES
-from .scenarios import get_reaction, is_disruptive
+from .scenarios import get_reaction, is_disruptive, get_recall_reaction, get_associate_reaction
 
 
 DEFAULT_RULES = [
@@ -57,6 +57,9 @@ DAILY_LIMIT = 20
 # P6 自适应冷却边界：被无视惩罚上限 / 用户回应奖励下限（分钟）
 COOLDOWN_MAX_MINUTES = 60.0
 COOLDOWN_MIN_MINUTES = 5.0
+
+# D 场景回忆冷却（分钟，默认 30；config memory.recall.cooldown_minutes 可覆盖）
+RECALL_COOLDOWN_MINUTES = 30.0
 
 
 class ProactiveScheduler:
@@ -86,6 +89,40 @@ class ProactiveScheduler:
         # ── P6 全屏检测（游戏/视频全屏不打扰）──
         self._fullscreen_threshold: float = 0.95  # 窗口覆盖屏幕比例阈值（可配置）
         self._fullscreen_suppress: bool = True    # 全屏时是否抑制主动搭话（可配置）
+
+        # ── D/E 场景记忆回忆（可选注入；未注入/开关关闭 → 整体失效、行为不变）──
+        self._scene_memory = None                 # SceneMemory 实例（由 pet.py 注入）
+        self._recall_enabled = True               # config memory.recall.enabled
+        self._associate_enabled = True            # config memory.associate.enabled
+        self._recall_cooldown_minutes: float = RECALL_COOLDOWN_MINUTES
+        self._recall_cooldown_until: float = 0.0  # 回忆独立冷却截止
+
+    def set_scene_memory(self, scene_memory) -> None:
+        """注入 SceneMemory（D 场景回忆的检索端）。
+
+        未注入时 _try_recall 直接 return None，现有主动对话路径零变化（兼容性）。
+        """
+        self._scene_memory = scene_memory
+
+    def load_memory_config(self, memory_cfg: dict) -> None:
+        """加载记忆层配置段（config["memory"]）。
+
+        Args:
+            memory_cfg: {"recall": {"enabled", "cooldown_minutes"},
+                         "associate": {"enabled"}}
+        """
+        if not isinstance(memory_cfg, dict):
+            return
+        recall_cfg = memory_cfg.get("recall", {}) or {}
+        self._recall_enabled = bool(recall_cfg.get("enabled", True))
+        try:
+            self._recall_cooldown_minutes = float(
+                recall_cfg.get("cooldown_minutes", RECALL_COOLDOWN_MINUTES)
+            )
+        except Exception:
+            self._recall_cooldown_minutes = RECALL_COOLDOWN_MINUTES
+        assoc_cfg = memory_cfg.get("associate", {}) or {}
+        self._associate_enabled = bool(assoc_cfg.get("enabled", True))
 
     def load_config(self, config: dict):
         self._enabled = config.get("enabled", True)
@@ -233,6 +270,92 @@ class ProactiveScheduler:
             logger.debug("Proactive intent failed (fallback to rules): %s", e)
             return None
 
+    def _try_recall(self, now: float, signals: dict) -> str | None:
+        """D/E 场景回忆触发：命中历史场景 → 说一句带记忆的话。
+
+        调用顺序（tick 内）：_try_intent（意图优先）→ _try_recall（回忆）→ 规则兜底。
+        回忆不抢意图的触发机会（意图命中则回忆让位）。
+
+        守卫（复用 tick 已有守卫）：
+          - 未注入 scene_memory / memory.recall.enabled=False → return None
+          - 独立冷却 _recall_cooldown_until（默认 30 分钟）
+          - 打字中且场景非值得打扰（is_disruptive）→ return None
+          - 每日上限 / 全屏 / 持续打字抑制已在 tick 统一处理
+
+        E 联想：回忆未命中且 memory.associate.enabled → associate 标签交集联想。
+        """
+        if self._scene_memory is None or not self._recall_enabled:
+            return None
+        try:
+            if now < self._recall_cooldown_until:
+                return None
+            category = signals.get("category", "") or ""
+            if not category or category == "other":
+                return None
+            # 用意图分类推导场景名（回忆匹配维度；失败不阻塞）
+            scenario = ""
+            emotion = "neutral"
+            period = signals.get("period", "other")
+            try:
+                intent = classify_intent(
+                    period=period,
+                    category=category,
+                    activity=signals.get("activity", "idle"),
+                    fg_duration_min=signals.get("fg_duration_min", 0.0),
+                    conversation_idle_min=signals.get("conversation_idle_min", 0.0),
+                    window_switches_5min=signals.get("window_switches_5min", 0),
+                    is_weekend=signals.get("is_weekend", False),
+                )
+                scenario = intent.get("scenario", "") or ""
+            except Exception:
+                scenario = ""
+            tags = [category, scenario, period, emotion]
+            # 打扰成本：打字中且场景非"值得打扰" → 不触发
+            if signals.get("activity") == "typing" and scenario and not is_disruptive(scenario):
+                logger.debug("Proactive recall skipped: typing + 非值得打扰场景 %s", scenario)
+                return None
+            matches = self._scene_memory.find_matching(category, scenario, tags, max_results=3)
+            if matches:
+                scene = matches[0]
+                text = get_recall_reaction(scene, {"topic": scene.topics[0] if scene.topics else ""})
+                if text:
+                    self._record_proactive_trigger(now)
+                    self._recall_cooldown_until = now + self._recall_cooldown_minutes * 60
+                    logger.info(
+                        "Proactive recall triggered: scene=%s category=%s scenario=%s",
+                        scene.scene_id, category, scenario,
+                    )
+                    self.on_proactive(text)
+                    return text
+                return None
+            # E 联想：回忆未命中且开关开启 → 标签交集联想
+            if self._associate_enabled:
+                current = {
+                    "category": category,
+                    "scenario": scenario,
+                    "emotion": emotion,
+                    "period": period,
+                }
+                scene = self._scene_memory.associate(
+                    current, self._scene_memory.recent_scenes(20)
+                )
+                if scene is not None:
+                    text = get_associate_reaction(
+                        scene, {"topic": scene.topics[0] if scene.topics else ""}
+                    )
+                    if text:
+                        self._record_proactive_trigger(now)
+                        self._recall_cooldown_until = now + self._recall_cooldown_minutes * 60
+                        logger.info(
+                            "Proactive associate triggered: from=%s to=%s",
+                            scene.scene_id, category,
+                        )
+                        self.on_proactive(text)
+                        return text
+        except Exception as e:
+            logger.debug("Proactive recall failed: %s", e)
+        return None
+
     def tick(self) -> str | None:
         if not self._enabled or not self._rules:
             return None
@@ -290,6 +413,11 @@ class ProactiveScheduler:
         intent_prompt = self._try_intent(now, signals)
         if intent_prompt:
             return intent_prompt
+
+        # ── D/E 场景回忆（意图优先，回忆让位；未注入/关闭则零行为）──
+        recall_prompt = self._try_recall(now, signals)
+        if recall_prompt:
+            return recall_prompt
 
         # ── 规则引擎兜底 ──
         sorted_rules = sorted(self._rules, key=lambda r: r.get("idle_min", 0), reverse=True)

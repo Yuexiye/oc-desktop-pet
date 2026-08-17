@@ -90,7 +90,28 @@ DEFAULT_CONFIG = {
     },
     "memory": {
         "budget_chars": 0,
-        "budget_percent": 1.0
+        "budget_percent": 1.0,
+        # D 场景回忆（proactive 命中历史场景时主动说一句带记忆的话）
+        "recall": {
+            "enabled": True,
+            "cooldown_minutes": 30,
+        },
+        # E 跨场景联想（标签交集规则版；误触发率高可关）
+        "associate": {
+            "enabled": True,
+        },
+    },
+    # G celebrating（庆祝态：撒花动作 + 完工音；关掉即恢复旧 happy 行为）
+    "celebrating": {
+        "enabled": True,
+        "tts_enabled": True,
+    },
+    # F 本地状态口（默认关；开启后 127.0.0.1:8977 提供只读状态 + 可选白名单写）
+    "state_http": {
+        "enabled": False,
+        "port": 8977,
+        "auth_token": "",
+        "allow_set_mode": False,
     }
 }
 

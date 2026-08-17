@@ -12,6 +12,7 @@ self._current_anim / self._current_emotion 等，均由 PetWindow 提供（鸭�
 """
 import logging
 import os
+import threading
 import time
 
 from PySide6.QtCore import QThread
@@ -131,6 +132,22 @@ class BubbleMixin:
 
     def _do_hanako_state(self, anim_name: str, message: str, emotion: str, state: str, audio_path: str):
         """在主线程处理 Hanako 状态变化"""
+        # G：celebrating 分支（在 safe_anims 收窄之前 return；开关关闭则降级旧 happy）。
+        # 关键约束：只走 AvatarRenderer 统一接口（_status_mapper.render_for），
+        # 绝不 import/触碰渲染器内部实现，不新增渲染线程。
+        if state == "celebrating":
+            celeb_cfg = self.config.get("celebrating", {}) or {}
+            if celeb_cfg.get("enabled", True):
+                try:
+                    self._update_status_indicator("celebrating")
+                except Exception:
+                    pass
+                self._do_celebrating()
+                return
+            # 开关关闭 → 恢复旧 happy 行为（mood=happy, anim=waving）
+            state = "happy"
+            anim_name = "waving"
+            emotion = "happy"
         try:
             self._update_status_indicator(state)
         except Exception:
@@ -203,3 +220,79 @@ class BubbleMixin:
         if not idle_chatter or not idle_chatter.is_running:
             self._idle_stage = None
             self._last_interaction = time.time()
+
+    # ── G：celebrating（庆祝态）主线程实现 ──
+
+    def _do_celebrating(self):
+        """G celebrating：撒花动作 + 3s 情绪表情 + 气泡 + 完工音 + 3s 后回 idle。
+
+        硬约束：只通过 AvatarRenderer 统一接口（PetStatusMapper.render_for）驱动，
+        不 import/触碰渲染器内部实现（Live2D C 层/渲染线程），不新增渲染线程。
+        TTS 合成在后台线程，播放经 tts_celebration_signal 回主线程（绝不直接碰 Qt）。
+        """
+        # 1. 双形态撒花动作（统一接口）
+        try:
+            mapper = getattr(self, "_status_mapper", None)
+            if mapper is not None and hasattr(self, "_renderer"):
+                mapper.render_for("celebrating", self._renderer)
+        except Exception:
+            pass
+        # 2. 情绪/表情脸（3s 过期，复用现有机制）
+        try:
+            self._set_surface_emotion("happy", duration_ms=3000, source="celebrating")
+        except Exception:
+            pass
+        # 3. 气泡（完工反馈）
+        try:
+            self._show_bubble("完成啦！", emotion="happy", priority=1)
+        except Exception:
+            pass
+        # 4. TTS 完工音：走现有 tts provider 管道，非阻塞（后台合成 → 信号回主线程）
+        try:
+            celeb_cfg = self.config.get("celebrating", {}) or {}
+            tts_cfg = self.config.get("tts", {}) or {}
+            if celeb_cfg.get("tts_enabled", True) and tts_cfg.get("enabled", True):
+                threading.Thread(target=self._synth_celebration_tts, daemon=True).start()
+        except Exception:
+            pass
+        # 5. 3s 后回 idle（复用 _pet_revert_timer，现有防御已覆盖 Live2D 手势超时）
+        try:
+            self._pet_revert_timer.stop()
+            self._pet_revert_timer.start(3000)
+        except Exception:
+            pass
+
+    def _synth_celebration_tts(self):
+        """后台线程：合成完工音 → 信号回主线程播放（绝不直接碰 Qt/渲染）。
+
+        合成不在主线程执行（cosyvoice 等 provider 的重型链路会冻住事件循环）；
+        播放经 tts_celebration_signal（Qt Signal）自动转主线程。
+        """
+        try:
+            provider = None
+            engine = getattr(self, "_engine", None)
+            if engine is not None:
+                provider = getattr(engine, "_tts", None) or getattr(engine, "_tts_provider", None)
+            if provider is None:
+                provider = getattr(self, "_tts_provider", None)
+            if provider is None or not hasattr(provider, "synthesize"):
+                return
+            audio = provider.synthesize("完成啦！", character_id=getattr(self, "_current_char", ""))
+            if audio and os.path.exists(audio):
+                self.tts_celebration_signal.emit(audio)
+        except Exception as e:
+            logger.debug("完工音合成失败（忽略）: %s", e)
+
+    def _do_tts_celebration(self, audio_path: str):
+        """主线程槽：播放完工音（TTS 合成已在后台线程完成）。"""
+        try:
+            if not audio_path or not os.path.exists(audio_path):
+                return
+            tts_cfg = self.config.get("tts", {}) or {}
+            if not tts_cfg.get("enabled", True):
+                return
+            self._tts_player.stop()
+            self._last_tts_emotion = "happy"
+            self._tts_player.play(audio_path)
+        except Exception as e:
+            logger.debug("完工音播放失败（忽略）: %s", e)

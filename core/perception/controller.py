@@ -65,6 +65,7 @@ class PerceptionController:
         self._schedule = SchedulePerception()
         self._screen = ScreenPerception()
         self._proactive: ProactiveScheduler | None = None
+        self._scene_memory = None  # C 场景记忆（收盘聚类透传；由 pet.py 注入）
         self._last_schedule_refresh = 0.0
         self._permissions = PetPermissions()  # 权限开关
 
@@ -319,6 +320,30 @@ class PerceptionController:
         else:
             self.set_proactive()
             self._proactive.load_config(config)
+
+    # ── C 场景记忆（收盘聚类透传；不主动定时，避免高频 IO）──
+
+    def set_scene_memory(self, scene_memory) -> None:
+        """注入 SceneMemory（D 回忆 + E 联想检索端，由 pet.py 传入）。"""
+        self._scene_memory = scene_memory
+
+    def rebuild_scenes(self, events: list[dict]) -> int:
+        """收盘聚类透传：events → SceneMemory.rebuild（幂等）。
+
+        Args:
+            events: 事件流（mem.read_events(30) 的输出）
+
+        Returns:
+            重建后的场景条数；未注入 SceneMemory 返回 0。
+        """
+        scene_memory = getattr(self, "_scene_memory", None)
+        if scene_memory is None:
+            return 0
+        try:
+            return scene_memory.rebuild(events or [])
+        except Exception as e:
+            logger.warning("rebuild_scenes failed: %s", e)
+            return 0
 
     # ── 统一 tick（每 30 秒）──
 

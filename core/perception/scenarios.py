@@ -154,3 +154,111 @@ def get_reaction(scenario: str, intensity: float = 1.0) -> dict:
 def is_disruptive(scenario: str) -> bool:
     """该场景在用户打字时是否仍值得触发（打扰成本高但值得）。"""
     return SCENARIO_DISRUPTIVE.get(scenario, False)
+
+
+# ── D：回忆型文案池（场景 → 带记忆的台词；不动现有 SCENARIO_REACTIONS）──
+# 命中历史场景时由 ProactiveScheduler._try_recall 调用；支持 {topic} 占位拼接。
+RECALL_REACTIONS: dict[str, list[str]] = {
+    "gaming": [
+        "上次你打到「{topic}」那里卡了好久，这次应该过了吧？",
+        "还记得上次一起玩的时候吗？这次也加油！",
+        "上次玩到那么晚，今天也玩得开心呀～",
+    ],
+    "late_night_work": [
+        "上次也是这个点还在忙，今天也要注意休息哦。",
+        "上次深夜加班后你聊到「{topic}」，后来有进展吗？",
+        "又到这个点啦，上次熬夜的账还没补回来呢。",
+    ],
+    "video_watching": [
+        "上次你追的那部剧，后来看到结局了吗？",
+        "上次一起看视频的时候你笑得好开心。",
+        "又来看片啦，上次安利的那部看完没？",
+    ],
+    "development": [
+        "上次你说「{topic}」，现在完成了吗？",
+        "上次写代码写得好专注，今天也顺利吗？",
+        "还记得上次那个卡了很久的 bug 吗，后来解决了吗？",
+    ],
+    "long_work_break": [
+        "上次也是连着忙了好久，歇一歇吧。",
+        "上次你休息时还在念叨「{topic}」呢。",
+    ],
+    "tutorial_follow": [
+        "上次学东西也这么认真，坚持得好棒。",
+        "上次那个教程你最后学完啦，这次也不在话下。",
+    ],
+    "weekend_play": [
+        "上次周末你也玩得这么开心，真好～",
+        "还记得上次周末你做了什么吗？",
+    ],
+    "morning_first": [
+        "早呀，上次这个点你也起得挺早呢。",
+        "早安！上次你说「{topic}」，今天有精神继续吗？",
+    ],
+    "chat_idle": [
+        "上次这么安静的时候，你好像在想事情。",
+        "还记得上次我们聊到「{topic}」吗？",
+    ],
+}
+
+
+def get_recall_reaction(scene, extra: dict = None) -> str | None:
+    """根据历史场景返回一条带记忆的台词（D）。
+
+    Args:
+        scene: Scene 对象（scene_cluster.Scene）或带 scenario/category/topics 的对象
+        extra: 附加模板参数，如 {"topic": "..."}（缺省取 scene.topics[0]）
+
+    Returns:
+        台词字符串；未命中文案池返回 None（调用方保持沉默，不触发）。
+    """
+    if scene is None:
+        return None
+    scenario = getattr(scene, "scenario", "") or ""
+    category = getattr(scene, "category", "") or ""
+    pool = RECALL_REACTIONS.get(scenario) or RECALL_REACTIONS.get(category)
+    if not pool:
+        return None
+    text = random.choice(pool)
+    # 模板占位拼接
+    if "{topic}" in text:
+        topic = ""
+        if extra and isinstance(extra, dict) and extra.get("topic"):
+            topic = str(extra["topic"])
+        if not topic:
+            topics = getattr(scene, "topics", None) or []
+            topic = topics[0] if topics else ""
+        text = text.replace("{topic}", topic or "那件事")
+    return text
+
+
+# ── E：跨场景联想文案池（规则版，可开关）──
+ASSOCIATE_REACTIONS: list[str] = [
+    "上次也是这样的时候，你好像提过「{topic}」…",
+    "我记得上次类似的场景里，你聊到了「{topic}」。",
+    "上次这种时候你状态不错，今天也一样吧？",
+]
+
+
+def get_associate_reaction(scene, extra: dict = None) -> str | None:
+    """根据关联到的历史场景返回一条联想台词（E）。
+
+    Args:
+        scene: 关联到的 Scene 对象
+        extra: 附加模板参数，如 {"topic": "..."}（缺省取 scene.topics[0]）
+
+    Returns:
+        台词字符串；无文案时返回 None。
+    """
+    if scene is None or not ASSOCIATE_REACTIONS:
+        return None
+    text = random.choice(ASSOCIATE_REACTIONS)
+    if "{topic}" in text:
+        topic = ""
+        if extra and isinstance(extra, dict) and extra.get("topic"):
+            topic = str(extra["topic"])
+        if not topic:
+            topics = getattr(scene, "topics", None) or []
+            topic = topics[0] if topics else ""
+        text = text.replace("{topic}", topic or "那件事")
+    return text

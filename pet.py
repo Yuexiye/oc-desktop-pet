@@ -108,6 +108,11 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
     # 升级事件：PetSaveManager.on_level_up 回调可能处于任意线程，且需要在主线程
     # 用 singleShot(0) 异步发射（切断奖励结算递归链）——跨线程先绕回主线程。
     level_up_signal = Signal(int, int)  # old_level, new_level
+    # G celebrating 完工音：TTS 合成在后台线程完成，播放必须经信号回主线程
+    # （QMediaPlayer 是 COM 组件，跨线程调用会触发 RPC_E_SERVERCALL_RETRYLATER 0x8001010D）。
+    tts_celebration_signal = Signal(str)  # audio_path
+    # F 本地状态口写转发：HTTP 线程只 emit 事件，经信号转主线程再驱动（不直连渲染线程）。
+    pet_set_mode_signal = Signal(str)  # mode
 
     def __init__(self, agent_id: str = "yuexinmiao", sprite_dir: str = None,
                  position: dict = None, scale: float = 1.0,
@@ -422,6 +427,10 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self.screen_proactive_signal.connect(self._do_screen_proactive)
         self.screen_update_signal.connect(self._do_screen_update)
         self.hanako_state_signal.connect(self._do_hanako_state)
+        # G：完工音播放（后台合成 → 信号回主线程；绝不直接碰 Qt/渲染）
+        self.tts_celebration_signal.connect(self._do_tts_celebration)
+        # F：本地状态口写转发（HTTP 线程 → 主线程驱动）
+        self.pet_set_mode_signal.connect(self._do_pet_set_mode)
         self._engine.start()
 
         # ── 零配置开场问候（首次启动且未配 LLM 时，本地问候引导配置）──
@@ -633,14 +642,75 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
             logger.warning("P3 多宠打招呼处理失败: %s", e)
 
     def _init_companion_memory(self):
-        """初始化陪伴记忆（CompanionMemory）并触发跨天首启问候。
+        """初始化陪伴记忆（CompanionMemory）+ 记忆层 A-G 接线。
 
         - 记忆文件：~/.oc-pet/memory/<agent_id>.json（与养成存档同目录）
+        - A/B：注入 EventStream + emotion_provider（事件流 + 情绪标签）
+        - C/D/E：注入 SceneMemory 到感知控制器与 proactive（回忆/联想）
+        - G：初始化 PetStatusMapper（状态语义层）
+        - F：按 config.state_http.enabled 启动本地状态口（默认关）
         - 跨天启动时弹"接得上昨天"的问候；非跨天不打扰。
         """
         try:
             from core.companion_memory import CompanionMemory
+            from core.event_stream import EventStream
             self._companion_memory = CompanionMemory(self._agent_id)
+            # A：事件流（与旧 <agent_id>.json 平级的新文件，互不破坏）
+            try:
+                self._event_stream = EventStream(self._agent_id)
+                self._companion_memory.set_event_stream(self._event_stream)
+            except Exception as e:
+                logger.warning("A 事件流初始化失败（非致命）: %s", e)
+                self._event_stream = None
+            # B：情绪快照 provider（读 EmotionStateMachine.current，纯内存读，无新增线程）
+            try:
+                if self._perception is not None:
+                    self._companion_memory.set_emotion_provider(
+                        lambda: self._perception.emotion.current
+                    )
+            except Exception as e:
+                logger.debug("B 情绪 provider 注入失败: %s", e)
+            # C/D/E：场景记忆（SceneMemory）
+            try:
+                from core.scene_memory import SceneMemory
+                self._scene_memory = SceneMemory(self._agent_id)
+                # 透传给感知控制器（closeEvent 收盘聚类）
+                if self._perception is not None:
+                    self._perception.set_scene_memory(self._scene_memory)
+                # 注入 PetWindow 实际驱动的 proactive（D 回忆 + E 联想检索端）+ 记忆层配置
+                proactive = getattr(self, "_proactive", None)
+                if proactive is not None:
+                    proactive.set_scene_memory(self._scene_memory)
+                    proactive.load_memory_config(self.config.get("memory", {}))
+            except Exception as e:
+                logger.warning("C/D/E 场景记忆初始化失败（非致命）: %s", e)
+                self._scene_memory = None
+            # G：状态语义层（6 态映射；celebrating 用）
+            try:
+                from core.pet_status import PetStatusMapper
+                self._status_mapper = PetStatusMapper()
+            except Exception as e:
+                logger.warning("G 状态语义层初始化失败（非致命）: %s", e)
+                self._status_mapper = None
+            # A：订阅活动事件（screen.py append 后 emit → 写事件流）
+            try:
+                from core.event_bus import EventBus
+                EventBus.on("activity_event", self._on_activity_event)
+                self._activity_event_subscribed = True
+            except Exception as e:
+                logger.warning("A 活动事件订阅失败（非致命）: %s", e)
+                self._activity_event_subscribed = False
+            # F：订阅本地状态口写转发（HTTP 线程 → 信号 → 主线程）
+            try:
+                from core.event_bus import EventBus
+                EventBus.on("pet_set_mode", self._on_pet_set_mode)
+                self._pet_set_mode_subscribed = True
+            except Exception as e:
+                logger.warning("F pet_set_mode 订阅失败（非致命）: %s", e)
+                self._pet_set_mode_subscribed = False
+            # F：启动本地状态口（默认关）
+            self._status_http = None
+            self._init_status_http()
             # 前台分类活动 → 记忆（常做的事）
             if hasattr(self, '_foreground_watcher'):
                 self._foreground_watcher.on_change = self._on_foreground_change_with_memory
@@ -657,17 +727,123 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
             self._companion_memory = None
 
     def _on_foreground_change_with_memory(self, app_name: str, app_category: str, title: str):
-        """前台变化：记录活动到陪伴记忆 + 原有回调。"""
+        """前台变化：记录活动到陪伴记忆 + A 事件流 + 原有回调。"""
         try:
             mem = getattr(self, "_companion_memory", None)
             if mem is not None:
                 mem.record_activity(app_category)
+                # A：事件流追加（foreground 段；emotion 由 provider 自动填）
+                now = time.time()
+                start_ts = getattr(self, "_last_fg_start_ts", 0.0) or now
+                mem.record_event(category=app_category, scenario="", intent="",
+                                 start_ts=start_ts, end_ts=now, source="foreground")
+            self._last_fg_start_ts = time.time()
         except Exception:
             pass
         try:
             self._on_foreground_change(app_name, app_category, title)
         except Exception:
             pass
+
+    def _on_activity_event(self, event=None):
+        """A 活动事件订阅：视觉活动 → 事件流（source="vision"）。
+
+        隐私约束：只记 category/时间，summary/detail 文本不进流。
+        该回调在 screen 分析线程执行，record_event 内部线程安全。
+        """
+        try:
+            mem = getattr(self, "_companion_memory", None)
+            if mem is None or event is None:
+                return
+            now = time.time()
+            start_ts = getattr(event, "start_time", 0.0) or now
+            end_ts = getattr(event, "end_time", 0.0) or now
+            mem.record_event(category=getattr(event, "category", "") or "",
+                             scenario="", intent="",
+                             start_ts=start_ts, end_ts=end_ts, source="vision")
+        except Exception as e:
+            logger.debug("A activity_event 写流失败: %s", e)
+
+    # ── F：本地状态口（默认关，复用 phone_receiver 范式）──
+
+    def _init_status_http(self):
+        """按 config.state_http.enabled 启动本地状态口（默认关，不占端口）。"""
+        try:
+            sh_cfg = self.config.get("state_http", {}) or {}
+            if not sh_cfg.get("enabled", False):
+                return
+            from core.status_http_server import PetStatusHTTPServer
+            self._status_http = PetStatusHTTPServer(
+                state_provider=self._status_snapshot,
+                auth_token=sh_cfg.get("auth_token", ""),
+                port=int(sh_cfg.get("port", 8977) or 8977),
+                allow_set_mode=bool(sh_cfg.get("allow_set_mode", False)),
+            )
+            self._status_http.start()
+        except Exception as e:
+            logger.warning("F 本地状态口启动失败（非致命）: %s", e)
+            self._status_http = None
+
+    def _status_snapshot(self) -> dict:
+        """状态快照（F GET /pet/state 只读输出）。"""
+        state = "idle"
+        try:
+            mapper = getattr(self, "_status_mapper", None)
+            if mapper is not None:
+                state = mapper.current()
+        except Exception:
+            state = "idle"
+        emotion = getattr(self, "_current_emotion", "neutral") or "neutral"
+        anim = getattr(self, "_current_anim", "idle") or "idle"
+        scenario = ""
+        try:
+            scenario = getattr(self._perception, "_scenario", "") or ""
+        except Exception:
+            scenario = ""
+        celebrating_active = bool(state == "celebrating")
+        return {
+            "state": state,
+            "emotion": emotion,
+            "anim": anim,
+            "scenario": scenario,
+            "agent_id": self._agent_id,
+            "renderer_format": self._renderer_format(),
+            "celebrating_active": celebrating_active,
+            "ts": time.time(),
+        }
+
+    def _renderer_format(self) -> str:
+        """按鸭子类型识别渲染器格式（sprite|live2d|vrm|unknown）。"""
+        try:
+            r = getattr(self, "_renderer", None)
+            if r is None:
+                return "unknown"
+            if hasattr(r, "_model"):
+                return "live2d"
+            if hasattr(r, "_frames"):
+                return "sprite"
+            return "vrm"
+        except Exception:
+            return "unknown"
+
+    def _on_pet_set_mode(self, mode: str = ""):
+        """F 写转发：HTTP 线程 → Qt 信号 → 主线程驱动（不直连渲染线程）。"""
+        try:
+            self.pet_set_mode_signal.emit(str(mode or ""))
+        except Exception:
+            pass
+
+    def _do_pet_set_mode(self, mode: str):
+        """主线程槽：登记状态 + 经状态语义层下发（只走统一接口）。"""
+        try:
+            mapper = getattr(self, "_status_mapper", None)
+            if mapper is None:
+                return
+            mapper.set_state(mode)
+            if hasattr(self, "_renderer"):
+                mapper.render_for(mode, self._renderer)
+        except Exception as e:
+            logger.debug("F set-mode 主线程执行失败: %s", e)
 
     def set_hanako_ws(self, ws_client, session_manager):
         """注入共享 Hanako WS 客户端（由 PetManager 调用）"""
@@ -2199,6 +2375,39 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
                 logger.info("P2 离别语 → %s", farewell[:40])
         except Exception as e:
             logger.warning("P2 离别语失败（非致命）: %s", e)
+
+        # ── C 记忆层收盘：事件流 → 场景聚类 + 裁剪 ──
+        try:
+            mem = getattr(self, "_companion_memory", None)
+            scene_memory = getattr(self, "_scene_memory", None)
+            if mem is not None:
+                events = mem.read_events(days=30)
+                if scene_memory is not None:
+                    scene_memory.rebuild(events)
+                    scene_memory.prune()
+                mem.prune_events()
+        except Exception as e:
+            logger.warning("C 收盘聚类失败（非致命）: %s", e)
+
+        # ── A/F 退订事件总线（防止全局注册表累积、多宠串扰、回调持有已销毁实例）──
+        try:
+            from core.event_bus import EventBus
+            if getattr(self, "_activity_event_subscribed", False):
+                EventBus.off("activity_event", self._on_activity_event)
+                self._activity_event_subscribed = False
+            if getattr(self, "_pet_set_mode_subscribed", False):
+                EventBus.off("pet_set_mode", self._on_pet_set_mode)
+                self._pet_set_mode_subscribed = False
+        except Exception:
+            pass
+
+        # ── F 本地状态口停止（默认未启动则空操作）──
+        try:
+            if getattr(self, "_status_http", None) is not None:
+                self._status_http.stop()
+                self._status_http = None
+        except Exception as e:
+            logger.warning("F 状态口停止失败（非致命）: %s", e)
 
         super().closeEvent(event)
 

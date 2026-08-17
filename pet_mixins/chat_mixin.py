@@ -289,13 +289,24 @@ class ChatMixin:
     # ── P2 关系：记录话题到陪伴记忆 ──
 
     def _record_topic(self, text: str):
-        """把用户消息记录到 CompanionMemory（隔天能接上话题）。"""
+        """把用户消息记录到 CompanionMemory（隔天能接上话题）。
+
+        A 记忆地基：顺带写事件流（source="topic"，emotion 由 provider 自动填）。
+        """
         if not text:
             return
         try:
             mem = getattr(self, "_companion_memory", None)
             if mem is not None:
                 mem.record_topic(text)
+                # A：事件流追加（当前前台分类作 category；topic 截断在 record_event 内）
+                category = ""
+                try:
+                    if hasattr(self, "_foreground_watcher"):
+                        category = getattr(self._foreground_watcher, "last_category", "") or ""
+                except Exception:
+                    category = ""
+                mem.record_event(category=category, topic=text, source="topic")
         except Exception as e:
             logger.debug("P2 记录话题失败: %s", e)
 
