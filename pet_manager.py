@@ -623,23 +623,6 @@ class PetManager:
         else:
             window.hide()
 
-    def close_window(self, agent_id: str) -> None:
-        """关闭单个桌宠窗口（委托给已有关闭逻辑，含 bridge 注销）。"""
-        # 复用 PetManager 现有的 close_window 实现
-        if self._bridge and self._bridge_enabled:
-            try:
-                self._bridge.unregister_pet(agent_id)
-                logger.info("Unregistered pet '%s' from MultiPetBridge", agent_id)
-            except Exception as e:
-                logger.warning("Failed to unregister pet '%s' from MultiPetBridge: %s", agent_id, e)
-
-        window = self._windows.pop(agent_id, None)
-        if window:
-            try:
-                window.close()
-            except Exception:
-                pass
-
     def hide_all(self) -> None:
         """隐藏所有已启动的窗口。"""
         for window in list(self._windows.values()):
