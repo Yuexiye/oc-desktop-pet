@@ -447,11 +447,15 @@ def test_launcher_prints_crash_dump_path_on_restart():
 
 # ═════════════════════ 可选清理项 ═════════════════════
 def test_enhanced_environment_no_dead_ext_line():
-    """可选：infer_file_type 删除了 `_, ext = ..., None` 死代码，行为不变"""
+    """可选：infer_file_type 删除了 `_, ext = ..., None` 死代码，行为不变（含无扩展名兜底）"""
     from core.enhanced_environment import infer_file_type
     assert infer_file_type("hello.py") == "code"
     assert infer_file_type("a/b/c.png") == "image"
     assert infer_file_type("") == "unknown"
+    # 无扩展名非空文件名：必须返回 unknown，不能 UnboundLocalError
+    assert infer_file_type("Notepad") == "unknown"
+    assert infer_file_type("Visual Studio Code") == "unknown"
+    assert infer_file_type("Makefile") == "unknown"
 
 
 def test_harness_adapter_parse_emotion_no_duplicate():

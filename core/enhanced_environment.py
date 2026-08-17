@@ -173,13 +173,12 @@ def infer_file_type(filename: str) -> str:
     if not filename:
         return "unknown"
 
-    # 提取扩展名（Path().suffix 在此曾有一行死代码 `_, ext = ..., None`，已删除）
+    # 提取扩展名（无扩展名时 ext 必须兜底为 None，否则 return 处 UnboundLocalError）
     path_part = filename.split('\\')[-1].split('/')[-1]
 
     # 正确获取扩展名
     dot_idx = path_part.rfind('.')
-    if dot_idx >= 0:
-        ext = path_part[dot_idx:].lower()
+    ext = path_part[dot_idx:].lower() if dot_idx >= 0 else None
 
     return FILE_TYPE_MAP.get(ext, "unknown")
 
