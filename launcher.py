@@ -62,6 +62,22 @@ def _remove_ready_flag(pid: int) -> None:
         pass
 
 
+def _latest_crash_dump() -> "Path | None":
+    """返回 logs/ 下最新的 crash_dump_*.zip（不存在返回 None）。"""
+    logs_dir = HERE / "logs"
+    if not logs_dir.is_dir():
+        return None
+    try:
+        zips = sorted(
+            logs_dir.glob("crash_dump_*.zip"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+    except Exception:
+        return None
+    return zips[0] if zips else None
+
+
 def _resolve_python() -> str:
     """优先用与 launcher 相同的解释器；否则回退到 start_pet.bat 的逻辑。"""
     # 若在 .venv 内运行则直接用当前解释器
@@ -182,6 +198,13 @@ def main() -> int:
             "子进程异常退出（退出码 %s，运行 %.1fs）。%s 后自动复活…",
             exit_code, uptime, RESTART_DELAY,
         )
+        # 崩溃现场提示：把最新 crash_dump zip 路径打到控制台，用户/排查者可直达
+        latest_zip = _latest_crash_dump()
+        if latest_zip is not None:
+            log.warning(
+                "崩溃现场已打包: %s（含线程堆栈/C扩展列表/日志尾部，可直接解压查看）",
+                latest_zip,
+            )
         time.sleep(RESTART_DELAY)
 
     return 0
