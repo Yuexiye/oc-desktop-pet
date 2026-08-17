@@ -32,7 +32,26 @@ from .base import TTSProvider
 
 logger = logging.getLogger(__name__)
 
-OUTPUT_DIR = Path.home() / ".hanako" / "pets" / "tts_cache"
+
+def _resolve_output_dir() -> Path:
+    """定位 TTS 缓存目录；HOME 不可用（极少见的环境）时兜底到系统临时目录。
+
+    Path.home() 在 HOME/USERPROFILE 均未设置的环境会抛 RuntimeError，
+    模块导入期绝不能因此崩掉。
+    """
+    try:
+        return Path.home() / ".hanako" / "pets" / "tts_cache"
+    except Exception:
+        pass
+    try:
+        import tempfile
+        return Path(tempfile.gettempdir()) / "hanako" / "pets" / "tts_cache"
+    except Exception:
+        # 最后兜底：模块所在目录下的 .tts_cache（项目可写目录）
+        return Path(__file__).resolve().parent / ".tts_cache"
+
+
+OUTPUT_DIR = _resolve_output_dir()
 MODEL_NAME = "CosyVoice2-0.5B"
 
 CACHE_TTL = 24 * 3600        # 超过 1 天视为可清理
