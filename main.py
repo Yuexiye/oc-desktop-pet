@@ -40,22 +40,29 @@ def _setup_file_logging():
     except Exception as _e:  # 日志文件不可用绝不影响主程序
         logging.getLogger(__name__).warning("无法初始化日志文件：%s", _e)
 
-# ── 可选：导入追踪探针（默认关闭）──
-# 用法：OC_TRACE_IMPORTS=funasr,wetext python main.py
-# 当被追踪的顶层包被首次 import 时，打印完整调用栈，用于定位
-# "谁在拉起重型本地依赖"（如 funasr/wetext/modelscope）造成卡顿。
-_trace = os.environ.get("OC_TRACE_IMPORTS", "")
+# ── 导入追踪探针（默认追踪 C 扩展重型依赖）──
+# 用法：OC_TRACE_IMPORTS=funasr,wetext python main.py 覆盖默认追踪列表；
+#       OC_TRACE_IMPORTS=（空）可整体关闭。
+# 默认对 faster_whisper/ctranslate2/live2d 开启追踪：这些包会拉起 C 扩展
+# （.pyd），而 0x8001010d 这类 COM 错误与"在哪个线程初始化 C 扩展"强相关，
+# 打印完整调用栈 + 所在线程，用于定位"谁在哪个线程拉起重型本地依赖"。
+_trace = os.environ.get("OC_TRACE_IMPORTS")
+if _trace is None:
+    _trace = "faster_whisper,ctranslate2,live2d"
 if _trace:
     import traceback as _tb
+    import threading as _th
     _trace_mods = {m.strip() for m in _trace.split(",") if m.strip()}
     class _ImportTracer:
         def find_spec(self, name, path, target=None):
             if name.split(".")[0] in _trace_mods:
-                _tb.print_stack(file=sys.stderr)
+                _cur = _th.current_thread()
                 sys.stderr.write(
-                    f"\n[OC_TRACE] import triggered: {name}\n"
-                    f"[OC_TRACE] tracing: {sorted(_trace_mods)}\n\n"
+                    f"\n[OC_TRACE] import triggered: {name} "
+                    f"(thread={_cur.name}, ident={_cur.ident})\n"
+                    f"[OC_TRACE] tracing: {sorted(_trace_mods)}\n"
                 )
+                _tb.print_stack(file=sys.stderr)
                 sys.stderr.flush()
             return None
     sys.meta_path.insert(0, _ImportTracer())
