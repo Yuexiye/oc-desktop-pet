@@ -131,7 +131,8 @@ class SpriteRenderer(AvatarRenderer):
         if os.path.exists(pet_json_path):
             import json
             try:
-                meta = json.loads(open(pet_json_path, encoding='utf-8').read())
+                with open(pet_json_path, encoding='utf-8') as _f:
+                    meta = json.loads(_f.read())
             except Exception:
                 meta = {}
             # 检测 atlas 格式（8x9 网格）
@@ -157,7 +158,8 @@ class SpriteRenderer(AvatarRenderer):
         """从 pet.json 加载 spritesheet"""
         try:
             import json
-            meta = json.loads(open(json_path, encoding='utf-8').read())
+            with open(json_path, encoding='utf-8') as _f:
+                meta = json.loads(_f.read())
 
             ss = meta.get('spritesheet', {})
             src = ss.get('src', 'spritesheet.png')
@@ -469,7 +471,9 @@ class SpriteRenderer(AvatarRenderer):
                 self._anim_range = (None, None)
                 self._anim_idx = 0
                 fps = self._seq_fps.get(ref, 3)
-                self._anim_timer.setInterval(int(1000 / fps))
+                # fps==0（pet.json 配错）时兜底，避免 int(1000/fps) 除零崩溃
+                speed = max(30, int(1000 / fps)) if fps and fps > 0 else (330 if ref == 'idle' else 250)
+                self._anim_timer.setInterval(speed)
                 self._show_frame()
                 self._current_anim = ref
                 self._current_emotion = emotion
