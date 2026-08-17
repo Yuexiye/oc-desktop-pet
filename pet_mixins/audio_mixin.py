@@ -18,14 +18,15 @@ class AudioMixin:
         # Live2D 等实时渲染器：直接驱动口型参数
         if r is not None and hasattr(r, 'set_speaking'):
             r.set_speaking(True)
-        frames = self._renderer._frames
+        # _frames 可能尚未初始化（渲染器未加载/加载失败时），None 按无口型帧处理
+        frames = getattr(r, '_frames', None) or {}
         if emotion in ('happy', 'angry', 'surprised'):
             speak_seq = 'speak_open'
         else:
             speak_seq = 'speak_half'
         for seq in (speak_seq, 'speak_open', 'speak_half', 'speak_closed'):
-            if seq in frames:
-                self._renderer.play_anim(seq)
+            if seq in frames and r is not None:
+                r.play_anim(seq)
                 self._anim_seq = seq
                 logger.debug("AUDIO-07 TTS mouth: %s (emotion=%s)", seq, emotion)
                 return
