@@ -126,9 +126,13 @@ class PhoneActivityReceiver:
         logger.info("PhoneActivityReceiver started on port %d", self._port)
 
     def stop(self):
-        """停止 HTTP 服务"""
+        """停止 HTTP 服务（shutdown 停循环 + server_close 释放 socket）"""
         if self._server:
             self._server.shutdown()
+            try:
+                self._server.server_close()  # 释放监听 socket，避免端口占用残留
+            except Exception as e:
+                logger.warning("PhoneActivityReceiver server_close failed: %s", e)
             self._server = None
             logger.info("PhoneActivityReceiver stopped")
 
