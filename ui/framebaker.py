@@ -114,9 +114,13 @@ def stop_framebaker() -> bool:
             return False
         import platform
         if platform.system() == "Windows":
+            # 参数化匹配：用 .Contains()（而非 -like）避免路径中的通配符多匹配；
+            # 单引号翻倍转义，防止路径里的 ' 破坏字符串字面量语法。
+            _escaped = FRAMEBAKER_PATH.replace("'", "''").lower()
             ps = (
                 "Get-CimInstance Win32_Process | "
-                f"Where-Object {{ $_.Name -eq 'bun.exe' -and $_.CommandLine -like '*{FRAMEBAKER_PATH}*' }} | "
+                f"Where-Object {{ $_.Name -eq 'bun.exe' -and $null -ne $_.CommandLine -and "
+                f"$_.CommandLine.ToLower().Contains('{_escaped}') }} | "
                 "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
             )
             subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True)
