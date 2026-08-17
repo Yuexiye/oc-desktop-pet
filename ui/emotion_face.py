@@ -146,12 +146,13 @@ class EmotionFace(QWidget):
             self._last_pop_time = now
             self._scale = 0.6
             self.update()
-            anim = QPropertyAnimation(self, b"popScale", self)
-            anim.setDuration(220)
-            anim.setEasingCurve(QEasingCurve.OutBack)
-            anim.setStartValue(0.6)
-            anim.setEndValue(1.0)
-            anim.start()
+            # 存 self 引用，防止动画运行期间被 GC 提前回收
+            self._pop_anim = QPropertyAnimation(self, b"popScale", self)
+            self._pop_anim.setDuration(220)
+            self._pop_anim.setEasingCurve(QEasingCurve.OutBack)
+            self._pop_anim.setStartValue(0.6)
+            self._pop_anim.setEndValue(1.0)
+            self._pop_anim.start()
         except Exception:
             pass
 

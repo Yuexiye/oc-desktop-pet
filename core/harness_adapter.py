@@ -447,12 +447,6 @@ class HanakoPetAdapter:
         cleaned = re.sub(r"<[^>]+>", "", cleaned)
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
         return cleaned, emotion
-        # 剥离表情包 XML 段：<parameter name=...>值</parameter> 整段剥掉
-        cleaned = re.sub(r"<parameter[^>]*>.*?</parameter>", "", cleaned, flags=re.S)
-        # 剥离其余残留标签（<brioqingbao_express> 等）
-        cleaned = re.sub(r"<[^>]+>", "", cleaned)
-        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
-        return cleaned, emotion
 
     def set_session(self, session_ref) -> None:
         """注入当前 Session 引用（PetManager / ConversationEngine 调用）"""

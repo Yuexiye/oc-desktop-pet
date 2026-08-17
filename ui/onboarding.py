@@ -130,12 +130,13 @@ class OnboardingOverlay(QWidget):
         try:
             eff = QGraphicsOpacityEffect(self._card)
             self._card.setGraphicsEffect(eff)
-            anim = QPropertyAnimation(eff, b"opacity", self)
-            anim.setDuration(280)
-            anim.setEasingCurve(QEasingCurve.OutCubic)
-            anim.setStartValue(0.0)
-            anim.setEndValue(1.0)
-            anim.start()
+            # 存 self 引用，防止动画运行期间被 GC 提前回收
+            self._fade_in_anim = QPropertyAnimation(eff, b"opacity", self)
+            self._fade_in_anim.setDuration(280)
+            self._fade_in_anim.setEasingCurve(QEasingCurve.OutCubic)
+            self._fade_in_anim.setStartValue(0.0)
+            self._fade_in_anim.setEndValue(1.0)
+            self._fade_in_anim.start()
         except Exception:
             pass
 
@@ -144,13 +145,14 @@ class OnboardingOverlay(QWidget):
         try:
             eff = QGraphicsOpacityEffect(self._card)
             self._card.setGraphicsEffect(eff)
-            anim = QPropertyAnimation(eff, b"opacity", self)
-            anim.setDuration(200)
-            anim.setEasingCurve(QEasingCurve.InCubic)
-            anim.setStartValue(1.0)
-            anim.setEndValue(0.0)
-            anim.finished.connect(self._finish_dismiss)
-            anim.start()
+            # 存 self 引用，防止动画运行期间被 GC 提前回收
+            self._dismiss_anim = QPropertyAnimation(eff, b"opacity", self)
+            self._dismiss_anim.setDuration(200)
+            self._dismiss_anim.setEasingCurve(QEasingCurve.InCubic)
+            self._dismiss_anim.setStartValue(1.0)
+            self._dismiss_anim.setEndValue(0.0)
+            self._dismiss_anim.finished.connect(self._finish_dismiss)
+            self._dismiss_anim.start()
         except Exception:
             self._finish_dismiss()
 

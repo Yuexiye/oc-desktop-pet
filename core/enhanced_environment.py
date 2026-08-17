@@ -173,9 +173,8 @@ def infer_file_type(filename: str) -> str:
     if not filename:
         return "unknown"
 
-    # 提取扩展名
+    # 提取扩展名（Path().suffix 在此曾有一行死代码 `_, ext = ..., None`，已删除）
     path_part = filename.split('\\')[-1].split('/')[-1]
-    _, ext = Path(path_part).suffix.lower(), None
 
     # 正确获取扩展名
     dot_idx = path_part.rfind('.')
