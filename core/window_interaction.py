@@ -82,6 +82,7 @@ class WindowInteraction:
         self._pet = pet_window
         self._current_window: Optional[WindowRect] = None
         self._walk_timer: Optional[QTimer] = None
+        self._walk_speed: int = 2
         self._walk_path: list[tuple[int, int]] = []
         self._walk_index: int = 0
         
@@ -111,11 +112,11 @@ class WindowInteraction:
     
     def move_near_window(self, offset_x: int = 10, offset_y: int = 0) -> bool:
         """桌宠移动到当前窗口旁边
-        
+
         Args:
             offset_x: 水平偏移（正值向右）
-            offset_y: 垂直偏移（正值向下）
-        
+            offset_y: 保留参数（当前物理引擎只支持水平行走，垂直偏移暂不生效）
+
         Returns:
             是否成功移动
         """
@@ -123,41 +124,39 @@ class WindowInteraction:
         if not window:
             logger.debug("No window found")
             return False
-        
-        # 计算目标位置（窗口右侧）
+
+        # 计算目标位置（窗口右侧）。
+        # 注：PhysicsEngine.start_walk/_tick_walk 只更新 x 坐标（move_to(x, get_pos()[1])），
+        # 因此这里不计算 target_y——垂直偏移写了也不生效，只会误导。若未来需要
+        # 垂直移动，请先扩展 PhysicsEngine 支持 y 目标再启用。
         target_x = window.right + offset_x
-        target_y = window.y + offset_y
-        
+
         # 确保不超出屏幕，并留出安全边距
         screen = self._pet.screen()
         if screen:
             screen_rect = screen.availableGeometry()
             pet_w = self._pet.width()
-            pet_h = self._pet.height()
-            
+
             # 安全边距（避免走到屏幕边缘）
             margin = 50
             target_x = min(target_x, screen_rect.width() - pet_w - margin)
-            target_y = min(target_y, screen_rect.height() - pet_h - margin)
             target_x = max(target_x, margin)
-            target_y = max(target_y, margin)
-        
+
         # 检查是否已经足够接近目标位置（避免反复移动）
         current_pos = self._pet.pos()
         current_x = current_pos.x()
-        current_y = current_pos.y()
-        distance = ((target_x - current_x) ** 2 + (target_y - current_y) ** 2) ** 0.5
-        
+        distance = abs(target_x - current_x)
+
         # 如果已经足够接近（100px内），则不移动
         if distance < 100:
             logger.debug("Already near window, skipping move")
             return False
-        
+
         # 使用物理引擎平滑移动（不是瞬移）
         direction = 1 if target_x > current_x else -1
         self._pet._physics.start_walk(target_x, facing_right=(direction > 0))
-        logger.info("Walking pet near window: (%d, %d) from (%d, %d)", target_x, target_y, current_x, current_y)
-        
+        logger.info("Walking pet near window: x=%d from x=%d", target_x, current_x)
+
         return True
     
     def show_object_on_window(self, emoji: str, label: str, duration: int = 10) -> bool:
@@ -187,13 +186,14 @@ class WindowInteraction:
             obj_y = max(obj_y, 0)
         
         # 显示物件
-        if hasattr(self._pet, '_virtual_object_overlay'):
-            from ui.virtual_object_overlay import VirtualObject
-            obj = VirtualObject(emoji=emoji, label=label, duration=duration)
-            self._pet._virtual_object_overlay.show_object(obj, position=(obj_x, obj_y))
-            logger.info("Showed object on window: %s %s at (%d, %d)", emoji, label, obj_x, obj_y)
-            return True
-        
+        # 注：ui.virtual_object_overlay 模块不存在，PetWindow 也未挂 _virtual_object_overlay，
+        # 原实现是死路径（import 必失败）。桌面虚拟物件目前由
+        # core/enhanced_environment.py 的 VirtualObjectRegistry 数据层承载，无 UI 叠层，
+        # 这里保留方法签名（调用方可继续安全调用），但明确记录未接线。
+        if getattr(self._pet, '_virtual_object_overlay', None) is not None:
+            logger.debug("virtual object overlay not wired (dead path removed)")
+            return False
+
         logger.debug("No virtual object overlay found")
         return False
     
@@ -219,22 +219,26 @@ class WindowInteraction:
         if not self._walk_path:
             return False
         
-        # 启动走动定时器
-        if self._walk_timer:
-            self._walk_timer.stop()
-        
-        self._walk_timer = QTimer(self._pet)
-        self._walk_timer.timeout.connect(lambda: self._walk_step(speed))
+        # 启动走动定时器：句柄复用，避免每次调用新建 QTimer 造成泄漏
+        if self._walk_timer is None:
+            self._walk_timer = QTimer(self._pet)
+            self._walk_timer.timeout.connect(self._on_walk_tick)
+        self._walk_timer.stop()
+        self._walk_speed = speed
         self._walk_timer.start(50)  # 50ms 一步
         
         logger.info("Started walking along window edge: %d steps", steps)
         return True
     
+    def _on_walk_tick(self) -> None:
+        """定时器回调：按当前速度走一步（避免 lambda 闭包反复绑定新连接）"""
+        self._walk_step(getattr(self, '_walk_speed', 2))
+    
     def stop_walking(self):
         """停止走动"""
         if self._walk_timer:
             self._walk_timer.stop()
-            self._walk_timer = None
+        # 注意：定时器句柄保留复用（不置 None），避免下次 walk_along_edge 新建 QTimer 泄漏
         
         self._walk_path = []
         self._walk_index = 0
