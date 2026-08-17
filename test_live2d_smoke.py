@@ -12,6 +12,7 @@ import os
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pytest import MonkeyPatch
 
 # 直接从文件加载，避免依赖 Qt 应用循环
 import importlib.util
@@ -113,12 +114,14 @@ def test_debug_minimal_flag_from_env():
     """环境变量 L2D_DEBUG_MINIMAL=1 => _debug_minimal=True"""
     from avatar.live2d_renderer import Live2DRenderer
     obj = object.__new__(Live2DRenderer)
-    with patch.dict(os.environ, {"L2D_DEBUG_MINIMAL": "1"}):
+    # 用 MonkeyPatch.context() 逐项设置/恢复环境变量，避免 patch.dict 整体
+    # 重建 os.environ（Windows 环境块 32767 上限，同进程串扰会触发超长错误）。
+    # 退出 context 时自动恢复/删除 L2D_DEBUG_MINIMAL，无需手动 pop。
+    with MonkeyPatch.context() as m:
+        m.setenv("L2D_DEBUG_MINIMAL", "1")
         # 触发 __init__ 里的赋值（直接模拟该行）
         obj._debug_minimal = os.environ.get("L2D_DEBUG_MINIMAL") == "1"
     assert obj._debug_minimal is True
-    with patch.dict(os.environ, {}, clear=False):
-        os.environ.pop("L2D_DEBUG_MINIMAL", None)
 
 
 # ── 模型加载链路（mock GL）──

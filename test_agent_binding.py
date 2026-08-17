@@ -11,6 +11,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pytest import MonkeyPatch
 
 from core.harness_adapter import HanakoPetAdapter
 from core.conversation_engine import ConversationEngine
@@ -49,9 +50,13 @@ class FakeSM:
 
 
 def _make_adapter(agent_id="ophelia"):
-    with patch.dict("os.environ", {"HANAKO_TRANSPORT_MODE": "prefer_hanako"}):
+    # 用 MonkeyPatch.context() 逐项设置/恢复环境变量，避免 patch.dict 整体
+    # 重建 os.environ（Windows 环境块 32767 上限，同进程串扰会触发超长错误）。
+    # HANAKO_TRANSPORT_MODE 默认值即 prefer_hanako，此处只为确定性。
+    with MonkeyPatch.context() as m:
+        m.setenv("HANAKO_TRANSPORT_MODE", "prefer_hanako")
         adapter = HanakoPetAdapter(agent_id=agent_id, builtin=False)
-        return adapter
+    return adapter
 
 
 # ── F2: switch_agent 切换对话后端 ──
