@@ -125,6 +125,20 @@ class PhysicsEngine:
         w, h = self._cb.get_size()
         x, y = self._cb.get_pos()
 
+        # 窗口比屏幕还大时，弹跳边界 (0 .. screen-w) 的"上界"为负，
+        # 坐标会被反复夹在 0 处抖动（y 被夹死）。此时不再弹跳，
+        # 直接归位屏幕中央并回到 idle。
+        if sg.width() - w < 0 or sg.height() - h < 0:
+            cx = max(0, (sg.width() - w) // 2)
+            cy = max(0, (sg.height() - h) // 2)
+            self._bounce_active = False
+            self._vx = 0.0
+            self._vy = 0.0
+            self._cb.move_to(cx, cy)
+            self._cb.set_anim('idle')
+            self._cb.on_bounce_finished(cx, cy)
+            return
+
         # 重力
         self._vy += BOUNCE_GRAVITY
         # 摩擦
