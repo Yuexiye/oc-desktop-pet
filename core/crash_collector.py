@@ -33,6 +33,44 @@ log = logging.getLogger(__name__)
 _COLLECTED = False
 
 
+class _PydImportTracker:
+    """记录每个 C 扩展（.pyd/.so）首次被哪个线程 import。
+
+    通过 meta_path finder 在导入发生时打点（只记录、不拦截、永远返回 None），
+    崩溃包 c_extensions.txt 里可标注"谁在哪个线程拉起了 C 扩展"——
+    0x8001010d 这类 COM 错误常与"在错误 apartment 的线程里初始化 COM"有关，
+    知道导入线程才能定位是哪个初始化路径闯的祸。
+    """
+
+    def __init__(self) -> None:
+        # module_name -> (线程名, 线程 ident)
+        self.imported_by: dict[str, tuple[str, int | None]] = {}
+
+    def find_spec(self, fullname, path=None, target=None):
+        try:
+            if fullname not in self.imported_by:
+                import importlib.machinery as _mach
+                spec = _mach.PathFinder.find_spec(fullname, path)
+                if spec is not None and spec.origin and (
+                    spec.origin.endswith(".pyd") or spec.origin.endswith(".so")
+                ):
+                    cur = threading.current_thread()
+                    self.imported_by[fullname] = (cur.name, cur.ident)
+        except Exception:
+            pass
+        return None  # 永不拦截，交给正常导入机制
+
+    @classmethod
+    def install(cls) -> "_PydImportTracker":
+        """插入 meta_path 首位（须在重型依赖 import 之前调用）。"""
+        tracker = cls()
+        sys.meta_path.insert(0, tracker)
+        return tracker
+
+
+_PYD_TRACKER = _PydImportTracker.install()
+
+
 def _project_root() -> Path:
     # main.py 在仓库根；本文件在 core/ 下
     return Path(__file__).resolve().parent.parent
@@ -70,13 +108,18 @@ def _collect_once(reason: str) -> str | None:
                 except Exception as e:
                     zf.writestr("oc_pet.log.tail.txt", f"(读取失败: {e})")
 
-            # 3) C 扩展列表（锁定 COM 嫌疑）
+            # 3) C 扩展列表（锁定 COM 嫌疑）+ 每个 .pyd 首次被哪个线程 import
             c_exts = []
             for name, mod in list(sys.modules.items()):
                 try:
                     fn = getattr(mod, "__file__", None)
                     if fn and (fn.endswith(".pyd") or fn.endswith(".so") or ".pyd" in fn):
-                        c_exts.append(f"{name}\t{fn}")
+                        imp = _PYD_TRACKER.imported_by.get(name)
+                        if imp is not None:
+                            imp_note = f"\t(首次 import 线程: {imp[0]}, ident={imp[1]})"
+                        else:
+                            imp_note = "\t(首次 import 线程: 未知/模块启动前已加载)"
+                        c_exts.append(f"{name}\t{fn}{imp_note}")
                 except Exception:
                     pass
             # 也列出可疑的 COM 相关顶层模块是否曾被导入
@@ -88,11 +131,25 @@ def _collect_once(reason: str) -> str | None:
             c_exts.append("\n".join(com_suspects) if com_suspects else "(无)")
             zf.writestr("c_extensions.txt", "\n".join(c_exts))
 
-            # 4) 线程快照
+            # 4) 线程快照（含每线程堆栈：0x8001010d 这类 C 层 COM 错误常与
+            #    某个线程在错误 apartment 里初始化 COM 有关，只有栈才能定位）
+            frames = {}
+            try:
+                frames = sys._current_frames()
+            except Exception:
+                pass
             threads = []
             for t in threading.enumerate():
-                threads.append(f"[thread] {t.name} (daemon={t.daemon}, alive={t.is_alive()})")
-            zf.writestr("threads.txt", "\n".join(threads))
+                stack_lines: list[str] = []
+                if t.ident in frames:
+                    try:
+                        stack_lines = traceback.format_stack(frames[t.ident])
+                    except Exception:
+                        stack_lines = ["    (无法获取堆栈)"]
+                header = f"[thread] {t.name} (daemon={t.daemon}, alive={t.is_alive()}, ident={t.ident})"
+                body = "".join(stack_lines).rstrip("\n") if stack_lines else "    (无活动帧)"
+                threads.append(f"{header}\n{body}")
+            zf.writestr("threads.txt", "\n\n".join(threads))
 
             # 5) 环境信息
             env = [
