@@ -30,6 +30,11 @@ logger = logging.getLogger(__name__)
 
 from .intent import classify_intent, LATE_NIGHT_WORK_MINUTES
 from .scenarios import get_reaction, is_disruptive, get_recall_reaction, get_associate_reaction
+from .proactive_contracts import (
+    PROACTIVE_REASON_PASS_THROTTLED,
+)
+from .proactive_state import ProactiveThrottle
+from .proactive_generation import ProactiveGenerator
 
 
 DEFAULT_RULES = [
@@ -61,9 +66,24 @@ COOLDOWN_MIN_MINUTES = 5.0
 # D 场景回忆冷却（分钟，默认 30；config memory.recall.cooldown_minutes 可覆盖）
 RECALL_COOLDOWN_MINUTES = 30.0
 
+# P0-1 主动搭话 LLM 生成（默认开；config proactive.llm_generation 可覆盖）
+DEFAULT_LLM_GENERATION = True
+
+# P0-2 同会话去重：生成/模板文案与近期主动搭话高度相似时跳过（日志 dedup）
+DEDUP_LOG_TAG = "[proactive] dedup"
+
+# 意图命中并已启动异步生成的哨兵返回值（tick 据此停止本轮，防回忆/规则双投递）
+_GENERATION_PENDING = "__proactive_generation_pending__"
+
 
 class ProactiveScheduler:
-    """主动对话调度器 - 意图分类 + 规则引擎 + 空闲检测 + 前台分类 + 活动感知"""
+    """主动对话调度器 - 意图分类 + 规则引擎 + 空闲检测 + 前台分类 + 活动感知
+
+    P0-1/P0-2 升级：
+      - tick 管线：意图 → LLM 生成（可选） → 回忆 → 规则兜底
+      - 半衰期节流（ProactiveThrottle）：source 级去重 + 每日预算 + 文案相似去重
+      - LLM 生成（ProactiveGenerator）：复用 Hanako 通道；失败/超时回退模板池
+    """
 
     def __init__(self, foreground_watcher=None, on_proactive: callable = None, activity_tracker=None):
         self._foreground_watcher = foreground_watcher
@@ -97,12 +117,98 @@ class ProactiveScheduler:
         self._recall_cooldown_minutes: float = RECALL_COOLDOWN_MINUTES
         self._recall_cooldown_until: float = 0.0  # 回忆独立冷却截止
 
+        # ── P0-1/P0-2 半衰期节流 + LLM 生成（默认不注入 → 行为与旧版完全一致）──
+        self._throttle = ProactiveThrottle(daily_limit=self._daily_limit)
+        self._generator: ProactiveGenerator | None = None   # 由 pet.py 注入
+        self._llm_generation: bool = DEFAULT_LLM_GENERATION  # config proactive.llm_generation
+        self._generation_in_flight: bool = False             # 生成进行中，防止并发/重复触发
+        self._pending_fallback_prompt: str = ""              # 生成失败时的回退文案
+        self._pending_source_key: str = ""                   # 生成上下文 source_key（节流用）
+
+        # ── P1-6 屏幕/意图感知联动：屏幕场景提供者（可选注入）──
+        # provider: callable() -> ScreenScene | dict | None（读取屏幕感知分类结果）。
+        # 注入后 tick 会把它并入 signals，供意图触发/场景回忆使用；未注入零变化。
+        self._screen_scene_provider = None
+
+        # ── P1-5 反重复（语义指纹 + 跨会话去重；与 throttle 字符串相似去重互补）──
+        self._anti_repeat = None            # AntiRepeatCorpus 实例（可选注入）
+        self._anti_repeat_name: str = ""    # 角色名（corpus 分 key）
+        self._last_user_message: float = time.time()  # 用户最后一次真实消息时间（未回应信号用）
+
     def set_scene_memory(self, scene_memory) -> None:
         """注入 SceneMemory（D 场景回忆的检索端）。
 
         未注入时 _try_recall 直接 return None，现有主动对话路径零变化（兼容性）。
         """
         self._scene_memory = scene_memory
+
+    def set_screen_scene_provider(self, provider: callable | None) -> None:
+        """注入屏幕场景提供者（P1-6 屏幕/意图感知联动）。
+
+        Args:
+            provider: callable() -> ScreenScene | dict | None。每次 tick 读取，
+                并入 signals（screen_scene/screen_intent/screen_confidence）。
+                未注入 / 返回 None → 屏幕信号缺席，行为与旧版一致。
+        """
+        self._screen_scene_provider = provider if callable(provider) else None
+
+    def set_anti_repeat(self, corpus=None, agent_name: str = "") -> None:
+        """注入反重复语料库（P1-5 语义指纹 + 跨会话去重）。
+
+        Args:
+            corpus: AntiRepeatCorpus 实例；None=关闭语义去重（行为与旧版一致）。
+            agent_name: 角色名（corpus 内分 key；缺省 "default"）。
+
+        与 ``ProactiveThrottle.is_duplicate``（字符串相似）互补：
+        - 字符串相似 → 抓字面复读（1h 窗 + 0.90 阈值）
+        - 语义指纹 → 抓"换说法但同一话题"近重复（BM25 IDF×TF，跨会话持久化）
+        - 未回应信号 → 抓"隔几轮/跨小时又出现的高度相似主动搭话"
+        """
+        self._anti_repeat = corpus
+        self._anti_repeat_name = (agent_name or "").strip() or "default"
+
+    def _anti_repeat_allows(self, text: str, now: float | None = None) -> bool:
+        """P1-5 语义去重检查：True=放行；False=与近期/历史主动搭话语义重复，拒绝。
+
+        两个互补信号（与 ``_throttle.is_duplicate`` 字符串相似互补）：
+        - BM25 短窗（score_draft ≥ DROP_THRESHOLD）：最近 10 分钟内"换说法但同一
+          话题"的近重复（语义指纹）
+        - 未回应长窗（score_unanswered_proactive_draft triggered）：用户一直没回应
+          时，隔几轮/跨小时再次出现的高度相似主动搭话（跨会话去重）
+        """
+        if self._anti_repeat is None or not (text or "").strip():
+            return True
+        try:
+            name = self._anti_repeat_name
+            now = now if now is not None else time.time()
+            if self._anti_repeat.is_repeat(name, text, now=now):
+                logger.info("[proactive] semantic dedup (bm25): %s", text[:40])
+                return False
+            sig = self._anti_repeat.score_unanswered_proactive_draft(
+                name, text, silence_since=self._last_user_message, now=now,
+            )
+            if sig.triggered:
+                logger.info(
+                    "[proactive] semantic dedup (unanswered, %d matches, sim=%.2f): %s",
+                    sig.match_count, sig.best_similarity, text[:40],
+                )
+                return False
+            return True
+        except Exception as e:
+            logger.debug("anti_repeat check failed (allow): %s", e)
+            return True
+
+    def _anti_repeat_record(self, text: str, now: float | None = None) -> None:
+        """P1-5 登记一条已投递的主动搭话到语义语料库（跨会话去重依据）。"""
+        if self._anti_repeat is None or not (text or "").strip():
+            return
+        try:
+            self._anti_repeat.record_output(
+                self._anti_repeat_name, text, is_proactive=True,
+                now=now if now is not None else time.time(),
+            )
+        except Exception as e:
+            logger.debug("anti_repeat record failed: %s", e)
 
     def load_memory_config(self, memory_cfg: dict) -> None:
         """加载记忆层配置段（config["memory"]）。
@@ -130,9 +236,118 @@ class ProactiveScheduler:
         self._current_cooldown = float(config.get("cooldown_minutes", 10))
         self._rules = config.get("rules", list(DEFAULT_RULES))
         self._daily_limit = config.get("daily_limit", DAILY_LIMIT)
+        self._throttle = ProactiveThrottle(daily_limit=self._daily_limit)
+        # P0-1 主动搭话 LLM 生成开关（T01 config 骨架默认 True；缺省按 True 向后兼容）
+        self._llm_generation = bool(config.get("llm_generation", DEFAULT_LLM_GENERATION))
         # P6-2 全屏检测可配置：阈值（覆盖比例，默认 0.95）与总开关（默认开启）
         self._fullscreen_threshold = float(config.get("fullscreen_threshold", 0.95))
         self._fullscreen_suppress = bool(config.get("fullscreen_suppress", True))
+
+    def set_generator(self, generator: ProactiveGenerator | None, llm_generation: bool | None = None) -> None:
+        """注入 LLM 生成器（P0-1）。
+
+        Args:
+            generator: ProactiveGenerator 实例；None=关闭生成（回退模板池）。
+            llm_generation: 可选覆盖 config 的生成开关；None=保持 load_config 值。
+        """
+        self._generator = generator
+        if llm_generation is not None:
+            self._llm_generation = bool(llm_generation)
+
+    def generation_available(self) -> bool:
+        """LLM 生成是否可用（开关开 + 已注入可用生成器 + 无在途生成）。"""
+        return (
+            self._llm_generation
+            and self._generator is not None
+            and self._generator.is_available()
+            and not self._generation_in_flight
+        )
+
+    def _start_generation(self, context: dict, fallback_prompt: str, source_key: str) -> bool:
+        """启动一次异步 LLM 生成（P0-1）。
+
+        成功返回 True（生成已在后台执行，结果经 Qt Signal 回主线程后投递）；
+        失败/未启用返回 False（调用方应立即使用 fallback_prompt 走模板池）。
+
+        Args:
+            context: 生成上下文（scenario/signals/intent/fallback_prompt…）。
+            fallback_prompt: 生成失败时的回退模板文案。
+            source_key: 本次触发的节流 key（场景名/规则 prompt 等）。
+        """
+        if not self.generation_available():
+            return False
+        self._generation_in_flight = True
+        self._pending_fallback_prompt = fallback_prompt or ""
+        self._pending_source_key = source_key or ""
+        try:
+            self._generator.set_callbacks(
+                on_generated=self._on_generation_result,
+                on_fallback=self._on_generation_fallback,
+            )
+            self._generator.generate(context, fallback_prompt)
+            logger.info("[proactive] generated via llm (async started): source=%s", source_key)
+            return True
+        except Exception as e:
+            logger.warning("[proactive] generation start failed, fallback: %s", e)
+            self._generation_in_flight = False
+            self._pending_fallback_prompt = ""
+            self._pending_source_key = ""
+            return False
+
+    def _on_generation_result(self, text: str) -> None:
+        """LLM 生成成功回调（主线程经 Qt Signal 调用）。
+
+        验收日志：`[proactive] generated via llm`；生成文本与近期重复 → dedup 日志。
+        """
+        self._generation_in_flight = False
+        fallback_prompt = self._pending_fallback_prompt
+        source_key = self._pending_source_key
+        self._pending_fallback_prompt = ""
+        self._pending_source_key = ""
+        text = (text or "").strip()
+        if not text:
+            logger.info("[proactive] fallback: generation empty -> %s", fallback_prompt)
+            self._deliver(fallback_prompt, source_key=source_key)
+            return
+        # P0-2 同会话去重：与近期主动搭话高度相似 → 跳过（不投递、不计数）
+        if self._throttle.is_duplicate(text):
+            logger.info("%s: %s", DEDUP_LOG_TAG, text[:40])
+            return
+        self._throttle.record_chat(text)
+        logger.info("[proactive] generated via llm: %s", text)
+        self._deliver(text, source_key=source_key)
+
+    def _on_generation_fallback(self, fallback_text: str) -> None:
+        """LLM 生成失败/超时回退回调（主线程经 Qt Signal 调用）。
+
+        验收日志：`fallback`；直接走模板池投递（仍计触发与节流）。
+        """
+        self._generation_in_flight = False
+        fallback_prompt = self._pending_fallback_prompt or (fallback_text or "")
+        source_key = self._pending_source_key
+        self._pending_fallback_prompt = ""
+        self._pending_source_key = ""
+        logger.info("[proactive] fallback: %s", fallback_prompt)
+        self._deliver(fallback_prompt, source_key=source_key)
+
+    def _deliver(self, prompt: str, source_key: str = "") -> None:
+        """统一投递入口：记录触发 + 节流 + on_proactive。
+
+        生成路径（_on_generation_result/_on_generation_fallback）与同步模板路径共用，
+        保证无论文案来自 LLM 还是模板池，触发簿记/节流/每日计数都一致。
+        """
+        if not (prompt or "").strip():
+            return
+        now = time.time()
+        # P1-5 语义去重（生成路径兜底：fallback 模板也可能与历史话题重复）
+        if not self._anti_repeat_allows(prompt, now):
+            return
+        self._record_proactive_trigger(now)
+        if source_key:
+            self._throttle.record_used(source_key, kind="chat", now=now)
+        self._throttle.record_chat(prompt, now=now)
+        self._anti_repeat_record(prompt, now)
+        self.on_proactive(prompt)
 
     def mark_conversation(self, user_reply: bool = False):
         """标记对话发生。
@@ -145,6 +360,7 @@ class ProactiveScheduler:
         self._last_conversation = time.time()
         if user_reply:
             self._user_replied_since_last = True
+            self._last_user_message = time.time()  # P1-5 未回应信号：用户真实消息时间
             self._current_cooldown = max(COOLDOWN_MIN_MINUTES, self._current_cooldown * 0.5)
 
     def _record_proactive_trigger(self, now: float) -> None:
@@ -214,6 +430,9 @@ class ProactiveScheduler:
             "period": "other", "category": "other", "activity": "idle",
             "fg_duration_min": 0.0, "conversation_idle_min": 0.0,
             "window_switches_5min": 0, "is_weekend": False,
+            # P1-6 屏幕/意图感知联动（缺省 None = 屏幕信号缺席）
+            "screen_scene": None, "screen_intent": None, "screen_confidence": 0.0,
+            "screen_propensity": "open",
         }
         try:
             from .time import TimePerception
@@ -233,10 +452,30 @@ class ProactiveScheduler:
             except Exception:
                 signals["activity"] = "idle"
         signals["conversation_idle_min"] = (now - self._last_conversation) / 60.0
+        # P1-6 屏幕场景提供者：并入 signals（provider 返回 ScreenScene/dict/None）
+        if self._screen_scene_provider is not None:
+            try:
+                raw = self._screen_scene_provider()
+                if raw is not None:
+                    if hasattr(raw, "to_dict"):
+                        raw = raw.to_dict()
+                    if isinstance(raw, dict):
+                        signals["screen_scene"] = raw.get("scene") or ""
+                        signals["screen_intent"] = raw.get("intent") or ""
+                        signals["screen_confidence"] = float(raw.get("confidence") or 0.0)
+                        signals["screen_propensity"] = raw.get("propensity") or "open"
+            except Exception as e:
+                logger.debug("screen scene provider failed: %s", e)
         return signals
 
     def _try_intent(self, now: float, signals: dict) -> str | None:
-        """P1 意图分类优先触发：命中场景 + 置信度达标 → 触发。"""
+        """P1 意图分类优先触发：命中场景 + 置信度达标 → 触发（P0-1 可走 LLM 生成）。
+
+        P1-6 屏幕/意图感知联动：
+        - 屏幕场景 propensity=closed（私密）→ 直接不触发（硬跳过）
+        - 屏幕场景置信度达标 → 用屏幕场景作为触发场景（更贴近用户当前状态），
+          意图置信度取 max(屏幕, 规则意图)；失败/缺席 → 走原 classify_intent
+        """
         try:
             intent = classify_intent(
                 period=signals["period"],
@@ -249,6 +488,25 @@ class ProactiveScheduler:
             )
             scenario = intent.get("scenario", "")
             confidence = intent.get("confidence", 0.0)
+
+            # P1-6 屏幕场景优先：私密硬跳过；高置信度场景覆盖规则意图场景
+            screen_scene = signals.get("screen_scene") or ""
+            screen_conf = float(signals.get("screen_confidence") or 0.0)
+            screen_propensity = signals.get("screen_propensity") or "open"
+            if screen_propensity == "closed":
+                logger.debug("Proactive intent skipped: screen scene closed (private)")
+                return None
+            if screen_scene and screen_conf >= INTENT_MIN_CONFIDENCE:
+                from .screen_intent import to_intent_scenario
+                mapped = to_intent_scenario(screen_scene)
+                if mapped:
+                    scenario = mapped
+                    confidence = max(confidence, screen_conf)
+                    intent = dict(intent)
+                    intent["scenario"] = scenario
+                    intent["intent"] = signals.get("screen_intent") or intent.get("intent", "work")
+                    intent["reason"] = f"屏幕感知({screen_scene} conf={screen_conf:.2f})"
+
             if confidence < INTENT_MIN_CONFIDENCE or not scenario:
                 return None
             # 打扰成本：打字中且场景非"值得打扰" → 不触发
@@ -256,10 +514,38 @@ class ProactiveScheduler:
             if activity == "typing" and not is_disruptive(scenario):
                 logger.debug("Proactive intent skipped: typing + 非值得打扰场景 %s", scenario)
                 return None
+            # P0-2 半衰期节流：同一场景在硬跳过窗口内不重复触发
+            if self._throttle.should_skip(scenario, kind="chat", now=now):
+                logger.info(
+                    "[proactive] %s scenario=%s (hard-skip/half-life)",
+                    PROACTIVE_REASON_PASS_THROTTLED, scenario,
+                )
+                return None
             # 深夜加班类场景：即使打字也值得提醒（强度高）
             reaction = get_reaction(scenario, intensity=confidence)
             prompt = reaction["text"]
+            # P0-1 LLM 生成：意图命中 → 尝试生成更自然文案；失败回退模板池
+            if self.generation_available():
+                context = {
+                    "scenario": scenario,
+                    "intent": intent,
+                    "signals": signals,
+                    "fallback_prompt": prompt,
+                }
+                started = self._start_generation(context, fallback_prompt=prompt, source_key=scenario)
+                if started:
+                    logger.info(
+                        "Proactive intent -> generation: scenario=%s intent=%s conf=%.2f %s",
+                        scenario, intent.get("intent"), confidence, intent.get("reason"),
+                    )
+                    return _GENERATION_PENDING  # 结果异步投递（哨兵停止本轮）
+            # P1-5 语义去重：与近期/历史主动搭话话题重复 → 拒绝（与字符串去重互补）
+            if not self._anti_repeat_allows(prompt, now):
+                return None
             self._record_proactive_trigger(now)
+            self._throttle.record_used(scenario, kind="chat", now=now)
+            self._throttle.record_chat(prompt, now=now)
+            self._anti_repeat_record(prompt, now)
             logger.info(
                 "Proactive intent triggered: scenario=%s intent=%s conf=%.2f %s",
                 scenario, intent.get("intent"), confidence, intent.get("reason"),
@@ -310,6 +596,13 @@ class ProactiveScheduler:
             except Exception:
                 scenario = ""
             tags = [category, scenario, period, emotion]
+            # P1-6 屏幕/意图感知联动：屏幕场景标签并入回忆匹配维度
+            screen_scene = signals.get("screen_scene") or ""
+            screen_intent = signals.get("screen_intent") or ""
+            if screen_scene:
+                tags.append(screen_scene)
+            if screen_intent:
+                tags.append(screen_intent)
             # 打扰成本：打字中且场景非"值得打扰" → 不触发
             if signals.get("activity") == "typing" and scenario and not is_disruptive(scenario):
                 logger.debug("Proactive recall skipped: typing + 非值得打扰场景 %s", scenario)
@@ -319,8 +612,18 @@ class ProactiveScheduler:
                 scene = matches[0]
                 text = get_recall_reaction(scene, {"topic": scene.topics[0] if scene.topics else ""})
                 if text:
+                    # P0-2 同会话去重：与近期主动搭话高度相似 → 跳过
+                    if self._throttle.is_duplicate(text, now=now):
+                        logger.info("%s: recall %s", DEDUP_LOG_TAG, text[:40])
+                        return None
+                    # P1-5 语义去重：与历史主动搭话话题重复 → 拒绝
+                    if not self._anti_repeat_allows(text, now):
+                        return None
                     self._record_proactive_trigger(now)
                     self._recall_cooldown_until = now + self._recall_cooldown_minutes * 60
+                    self._throttle.record_used(scene.scene_id, kind="chat", now=now)
+                    self._throttle.record_chat(text, now=now)
+                    self._anti_repeat_record(text, now)
                     logger.info(
                         "Proactive recall triggered: scene=%s category=%s scenario=%s",
                         scene.scene_id, category, scenario,
@@ -344,8 +647,18 @@ class ProactiveScheduler:
                         scene, {"topic": scene.topics[0] if scene.topics else ""}
                     )
                     if text:
+                        # P0-2 同会话去重：与近期主动搭话高度相似 → 跳过
+                        if self._throttle.is_duplicate(text, now=now):
+                            logger.info("%s: associate %s", DEDUP_LOG_TAG, text[:40])
+                            return None
+                        # P1-5 语义去重：与历史主动搭话话题重复 → 拒绝
+                        if not self._anti_repeat_allows(text, now):
+                            return None
                         self._record_proactive_trigger(now)
                         self._recall_cooldown_until = now + self._recall_cooldown_minutes * 60
+                        self._throttle.record_used(scene.scene_id, kind="chat", now=now)
+                        self._throttle.record_chat(text, now=now)
+                        self._anti_repeat_record(text, now)
                         logger.info(
                             "Proactive associate triggered: from=%s to=%s",
                             scene.scene_id, category,
@@ -370,6 +683,10 @@ class ProactiveScheduler:
             return None
 
         if now < self._cooldown_until:
+            return None
+
+        # P0-1 生成在途：等待异步结果回主线程投递，本轮不再触发其他路径（防重复）
+        if self._generation_in_flight:
             return None
 
         # 对话空闲时间（上次对话到现在）
@@ -413,6 +730,9 @@ class ProactiveScheduler:
         intent_prompt = self._try_intent(now, signals)
         if intent_prompt:
             return intent_prompt
+        # 意图命中但已启动异步生成 → 本轮不再走回忆/规则（防同 tick 重复触发）
+        if self._generation_in_flight:
+            return None
 
         # ── D/E 场景回忆（意图优先，回忆让位；未注入/关闭则零行为）──
         recall_prompt = self._try_recall(now, signals)
@@ -433,7 +753,40 @@ class ProactiveScheduler:
                 if random.random() < weight:
                     prompt = rule.get("prompt", "")
                     if prompt:
+                        # P0-2 半衰期节流：同一规则 prompt 在硬跳过窗口内不重复触发
+                        if self._throttle.should_skip(prompt, kind="chat", now=now):
+                            logger.info(
+                                "[proactive] %s rule='%s' (hard-skip/half-life)",
+                                PROACTIVE_REASON_PASS_THROTTLED, prompt,
+                            )
+                            continue
+                        # P0-2 同会话去重：与近期主动搭话高度相似 → 跳过
+                        if self._throttle.is_duplicate(prompt, now=now):
+                            logger.info("%s: rule '%s'", DEDUP_LOG_TAG, prompt[:40])
+                            continue
+                        # P1-5 语义去重：与历史主动搭话话题重复 → 跳过
+                        if not self._anti_repeat_allows(prompt, now):
+                            continue
+                        # P0-1 LLM 生成：规则命中 → 尝试生成更自然文案；失败回退模板池
+                        if self.generation_available():
+                            context = {
+                                "scenario": "rule_fallback",
+                                "signals": signals,
+                                "fallback_prompt": prompt,
+                            }
+                            started = self._start_generation(
+                                context, fallback_prompt=prompt, source_key=prompt
+                            )
+                            if started:
+                                logger.info(
+                                    "Proactive rule -> generation: idle=%ds fg=%s act=%s w=%.2f",
+                                    int(conversation_idle), category, activity, weight,
+                                )
+                                return _GENERATION_PENDING  # 结果异步投递（哨兵停止本轮）
                         self._record_proactive_trigger(now)
+                        self._throttle.record_used(prompt, kind="chat", now=now)
+                        self._throttle.record_chat(prompt, now=now)
+                        self._anti_repeat_record(prompt, now)
                         logger.info(
                             "Proactive triggered: idle=%ds fg=%s act=%s w=%.2f rule='%s'",
                             int(conversation_idle), category, activity, weight, prompt,

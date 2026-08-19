@@ -32,11 +32,14 @@ class ScreenEvent:
 class ActivityEvent:
     """结构化活动事件（从视觉分析 JSON 提取）"""
     __slots__ = ('app', 'activity', 'category', 'summary', 'detail', 'confidence',
-                 'source', 'start_time', 'end_time')
+                 'source', 'start_time', 'end_time', 'scene', 'scene_confidence',
+                 'scene_propensity', 'scene_source')
 
     def __init__(self, app: str = "", activity: str = "", category: str = "other",
                  summary: str = "", detail: str = "", confidence: float = 0.5, source: str = "vision",
-                 start_time: float = 0.0, end_time: float = 0.0):
+                 start_time: float = 0.0, end_time: float = 0.0,
+                 scene: str = "", scene_confidence: float = 0.0,
+                 scene_propensity: str = "open", scene_source: str = "rule"):
         self.app = app                # 应用名
         self.activity = activity      # 具体活动（如 "writing code", "watching video"）
         self.category = category      # 分类：work/learn/entertainment/communication/other
@@ -46,6 +49,11 @@ class ActivityEvent:
         self.source = source          # "vision"（模型推断）/ "foreground"（窗口标题直接判断）
         self.start_time = start_time  # 开始时间
         self.end_time = end_time      # 结束时间（0 = 进行中）
+        # P1-6 屏幕/意图感知升级：场景分类字段（additive，缺省空串不影响旧调用方）
+        self.scene = scene            # 场景名（gaming/work_focus/late_night_work/slacking/...）
+        self.scene_confidence = scene_confidence  # 场景置信度 0~1
+        self.scene_propensity = scene_propensity  # proactive 打扰门槛（closed/...）
+        self.scene_source = scene_source          # "rule" / "hybrid"（LLM 增强）
 
     @property
     def duration_minutes(self) -> float:
@@ -65,4 +73,6 @@ class ActivityEvent:
             "confidence": self.confidence, "source": self.source,
             "start_time": self.start_time, "end_time": self.end_time,
             "duration_minutes": round(self.duration_minutes, 1),
+            "scene": self.scene, "scene_confidence": self.scene_confidence,
+            "scene_propensity": self.scene_propensity, "scene_source": self.scene_source,
         }

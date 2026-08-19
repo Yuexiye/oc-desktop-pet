@@ -449,14 +449,17 @@ class CosyVoiceProvider(TTSProvider):
     def get_speaker_info(self, character_id: str) -> dict:
         return self._resolve_voice(character_id)[0]
 
-    def _resolve_voice(self, character_id: str) -> tuple[dict, str]:
+    def _resolve_voice(self, character_id: str, voice: str = "") -> tuple[dict, str]:
         """解析角色该用哪个声音，返回 (合成参数, 音色标识)。
 
         音色标识用于日志和缓存键——换了音色必须让旧缓存失效，否则角色会
         一直用改之前的嗓子说话。
 
-        解析顺序：先看 config 的 tts.voices 有没有为该角色指定音色，没有就
-        拿角色 id 本身当音色名试一次。命中之后：
+        解析顺序（P2-7 起支持显式 voice 覆盖）：
+          · voice 参数非空（上层角色/情绪音色映射）→ 直接用它当音色名；
+          · 否则看 config 的 tts.voices 有没有为该角色指定音色；
+          · 都没有就拿角色 id 本身当音色名试一次。
+        命中之后：
 
           · 是模型里已注册的 SFT 说话人 → 走 SFT。这些说话人当初就是用
             speaker_refs 的参考音频注册进去的，音色一致，但省掉了每次合成
@@ -464,7 +467,7 @@ class CosyVoiceProvider(TTSProvider):
           · 只在 speaker_refs 里有参考音频 → 零样本克隆。
           · 都不是 → 交给 worker 退回 SFT 第一个说话人（会串音，已告警）。
         """
-        alias = (self._voice_map.get(character_id) or "").strip() or character_id
+        alias = (voice or self._voice_map.get(character_id) or character_id).strip() or character_id
 
         # 优先零样本克隆：只要角色有参考音频就用 ref（我们注册的 8 个音色全有参考音频，
         # 且它们被 add_zero_shot_spk 写进 spk2info 后，键是 llm_embedding/flow_embedding，
@@ -484,7 +487,8 @@ class CosyVoiceProvider(TTSProvider):
             )
         return {}, "default"
 
-    def synthesize(self, text: str, character_id: str = "", instruct: str = "") -> Optional[str]:
+    def synthesize(self, text: str, character_id: str = "", instruct: str = "",
+                   voice: str = "") -> Optional[str]:
         if not text or not text.strip():
             return None
 
@@ -498,7 +502,8 @@ class CosyVoiceProvider(TTSProvider):
             self._sweep_cache(CACHE_TTL)
 
         # 音色进缓存键：换了嗓子必须重新合成，否则一直放旧声音
-        spk_info, voice_id = self._resolve_voice(character_id)
+        # P2-7: 显式 voice 参数优先（角色/情绪音色映射），空则走角色音色映射
+        spk_info, voice_id = self._resolve_voice(character_id, voice)
         text_hash = hashlib.md5(
             f"{character_id}:{voice_id}:{instruct or ''}:{text}".encode()
         ).hexdigest()[:12]

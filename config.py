@@ -28,6 +28,19 @@ DEFAULT_CONFIG = {
         "gradual": True,
         "cooldown_minutes": 30
     },
+    # P2-5 休息提醒升级：联动专注模式（focus）的连续工作计时。
+    # 连续工作超 after_minutes（默认 90）且非深夜（<22 点）时提醒休息；
+    # 深夜（>=22 点或 <6 点）阈值 ×late_night_multiplier 降频。
+    "work_reminder": {
+        "enabled": True,
+        "after_minutes": 90,
+        "late_night_hour": 22,
+        "late_night_end_hour": 6,
+        "late_night_multiplier": 3.0,
+        "cooldown_minutes": 60,
+        "snooze_minutes": 10,
+        "tts_enabled": False
+    },
     "action_linker": {
         "enabled": True,
         "highlight_duration": 30
@@ -37,6 +50,11 @@ DEFAULT_CONFIG = {
         "volume": 0.8,
         # edge 引擎可选项：默认晓晓，可在设置面板切换
         "edge_voice": "zh-CN-XiaoxiaoNeural",
+        # P2-7 语音身份/音色（均可选；不配置时沿用 provider 默认音色，向后兼容）：
+        #   voices             = {agent_id: voice}   角色音色（身份）
+        #   voice_emotion_map  = {emotion: voice}    情绪音色（语气，来自 [emotion:xxx] 标签）
+        "voices": {},
+        "voice_emotion_map": {},
     },
     "sfx": {
         "enabled": True,
@@ -51,6 +69,9 @@ DEFAULT_CONFIG = {
     "proactive": {
         "enabled": True,
         "cooldown_minutes": 10,
+        # P0-1 主动搭话 LLM 生成开关（默认开）：模板池 → 候选生成 + LLM 决策是否开口；
+        # 生成失败/超时自动回退固定模板池（fallback），不影响既有规则引擎
+        "llm_generation": True,
         "rules": [
             {
                 "idle_min": 5,
@@ -91,6 +112,32 @@ DEFAULT_CONFIG = {
     "memory": {
         "budget_chars": 0,
         "budget_percent": 1.0,
+        # P0-3 BM25+RRF 混合检索开关（默认开）：场景/事件检索从"标签精确匹配"升级为
+        # "CJK 2/3-gram 关键词 + BM25 + RRF" 混合召回；无 embedding 时自动退化为 BM25-only
+        "hybrid_bm25": True,
+        # P1-1 向量嵌入（默认关）：本地 ONNX EmbeddingService，为 hybrid 检索的
+        # cosine 路径提供语义向量；onnxruntime 不可用/模型缺失时自动降级纯 BM25（fallback gate）
+        "embedding": {
+            "enabled": False,
+            # 本地 ONNX 模型文件路径（或含 onnx/ 子目录的模型目录，按 N.E.K.O.
+            # 布局找 model_quantized.onnx / model.onnx）；不配置/不存在 → 自动降级纯 BM25，
+            # 绝不自动下载大模型
+            "model_path": "",
+            # 参考模型（仅信息展示，不触发下载）：
+            #   jinaai/jina-embeddings-v5-text-nano-retrieval
+            #   revision ac5d898c8d382b17167c33e5c8af644a3519b47d（N.E.K.O. profile local-text-retrieval-v1）
+            "model_name": "jinaai/jina-embeddings-v5-text-nano-retrieval",
+            # 输出向量维度（Matryoshka 截断）：32/64/128/256/512/768 或 "auto"（按内存选档）
+            "dim": 256,
+            # 量化变体："auto" | "int8" | "fp32"（auto 优先 int8）
+            "quantization": "auto",
+            # tokenizer 截断长度（与向量缓存指纹 model_id 绑定）
+            "max_length": 1024,
+            # 单次推理超时（秒）：超时不阻塞主线程，连续超时达阈值后粘性降级
+            "timeout_seconds": 8.0,
+            # 模型加载超时（秒）：首次懒加载的有界等待上限
+            "load_timeout_seconds": 60.0,
+        },
         # D 场景回忆（proactive 命中历史场景时主动说一句带记忆的话）
         "recall": {
             "enabled": True,
@@ -100,6 +147,25 @@ DEFAULT_CONFIG = {
         "associate": {
             "enabled": True,
         },
+        # P1-2 事实库（LLM 抽取 + 本地去重；抽取失败自动跳过，不阻塞记忆写入）
+        "facts": {
+            "enabled": True,
+            "dedup_threshold": 0.75,  # n-gram Jaccard 去重阈值（同事实不同表述命中线）
+        },
+        # P1-3 反思/摘要引擎（事件流 → LLM 摘要压缩；LLM 不可用跳过并记日志）
+        "reflection": {
+            "enabled": True,
+            "interval_hours": 24,    # 反思周期（小时）
+            "min_events": 5,         # 触发所需最少事件数
+            "max_events": 200,       # 单次反思纳入事件上限
+            "retry_minutes": 60,     # LLM 失败后退避重试间隔
+        },
+    },
+    # P0-5/P0-7 专注模式（默认关）：专注模式下主动搭话频率下降、视觉安静；
+    # 开启后聊天面板边缘 + 气泡轻微呼吸辉光（不遮屏、不抢焦点）
+    "focus": {
+        "enabled": False,
+        "glow_strength": 0.3,  # 专注辉光强度 0~1（0=零视觉，默认 0.3）
     },
     # G celebrating（庆祝态：撒花动作 + 完工音；关掉即恢复旧 happy 行为）
     "celebrating": {
@@ -112,7 +178,31 @@ DEFAULT_CONFIG = {
         "port": 8977,
         "auth_token": "",
         "allow_set_mode": False,
-    }
+    },
+    # P1-5 反重复（语义指纹 + 时间窗去重）：阈值与 N.E.K.O. session_settings 一致，
+    # 可在此覆盖；关闭 enabled 后 proactive 仅保留字符串相似去重（旧行为）
+    "anti_repeat": {
+        "enabled": True,
+        "bg_window": 100,
+        "fg_window": 5,
+        "fg_ttl_seconds": 600.0,
+        "bm25_k1": 1.5,
+        "bm25_b": 0.75,
+        "min_draft_tokens": 12,
+        "regen_threshold": 8.0,
+        "drop_threshold": 16.0,
+    },
+    # P1-6 屏幕/意图感知升级：场景分类 + LLM 语义增强（可选）
+    "screen": {
+        "enabled": True,
+        "interval": 120,
+        "blur": False,
+        "blacklist": False,
+        "compress": True,
+        # LLM 语义增强开关（默认开）：未注入 provider 时自动退化为纯规则分类；
+        # 增强失败/超时/解析错误 → 保留规则结果，不阻塞感知
+        "llm_enrich": True,
+    },
 }
 
 CHARACTER_INFO = {

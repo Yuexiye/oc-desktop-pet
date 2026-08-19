@@ -23,3 +23,11 @@ websocket-client>=1.8.0
 # ASR（可选，不装也不会崩）
 # openai-whisper>=20230918
 pydantic>=2.0
+
+# === P1 可选依赖（N.E.K.O. 移植预留，默认不安装，不装不影响运行）===
+# P1-1 记忆向量化（本地 ONNX EmbeddingService）：缺失/不可用时自动降级纯 BM25（fallback gate）
+# onnxruntime>=1.17.0
+# tokenizers>=0.15.0   # HuggingFace tokenizer，加载 embedding 模型的 tokenizer.json（与 onnxruntime 同属 P1-1 可选）
+# P1-2 事实库 FactStore 跨进程文件锁（预留）
+# portalocker>=2.8.0
+

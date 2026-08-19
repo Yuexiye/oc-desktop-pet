@@ -669,3 +669,32 @@ library, you may consider it more useful to permit linking proprietary
 applications with the library.  If this is what you want to do, use the
 GNU Lesser General Public License instead of this License.  But first,
 please read <https://www.gnu.org/licenses/why-not-lgpl.html>.
+====================================================================
+APPENDIX: Third-Party Reference Code Redistribution (Apache 2.0)
+====================================================================
+
+This project (oc-pet) is licensed under the GNU Affero General Public
+License v3 (AGPL-3.0) as stated above.
+
+In addition, this repository contains a read-only reference area
+`third_party_reference/neko/` with files copied verbatim from the
+open-source project "N.E.K.O. 猫娘计划" (Project N.E.K.O.),
+Copyright 2025-2026 Project N.E.K.O. Team,
+which is licensed under the Apache License, Version 2.0
+(https://www.apache.org/licenses/LICENSE-2.0).
+
+Per the Apache License 2.0, redistribution of these files is permitted
+provided that the original copyright notices and license text are
+retained. Each copied file preserves its original Apache 2.0 header;
+the complete inventory and attribution are recorded in
+`docs/THIRD_PARTY_NOTICES.md`.
+
+The reference area is provided for compliance and migration-reference
+purposes only. The runtime code of oc-pet does not import from
+`third_party_reference/`; any functionality derived from these files
+has been reimplemented in oc-pet's own source code and is licensed
+under AGPL-3.0, except where Apache 2.0 files are retained verbatim
+with their original headers.
+
+A copy of the Apache License 2.0 is available at:
+https://www.apache.org/licenses/LICENSE-2.0

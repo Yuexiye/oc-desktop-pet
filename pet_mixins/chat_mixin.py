@@ -253,6 +253,36 @@ class ChatMixin:
         if self._engine:
             self._engine.send(text, character=self._current_char)
 
+        # P1-2：对话事实写入点（PetWindow 注入 FactStore 时生效；防御式）
+        try:
+            record = getattr(self, "_record_conversation_facts", None)
+            if record is not None:
+                record(text)
+        except Exception:
+            pass
+
+        # T05 P0-6：ChatPanel 同步——用户消息回显 + 思考点；专注打分（P0-5）
+        try:
+            chat_panel = getattr(self, "_chat_panel", None)
+            if chat_panel is not None:
+                chat_panel.append_user(text)
+                chat_panel.set_thinking(True)
+        except Exception:
+            pass
+        try:
+            feed = getattr(self, "_feed_focus_score", None)
+            if feed is not None:
+                feed(text)
+        except Exception:
+            pass
+        # P2 互动层：聊天关键词 → 小游戏/音乐/休息卡片（防御式，任一线失败不影响发送）
+        try:
+            dispatch = getattr(self, "_dispatch_chat_interaction", None)
+            if dispatch is not None:
+                dispatch(text)
+        except Exception:
+            pass
+
         self.bubble.set_text("⏳ 思考中...")
         self._reposition_bubble()
         self.bubble.show()

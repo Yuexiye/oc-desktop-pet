@@ -86,6 +86,9 @@ class ConversationEngine:
         self._tts_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="TTS")
         # 引用计数：正在合成中的 provider 数（用于 TTSReload 安全清理旧实例）
         self._tts_in_use = 0
+        # P2-7: 语音音色解析器（由 PetWindow 注入）：(agent_id, emotion) -> voice。
+        # 返回空字符串表示使用 provider 默认音色（向后兼容，未配置时行为不变）。
+        self._voice_resolver = None
         # B2: 工具进度节流（参考小蕾米插件日志节流）——同 工具+phase 在窗口内合并
         self._tool_progress_throttle: dict[str, float] = {}
         self._tool_progress_throttle_ms: float = 500.0
@@ -744,13 +747,25 @@ class ConversationEngine:
         try:
             if tts and tts_ready and reply and reply.strip() and reply.strip() not in ("\u2026", "..."):
                 try:
+                    # P2-7: 按「角色 + 情绪」解析本句生效音色（空 = provider 默认）。
+                    # 解析器由 PetWindow 注入（多桌宠各自独立音色）；失败回退默认。
+                    voice = ""
+                    resolver = getattr(self, "_voice_resolver", None)
+                    if callable(resolver):
+                        try:
+                            voice = resolver(character, emotion) or ""
+                        except Exception as _ve:
+                            logger.debug("voice 解析失败，使用默认音色: %s", _ve)
+                            voice = ""
                     # 合成提示：本地 CosyVoice 一句要几十秒到两分钟（GPU 推理），
                     # 期间不提示的话，用户会误以为“没有语音”
                     try:
                         self.on_status("\U0001f50a 语音生成中…")
                     except Exception:
                         pass
-                    audio_path = tts.synthesize(reply, character_id=character, instruct=instruct) or ""
+                    audio_path = tts.synthesize(
+                        reply, character_id=character, instruct=instruct, voice=voice,
+                    ) or ""
                     if audio_path:
                         logger.info("TTS done: %s", os.path.basename(audio_path))
                     else:

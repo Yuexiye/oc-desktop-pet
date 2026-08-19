@@ -92,6 +92,38 @@ class VoiceProviderMixin:
             )
         return (provider, api_sig)
 
+    # ── P2-7 语音身份/音色 ──────────────────────────────────────
+
+    def _resolve_tts_voice(self, agent_id: str, emotion: str = "") -> str:
+        """按当前配置解析「该桌宠 + 该情绪」的生效音色；空 = 用 provider 默认。
+
+        调用方：conversation_engine 每句 TTS 合成前（voice_resolver 回调）。
+        解析链：角色音色 tts.voices[agent_id] → 情绪音色 tts.voice_emotion_map[emotion]
+        → ""（provider 默认）。失败永不抛出：任何异常都回退到默认音色。
+        """
+        try:
+            from tts_provider.voice_profile import resolve_voice, provider_valid_voices
+            tts_cfg = self._effective_tts()
+            provider = tts_cfg.get("provider", "cosyvoice")
+            valid = provider_valid_voices(provider)
+            return resolve_voice(tts_cfg, provider, agent_id, emotion, valid_voices=valid)
+        except Exception as e:
+            logger.debug("voice 解析失败，使用 provider 默认: %s", e)
+            return ""
+
+    def _wire_voice_resolver(self):
+        """P2-7: 把桌宠自身的音色解析器挂到对话引擎。
+
+        每句 TTS 合成前引擎都会调用它 (agent_id, emotion) → voice，
+        从而让多桌宠各自使用独立音色、且 [emotion:xxx] 情绪标签可切换语气音色。
+        """
+        engine = getattr(self, "_engine", None)
+        if engine is not None:
+            try:
+                engine._voice_resolver = self._resolve_tts_voice
+            except Exception as e:
+                logger.debug("voice resolver 挂接失败: %s", e)
+
     def _maybe_reload_tts_provider(self):
         """按需重建 TTS provider —— 构造与预热全部在后台线程完成。
 

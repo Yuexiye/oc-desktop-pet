@@ -1,0 +1,540 @@
+/* ==========================================================================
+   N.E.K.O. 设计语言 — PySide6 原生重绘（P0-6）
+   参考 third_party_reference/neko/frontend/react-neko-chat/src/styles.css
+   的配色 / 圆角 / 间距 token（配套 ui/theme/neko_palette.py 单一数据源）。
+
+   主题切换：根组件（ChatPanel / MemoryPanel）设动态属性 data-theme
+   （"light" | "dark"），QSS 用属性选择器区分。应用到面板自身
+   （setStyleSheet），只影响面板子树，不污染全局样式。
+
+   设计要点（对齐 React 版）：
+   - user 气泡：浅蓝渐变，圆角 16/8/16/16，右对齐
+   - assistant 气泡：白底（dark 下夜蓝），圆角 8/16/16/16，左对齐
+   - system：居中胶囊 chip
+   - 头像：28px 圆（assistant 蓝渐变 / user 浅灰蓝渐变）
+   - 消息间距 12px、气泡内边距 9x11、meta 0.72rem 级灰字
+   ========================================================================== */
+
+/* ── 根表面 ── */
+ChatPanel {
+    background: #f6f8fc;
+    color: #1f2329;
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+}
+ChatPanel[data-theme="dark"] {
+    background: #161a22;
+    color: #e8ecf5;
+}
+
+/* ── 顶栏 ── */
+ChatPanel QFrame#chatHeader {
+    background: rgba(255, 255, 255, 0.75);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.5);
+}
+ChatPanel[data-theme="dark"] QFrame#chatHeader {
+    background: rgba(30, 34, 43, 0.85);
+    border-bottom: 1px solid rgba(148, 166, 196, 0.14);
+}
+ChatPanel QLabel#chatTitle {
+    font-size: 14px;
+    font-weight: 700;
+    color: #1f2329;
+}
+ChatPanel[data-theme="dark"] QLabel#chatTitle {
+    color: #e8ecf5;
+}
+ChatPanel QPushButton#headerButton {
+    border: 1px solid rgba(68, 183, 254, 0.32);
+    border-radius: 999px;
+    background: rgba(68, 183, 254, 0.08);
+    color: #2497d9;
+    padding: 2px 10px;
+    font-size: 11px;
+}
+ChatPanel QPushButton#headerButton:hover {
+    background: rgba(68, 183, 254, 0.16);
+    border-color: rgba(68, 183, 254, 0.5);
+    color: #127dbc;
+}
+ChatPanel[data-theme="dark"] QPushButton#headerButton {
+    border-color: rgba(68, 183, 254, 0.4);
+    background: rgba(68, 183, 254, 0.12);
+    color: #6ec3f7;
+}
+ChatPanel[data-theme="dark"] QPushButton#headerButton:hover {
+    background: rgba(68, 183, 254, 0.22);
+    color: #9cd8ff;
+}
+
+/* ── 消息列表区 ── */
+ChatPanel QScrollArea#messageScroll {
+    border: none;
+    background: transparent;
+}
+ChatPanel QScrollArea#messageScroll > QWidget > QWidget {
+    background: transparent;
+}
+ChatPanel QWidget#messageListContainer {
+    background: transparent;
+}
+
+/* 浮动细滚动条（对齐 React .message-list-scroll-thumb：4px 圆角细条） */
+ChatPanel QScrollArea#messageScroll QScrollBar:vertical {
+    background: transparent;
+    width: 6px;
+    margin: 2px 2px 2px 0;
+}
+ChatPanel QScrollArea#messageScroll QScrollBar::handle:vertical {
+    background: rgba(140, 152, 172, 0.38);
+    border-radius: 3px;
+    min-height: 28px;
+}
+ChatPanel[data-theme="dark"] QScrollArea#messageScroll QScrollBar::handle:vertical {
+    background: rgba(148, 166, 196, 0.35);
+}
+ChatPanel QScrollArea#messageScroll QScrollBar::add-line:vertical,
+ChatPanel QScrollArea#messageScroll QScrollBar::sub-line:vertical {
+    height: 0;
+}
+ChatPanel QScrollArea#messageScroll QScrollBar::add-page:vertical,
+ChatPanel QScrollArea#messageScroll QScrollBar::sub-page:vertical {
+    background: transparent;
+}
+
+/* 空状态 / 系统提示胶囊 */
+ChatPanel QLabel#messageEmpty {
+    color: #6f7d91;
+    background: rgba(131, 148, 175, 0.14);
+    border-radius: 999px;
+    padding: 8px 14px;
+    font-size: 12px;
+}
+ChatPanel[data-theme="dark"] QLabel#messageEmpty {
+    color: #9aa6ba;
+    background: rgba(120, 140, 170, 0.16);
+}
+
+/* ── 单条消息 ── */
+ChatMessage {
+    background: transparent;
+}
+ChatMessage QLabel#msgMeta {
+    color: #7e899a;
+    font-size: 11px;
+}
+ChatMessage[data-theme="dark"] QLabel#msgMeta {
+    color: #8a94a6;
+}
+ChatMessage QLabel#msgAuthor {
+    color: #596579;
+    font-weight: 600;
+}
+ChatMessage[data-theme="dark"] QLabel#msgAuthor {
+    color: #a6b0c2;
+}
+
+/* 头像（28px 圆） */
+ChatMessage QLabel#msgAvatar {
+    border-radius: 14px;
+    font-weight: 700;
+    font-size: 11px;
+}
+ChatMessage[message-role="assistant"] QLabel#msgAvatar {
+    color: #ffffff;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #46a0ff, stop:1 #2f69df);
+}
+ChatMessage[message-role="user"] QLabel#msgAvatar {
+    color: #1f2329;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #e6edf8, stop:1 #d8e2f2);
+}
+ChatMessage[data-theme="dark"][message-role="assistant"] QLabel#msgAvatar {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #3a72e8, stop:1 #6aa1ff);
+}
+ChatMessage[data-theme="dark"][message-role="user"] QLabel#msgAvatar {
+    color: #eef2fa;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #3a4256, stop:1 #4b5570);
+}
+
+/* 气泡 */
+ChatMessage QFrame#msgBubble {
+    padding: 0;
+    background: transparent;
+    border: none;
+}
+ChatMessage QFrame#msgBubble QLabel#msgText {
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+ChatMessage[message-role="assistant"] QFrame#msgBubble {
+    background: #ffffff;
+    color: #273042;
+    border: 1px solid rgba(53, 72, 104, 0.06);
+    border-radius: 8px 16px 16px 16px;
+}
+ChatMessage[message-role="user"] QFrame#msgBubble {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #b9d6ff, stop:1 #d4e7ff);
+    color: #142033;
+    border: none;
+    border-radius: 16px 8px 16px 16px;
+}
+ChatMessage[message-role="system"] QFrame#msgBubble {
+    background: rgba(131, 148, 175, 0.14);
+    color: #607086;
+    border: none;
+    border-radius: 999px;
+}
+ChatMessage[data-theme="dark"][message-role="assistant"] QFrame#msgBubble {
+    background: #232833;
+    color: #e8ecf5;
+    border: 1px solid rgba(148, 166, 196, 0.10);
+}
+ChatMessage[data-theme="dark"][message-role="user"] QFrame#msgBubble {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2c4a7a, stop:1 #3a5f9e);
+    color: #eaf1ff;
+}
+ChatMessage[data-theme="dark"][message-role="system"] QFrame#msgBubble {
+    background: rgba(120, 140, 170, 0.16);
+    color: #9aa6ba;
+}
+
+/* ── 思考点 ── */
+ChatThinkingDots {
+    background: transparent;
+}
+
+/* ── 底部输入区 ── */
+ChatPanel QFrame#chatComposer {
+    background: rgba(255, 255, 255, 0.91);
+    border-top: 1px solid rgba(255, 255, 255, 0.5);
+}
+ChatPanel[data-theme="dark"] QFrame#chatComposer {
+    background: rgba(30, 34, 43, 0.92);
+    border-top: 1px solid rgba(148, 166, 196, 0.14);
+}
+ChatPanel QLineEdit#chatInput {
+    border: 1.5px solid rgba(127, 144, 170, 0.25);
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.91);
+    color: #1f2329;
+    padding: 8px 12px;
+    font-size: 13px;
+    selection-background-color: rgba(68, 183, 254, 0.4);
+}
+ChatPanel QLineEdit#chatInput:focus {
+    border-color: rgba(64, 197, 241, 0.55);
+}
+ChatPanel[data-theme="dark"] QLineEdit#chatInput {
+    border-color: rgba(148, 166, 196, 0.22);
+    background: rgba(35, 40, 51, 0.92);
+    color: #e8ecf5;
+}
+ChatPanel[data-theme="dark"] QLineEdit#chatInput:focus {
+    border-color: rgba(68, 183, 254, 0.55);
+}
+ChatPanel QPushButton#sendButton {
+    border: none;
+    border-radius: 999px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2f68df, stop:1 #4a89ff);
+    color: #ffffff;
+    font-weight: 600;
+    padding: 8px 16px;
+}
+ChatPanel QPushButton#sendButton:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2f68df, stop:1 #5a94ff);
+}
+ChatPanel QPushButton#sendButton:pressed {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2860cf, stop:1 #4079ee);
+}
+
+/* ── 专注辉光 overlay（透明，绘制在 paintEvent）── */
+FocusOverlay {
+    background: transparent;
+}
+
+/* ==========================================================================
+   记忆面板（P0-8）
+   ========================================================================== */
+MemoryPanel {
+    background: #f6f8fc;
+    color: #1f2329;
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+}
+MemoryPanel[data-theme="dark"] {
+    background: #161a22;
+    color: #e8ecf5;
+}
+MemoryPanel QFrame#memoryHeader {
+    background: rgba(255, 255, 255, 0.75);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.5);
+}
+MemoryPanel[data-theme="dark"] QFrame#memoryHeader {
+    background: rgba(30, 34, 43, 0.85);
+    border-bottom: 1px solid rgba(148, 166, 196, 0.14);
+}
+MemoryPanel QLabel#memoryTitle {
+    font-size: 14px;
+    font-weight: 700;
+    color: #1f2329;
+}
+MemoryPanel[data-theme="dark"] QLabel#memoryTitle {
+    color: #e8ecf5;
+}
+MemoryPanel QScrollArea#memoryScroll {
+    border: none;
+    background: transparent;
+}
+MemoryPanel QScrollArea#memoryScroll > QWidget > QWidget {
+    background: transparent;
+}
+MemoryPanel QWidget#memoryListContainer {
+    background: transparent;
+}
+MemoryPanel QLabel#memorySectionHeader {
+    color: #596579;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    padding: 6px 2px 2px;
+}
+MemoryPanel[data-theme="dark"] QLabel#memorySectionHeader {
+    color: #a6b0c2;
+}
+MemoryPanel QLabel#memoryEmpty {
+    color: #6f7d91;
+    background: rgba(131, 148, 175, 0.14);
+    border-radius: 999px;
+    padding: 10px 16px;
+    font-size: 12px;
+}
+MemoryPanel[data-theme="dark"] QLabel#memoryEmpty {
+    color: #9aa6ba;
+    background: rgba(120, 140, 170, 0.16);
+}
+
+/* 记忆卡片 */
+MemoryCard {
+    background: #ffffff;
+    border: 1px solid rgba(53, 72, 104, 0.08);
+    border-radius: 12px;
+}
+MemoryCard[data-theme="dark"] {
+    background: #232833;
+    border: 1px solid rgba(148, 166, 196, 0.10);
+}
+MemoryCard QFrame#cardAccent {
+    border: none;
+    border-radius: 3px;
+    min-width: 4px;
+    max-width: 4px;
+}
+MemoryCard[card-kind="event"] QFrame#cardAccent { background: #2f68df; }
+MemoryCard[card-kind="scene"] QFrame#cardAccent { background: #7d5fc4; }
+MemoryCard[card-kind="fact"] QFrame#cardAccent { background: #236845; }
+MemoryCard[card-kind="reflection"] QFrame#cardAccent { background: #b8860b; }
+MemoryCard[data-theme="dark"][card-kind="event"] QFrame#cardAccent { background: #6aa1ff; }
+MemoryCard[data-theme="dark"][card-kind="scene"] QFrame#cardAccent { background: #9d82e0; }
+MemoryCard[data-theme="dark"][card-kind="fact"] QFrame#cardAccent { background: #4caf7d; }
+MemoryCard[data-theme="dark"][card-kind="reflection"] QFrame#cardAccent { background: #d4a017; }
+MemoryCard QLabel#cardKind {
+    color: #607086;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+}
+MemoryCard[data-theme="dark"] QLabel#cardKind {
+    color: #9aa6ba;
+}
+MemoryCard QLabel#cardTitle {
+    color: #273042;
+    font-size: 13px;
+    font-weight: 600;
+}
+MemoryCard[data-theme="dark"] QLabel#cardTitle {
+    color: #e8ecf5;
+}
+MemoryCard QLabel#cardTime {
+    color: #7e899a;
+    font-size: 11px;
+}
+MemoryCard[data-theme="dark"] QLabel#cardTime {
+    color: #8a94a6;
+}
+MemoryCard QLabel#cardText {
+    color: #596579;
+    font-size: 12px;
+}
+MemoryCard[data-theme="dark"] QLabel#cardText {
+    color: #b6c0d2;
+}
+MemoryCard QLabel#cardMeta,
+MemoryCard QLabel#cardTags {
+    color: #7e899a;
+    font-size: 11px;
+}
+MemoryCard[data-theme="dark"] QLabel#cardMeta,
+MemoryCard[data-theme="dark"] QLabel#cardTags {
+    color: #8a94a6;
+}
+
+/* ==========================================================================
+   角色卡（P1-7）
+   ========================================================================== */
+CharacterCard {
+    background: #f6f8fc;
+    color: #1f2329;
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+}
+CharacterCard[data-theme="dark"] {
+    background: #161a22;
+    color: #e8ecf5;
+}
+CharacterCard QFrame#cardHeader {
+    background: rgba(255, 255, 255, 0.75);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.5);
+}
+CharacterCard[data-theme="dark"] QFrame#cardHeader {
+    background: rgba(30, 34, 43, 0.85);
+    border-bottom: 1px solid rgba(148, 166, 196, 0.14);
+}
+CharacterCard QLabel#cardTitle {
+    font-size: 14px;
+    font-weight: 700;
+    color: #1f2329;
+}
+CharacterCard[data-theme="dark"] QLabel#cardTitle {
+    color: #e8ecf5;
+}
+CharacterCard QPushButton#headerButton {
+    border: 1px solid rgba(68, 183, 254, 0.32);
+    border-radius: 999px;
+    background: rgba(68, 183, 254, 0.08);
+    color: #2497d9;
+    padding: 2px 10px;
+    font-size: 11px;
+}
+CharacterCard QPushButton#headerButton:hover {
+    background: rgba(68, 183, 254, 0.16);
+    border-color: rgba(68, 183, 254, 0.5);
+    color: #127dbc;
+}
+CharacterCard[data-theme="dark"] QPushButton#headerButton {
+    border-color: rgba(68, 183, 254, 0.4);
+    background: rgba(68, 183, 254, 0.12);
+    color: #6ec3f7;
+}
+CharacterCard QScrollArea#cardScroll {
+    border: none;
+    background: transparent;
+}
+CharacterCard QScrollArea#cardScroll > QWidget > QWidget {
+    background: transparent;
+}
+CharacterCard QWidget#cardContent {
+    background: transparent;
+}
+
+/* 头像：64px 圆（首字渐变圆；有图片时背景透明） */
+CharacterCard QLabel#cardAvatar {
+    border-radius: 32px;
+    font-size: 24px;
+    font-weight: 700;
+    color: #ffffff;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #46a0ff, stop:1 #2f69df);
+}
+CharacterCard[data-theme="dark"] QLabel#cardAvatar {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #3a72e8, stop:1 #6aa1ff);
+}
+CharacterCard QLabel#cardAvatar[avatar-image="true"] {
+    background: transparent;
+}
+
+CharacterCard QLabel#cardName {
+    font-size: 20px;
+    font-weight: 700;
+    color: #1f2329;
+}
+CharacterCard[data-theme="dark"] QLabel#cardName {
+    color: #e8ecf5;
+}
+CharacterCard QLabel#cardSub {
+    color: #7e899a;
+    font-size: 11px;
+}
+CharacterCard[data-theme="dark"] QLabel#cardSub {
+    color: #8a94a6;
+}
+CharacterCard QLabel#cardIntro {
+    color: #596579;
+    font-size: 12px;
+    background: rgba(131, 148, 175, 0.10);
+    border-radius: 10px;
+    padding: 10px 12px;
+}
+CharacterCard[data-theme="dark"] QLabel#cardIntro {
+    color: #b6c0d2;
+    background: rgba(120, 140, 170, 0.12);
+}
+
+/* 性格标签 chips */
+CharacterCard QLabel#cardTag {
+    background: rgba(131, 148, 175, 0.14);
+    color: #607086;
+    border-radius: 999px;
+    padding: 3px 10px;
+    font-size: 11px;
+}
+CharacterCard[data-theme="dark"] QLabel#cardTag {
+    background: rgba(120, 140, 170, 0.16);
+    color: #9aa6ba;
+}
+
+/* 记忆统计四格 */
+CharacterCard QFrame#cardStatBox {
+    background: #ffffff;
+    border: 1px solid rgba(53, 72, 104, 0.08);
+    border-radius: 12px;
+}
+CharacterCard[data-theme="dark"] QFrame#cardStatBox {
+    background: #232833;
+    border: 1px solid rgba(148, 166, 196, 0.10);
+}
+CharacterCard QLabel#cardStatNum {
+    font-size: 18px;
+    font-weight: 700;
+    color: #1f2329;
+}
+CharacterCard[data-theme="dark"] QLabel#cardStatNum {
+    color: #e8ecf5;
+}
+CharacterCard QLabel#cardStatLabel {
+    color: #7e899a;
+    font-size: 10px;
+}
+CharacterCard[data-theme="dark"] QLabel#cardStatLabel {
+    color: #8a94a6;
+}
+CharacterCard QFrame#cardStatBox[stat-kind="event"] QLabel#cardStatNum { color: #2f68df; }
+CharacterCard QFrame#cardStatBox[stat-kind="scene"] QLabel#cardStatNum { color: #7d5fc4; }
+CharacterCard QFrame#cardStatBox[stat-kind="fact"] QLabel#cardStatNum { color: #236845; }
+CharacterCard QFrame#cardStatBox[stat-kind="reflection"] QLabel#cardStatNum { color: #7e899a; }
+CharacterCard[data-theme="dark"] QFrame#cardStatBox[stat-kind="event"] QLabel#cardStatNum { color: #6aa1ff; }
+CharacterCard[data-theme="dark"] QFrame#cardStatBox[stat-kind="scene"] QLabel#cardStatNum { color: #9d82e0; }
+CharacterCard[data-theme="dark"] QFrame#cardStatBox[stat-kind="fact"] QLabel#cardStatNum { color: #4caf7d; }
+CharacterCard[data-theme="dark"] QFrame#cardStatBox[stat-kind="reflection"] QLabel#cardStatNum { color: #8a94a6; }
+
+/* 空占位 */
+CharacterCard QLabel#cardEmpty {
+    color: #6f7d91;
+    background: rgba(131, 148, 175, 0.14);
+    border-radius: 999px;
+    padding: 10px 16px;
+    font-size: 12px;
+}
+CharacterCard[data-theme="dark"] QLabel#cardEmpty {
+    color: #9aa6ba;
+    background: rgba(120, 140, 170, 0.16);
+}

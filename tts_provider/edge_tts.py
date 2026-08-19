@@ -100,7 +100,8 @@ class EdgeTtsProvider(TTSProvider):
             self._last_error = "edge-tts 未安装：pip install edge-tts"
             logger.warning("Edge TTS preload 失败: %s", self._last_error)
 
-    def synthesize(self, text: str, character_id: str = "", instruct: str = "") -> Optional[str]:
+    def synthesize(self, text: str, character_id: str = "", instruct: str = "",
+                   voice: str = "") -> Optional[str]:
         if not text or not text.strip():
             return None
         text = text.strip()[:500]
@@ -119,8 +120,10 @@ class EdgeTtsProvider(TTSProvider):
             self._last_sweep = now
             self._sweep_cache(CACHE_TTL)
 
+        # P2-7: 显式 voice 参数优先（角色/情绪音色映射），未提供则用本 provider 默认
+        eff_voice = voice or self._voice
         # 缓存：同文本+音色+语速复用（instruct 情感不参与，edge 不支持精细情感）
-        cache_key = f"edge:{self._voice}:{self._rate}:{text}"
+        cache_key = f"edge:{eff_voice}:{self._rate}:{text}"
         text_hash = hashlib.md5(cache_key.encode()).hexdigest()[:12]
         output_path = OUTPUT_DIR / f"edge_{text_hash}.mp3"
 
@@ -131,7 +134,7 @@ class EdgeTtsProvider(TTSProvider):
         try:
             # 异步接口：放入新事件循环执行（worker 线程无 Qt 循环，asyncio.run 安全）
             async def _synth():
-                comm = edge_tts.Communicate(text, self._voice, rate=self._rate, pitch=self._pitch)
+                comm = edge_tts.Communicate(text, eff_voice, rate=self._rate, pitch=self._pitch)
                 await comm.save(str(output_path))
 
             asyncio.run(_synth())

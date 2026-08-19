@@ -4,16 +4,18 @@
 （高=青绿、中=琥珀、低=红），一眼看清宠物需求。主题感知（跟随 ThemeManager）。
 
 设计为桌宠窗口子控件，透明、不拦截鼠标。
+
+P1-8 重上色：配色/圆角/间距全部取自 ``ui/theme/neko_palette.py`` 设计 token
+（N.E.K.O. 设计语言），不再散落硬编码色值；功能逻辑不变（只换肤）。
 """
 from __future__ import annotations
-
-from typing import Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath
 from PySide6.QtWidgets import QWidget
 
 from ui.emotion_face import EMOTION_LABEL
+from ui.theme.neko_palette import NEKO_LAYOUT, neko_qcolor, palette
 
 
 # 行定义：(emoji, 名称, 取值键)
@@ -25,14 +27,25 @@ _ROWS = (
     ("❤️", "健康", "health"),
 )
 
+# 情绪 → palette token 后缀（色值在 neko_palette 的 hud_emotion_* 定义）
+_EMOTION_TOKEN = {
+    "happy": "hud_emotion_happy",
+    "sad": "hud_emotion_sad",
+    "thinking": "hud_emotion_thinking",
+    "surprised": "hud_emotion_surprised",
+    "angry": "hud_emotion_angry",
+    "neutral": "hud_emotion_neutral",
+}
+
 
 def _bar_color(ratio: float, dark: bool) -> QColor:
-    """数值高低→颜色（绿→琥珀→红）"""
+    """数值高低→颜色（绿→琥珀→红），色值取自 neko_palette hud_bar_* token。"""
+    theme = "dark" if dark else "light"
     if ratio >= 0.6:
-        return QColor(80, 200, 170) if dark else QColor(40, 170, 130)
+        return neko_qcolor(theme, "hud_bar_good")
     if ratio >= 0.3:
-        return QColor(240, 190, 90) if dark else QColor(220, 160, 50)
-    return QColor(235, 95, 95) if dark else QColor(210, 70, 70)
+        return neko_qcolor(theme, "hud_bar_warn")
+    return neko_qcolor(theme, "hud_bar_bad")
 
 
 class StatusHUD(QWidget):
@@ -46,10 +59,12 @@ class StatusHUD(QWidget):
 
         self._theme = "dark"
         self._stats: dict[str, tuple[float, float]] = {}
-        self._row_h = 22
-        self._pad = 12
-        self._bar_h = 7
-        self._emo_row_h = 20
+        self._row_h = NEKO_LAYOUT["hud_row_h"]
+        self._pad = NEKO_LAYOUT["hud_pad"]
+        self._bar_h = NEKO_LAYOUT["hud_bar_h"]
+        self._bar_radius = NEKO_LAYOUT["hud_bar_radius"]
+        self._radius = NEKO_LAYOUT["hud_radius"]
+        self._emo_row_h = NEKO_LAYOUT["hud_emo_row_h"]
         self._emotion = "neutral"
         self.setFixedSize(
             188,
@@ -97,27 +112,26 @@ class StatusHUD(QWidget):
             return
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        dark = self._theme == "dark"
+        theme = "dark" if self._theme == "dark" else "light"
 
         w, h = self.width(), self.height()
-        r = 16
-        # 玻璃面板
-        bg = QColor(20, 24, 46, 226) if dark else QColor(255, 248, 238, 232)
-        border = QColor(120, 140, 200, 110) if dark else QColor(180, 150, 120, 130)
+        # 玻璃面板（颜色来自 neko_palette）
+        bg = neko_qcolor(theme, "hud_panel_bg")
+        border = neko_qcolor(theme, "hud_panel_border")
         path = QPainterPath()
-        path.addRoundedRect(0, 0, w, h, r, r)
+        path.addRoundedRect(0, 0, w, h, self._radius, self._radius)
         p.fillPath(path, bg)
         p.setPen(border)
         p.drawPath(path)
 
         # 标题
-        p.setPen(QColor(220, 226, 240) if dark else QColor(70, 50, 35))
+        p.setPen(neko_qcolor(theme, "hud_title"))
         p.setFont(QFont("Microsoft YaHei UI", 10, QFont.Weight.Bold))
         p.drawText(self._pad, self._pad + 2, "状态")
 
         # 各属性条
-        text_col = QColor(214, 220, 236) if dark else QColor(80, 55, 40)
-        track_col = QColor(255, 255, 255, 38) if dark else QColor(0, 0, 0, 30)
+        text_col = neko_qcolor(theme, "hud_text")
+        track_col = neko_qcolor(theme, "hud_track")
         y = self._pad + 18
         for emoji, name, key in _ROWS:
             val, mx = self._stats.get(key, (0.0, 100.0))
@@ -133,12 +147,13 @@ class StatusHUD(QWidget):
             track_rect = (bar_x, y + self._row_h // 2 - self._bar_h // 2, bar_w, self._bar_h)
             p.setPen(Qt.NoPen)
             p.setBrush(track_col)
-            p.drawRoundedRect(*track_rect, 3, 3)
+            p.drawRoundedRect(*track_rect, self._bar_radius, self._bar_radius)
 
             # 条 fill
             fill_w = max(2, int(bar_w * ratio))
-            p.setBrush(_bar_color(ratio, dark))
-            p.drawRoundedRect(bar_x, track_rect[1], fill_w, self._bar_h, 3, 3)
+            p.setBrush(_bar_color(ratio, self._theme == "dark"))
+            p.drawRoundedRect(bar_x, track_rect[1], fill_w, self._bar_h,
+                              self._bar_radius, self._bar_radius)
 
             # 数值
             p.setPen(text_col)
@@ -153,14 +168,10 @@ class StatusHUD(QWidget):
         p.setFont(QFont("Microsoft YaHei UI", 9, QFont.Weight.Bold))
         p.drawText(self._pad, self.height() - self._emo_row_h + 14, "当前情绪")
         # 情绪色点
-        emo_dot = {
-            "happy": QColor(120, 210, 150),
-            "sad": QColor(130, 170, 235),
-            "thinking": QColor(200, 180, 140),
-            "surprised": QColor(240, 200, 120),
-            "angry": QColor(235, 120, 120),
-            "neutral": QColor(180, 190, 205),
-        }.get(self._emotion, QColor(180, 190, 205))
+        emo_token = _EMOTION_TOKEN.get(self._emotion, "hud_emotion_neutral")
+        if emo_token not in palette(theme):
+            emo_token = "hud_emotion_neutral"
+        emo_dot = neko_qcolor(theme, emo_token)
         p.setBrush(emo_dot)
         p.setPen(Qt.NoPen)
         p.drawEllipse(self._pad + 64, self.height() - self._emo_row_h + 6, 9, 9)

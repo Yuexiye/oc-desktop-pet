@@ -77,6 +77,21 @@ class AvatarRenderer(ABC):
         """
         ...
 
+    def set_master_emotion(self, emotion: str) -> None:
+        """P2-6: 推送当前主导情绪（master emotion）到渲染器。
+
+        默认实现只更新状态（不触发动作/手势），Live2DRenderer 重写为
+        同步程序化表情层。精灵/VRM 渲染器继承本默认实现即可。
+        """
+        self._current_emotion = emotion or "neutral"
+
+    def set_procedural_smoothing(self, seconds: float) -> None:
+        """P2-6: 配置程序化表情层插值时间常数（秒）。
+
+        默认实现为空操作；Live2DRenderer 使用该值做面部参数平滑过渡。
+        """
+        return None
+
     # ── 视线 ──
 
     @abstractmethod

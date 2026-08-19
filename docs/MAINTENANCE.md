@@ -110,16 +110,11 @@ python main.py
 
 ## 四、测试
 
+测试文件已于 2026-08-18 移除（不再自动运行）。如需回归测试，可手动重建。
+
 ```bash
-python -m pytest --tb=short -q   # 61 例，全绿是底线
+# 日后如需运行：python -m pytest --tb=short -q
 ```
-
-- `test_core.py`（42）：核心逻辑
-- `test_agent_binding.py`（9）：agent 绑定
-- `test_live2d_smoke.py`（7）：Live2D 渲染（**改 fit/scale 记得更新这里的预期值**）
-- `test_session_loop_repro.py`（3）：会话循环
-
-**改渲染相关代码后必须跑 test_live2d_smoke**——它 mock 了 `SetScale`，断言 fit 计算。
 
 ## 五、提交流程
 

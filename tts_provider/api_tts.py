@@ -50,16 +50,17 @@ class ApiTtsProvider(TTSProvider):
         else:
             logger.warning("API TTS config missing (need base_url + api_key in data/api_config.json)")
 
-    def synthesize(self, text: str, character_id: str = "", instruct: str = "") -> Optional[str]:
+    def synthesize(self, text: str, character_id: str = "", instruct: str = "",
+                   voice: str = "") -> Optional[str]:
         if not text or not text.strip() or not self._ready:
             return None
 
         text = text.strip()[:500]
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-        # 缓存
-        voice = self._cfg.get("voice", "alloy")
-        text_hash = hashlib.md5(f"api:{voice}:{text}".encode()).hexdigest()[:12]
+        # P2-7: 显式 voice 参数优先（角色/情绪音色映射），未提供则用配置默认（TTS_VOICE / alloy）
+        eff_voice = voice or self._cfg.get("voice", "alloy")
+        text_hash = hashlib.md5(f"api:{eff_voice}:{text}".encode()).hexdigest()[:12]
         output_path = OUTPUT_DIR / f"api_{text_hash}.wav"
 
         if output_path.exists():
@@ -79,7 +80,7 @@ class ApiTtsProvider(TTSProvider):
         payload = {
             "model": self._cfg.get("model", "tts-1"),
             "input": text,
-            "voice": voice,
+            "voice": eff_voice,
             "response_format": self._cfg.get("format", "wav"),
         }
 

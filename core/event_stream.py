@@ -11,16 +11,18 @@
 - 行级损坏隔离：读取时逐行 try/except，坏行跳过并告警，不影响其余行
 - 线程安全：append/prune 用锁保护，跨线程调用安全
 - 裁剪：`prune(max_days, max_entries)` 按时间/条数双上限裁剪
+- **字段归一（P0-4）**：写入/读取统一经 ``normalize_record`` 归一
+  scenario/intent/emotion/intensity/source 字段（缺省补默认值、intensity
+  夹到 [0,1]）；旧文件（无新字段）读取时自动补默认值，不崩。
+- **隐私截断（P0-4）**：``topic`` 入库前截断 60 字；``source="vision"``
+  的视觉事件**不落文本**（topic/summary/detail/text 字段一律剥离），
+  只保留分类与时间。
 
 事件字段（示例）：
     {"ts": 1755417600.0, "start_ts": 1755416400.0, "end_ts": 1755417600.0,
      "category": "development", "scenario": "late_night_work", "intent": "deep_work",
      "emotion": "happy", "intensity": 0.8, "topic": "重构事件流模块（截断60字）",
-     "source": "foreground|vision|topic"}
-
-隐私约定：
-- `topic` 入库前截断 60 字（复用 CompanionMemory.TOPIC_MAX_CHARS）
-- source="vision" 的视觉 API summary/detail **不进流**（只在写入方省略字段）
+     "source": "foreground"}
 """
 from __future__ import annotations
 
@@ -37,6 +39,16 @@ DEFAULT_MEMORY_DIR = Path.home() / ".oc-pet" / "memory"
 TOPIC_MAX_CHARS = 60          # 话题文本截断长度（与 CompanionMemory 一致）
 DEFAULT_MAX_DAYS = 30         # 事件保留天数上限
 DEFAULT_MAX_ENTRIES = 5000    # 事件条数上限
+
+# source="vision" 时剥离的文本字段（隐私：视觉内容不落文本）
+VISION_PRIVATE_KEYS = ("topic", "summary", "detail", "text")
+
+# 归一字段的缺省值（P0-4：读取/写入统一补齐，旧文件兼容）
+DEFAULT_SCENARIO = ""
+DEFAULT_INTENT = ""
+DEFAULT_EMOTION = "neutral"
+DEFAULT_INTENSITY = 0.0
+DEFAULT_SOURCE = ""
 
 
 class EventStream:
@@ -59,29 +71,66 @@ class EventStream:
     def path(self) -> Path:
         return self._path
 
+    # ── 字段归一（P0-4）──
+
+    @staticmethod
+    def normalize_record(record: dict) -> dict:
+        """归一事件字段：补默认值 + 夹 intensity + 隐私截断（纯函数）。
+
+        写入（append）与读取（read）共用同一归一逻辑：
+        - scenario/intent/source 缺省为空串，emotion 缺省 "neutral"，
+          intensity 缺省 0.0（旧文件读取时自动补齐，不崩）
+        - intensity 强制 float 并夹到 [0, 1]；非法值 → 0.0
+        - topic 截断 ≤ TOPIC_MAX_CHARS（60 字）
+        - source="vision" → 剥离 VISION_PRIVATE_KEYS 文本字段（隐私）
+
+        Args:
+            record: 原始事件 dict
+
+        Returns:
+            归一后的新 dict（不修改入参）
+        """
+        entry = dict(record or {})
+        now = time.time()
+        # ts：事件记录时间（=end_ts 兜底 now）
+        if not entry.get("ts"):
+            entry["ts"] = entry.get("end_ts") or now
+        # 新字段缺省补齐（P0-4）
+        entry.setdefault("scenario", DEFAULT_SCENARIO)
+        entry.setdefault("intent", DEFAULT_INTENT)
+        entry.setdefault("emotion", DEFAULT_EMOTION)
+        entry.setdefault("source", DEFAULT_SOURCE)
+        # intensity：夹到 [0,1]，非法值兜底 0.0
+        try:
+            intensity = float(entry.get("intensity", DEFAULT_INTENSITY) or 0.0)
+        except Exception:
+            intensity = DEFAULT_INTENSITY
+        entry["intensity"] = max(0.0, min(1.0, intensity))
+        # topic 隐私截断（≤60 字）
+        topic = entry.get("topic")
+        if topic:
+            entry["topic"] = " ".join(str(topic).split())[:TOPIC_MAX_CHARS]
+        # source="vision"：不落文本（隐私）
+        if str(entry.get("source") or "").strip() == "vision":
+            for key in VISION_PRIVATE_KEYS:
+                entry.pop(key, None)
+        return entry
+
     # ── 写入 ──
 
     def append(self, record: dict) -> None:
         """单行 JSON append + "\\n"，锁保护；异常不外抛（埋点方安全）。
 
+        写入前经 ``normalize_record`` 归一：新字段补默认值、intensity 夹
+        [0,1]、topic 截断、source="vision" 剥离文本字段（隐私）。
+
         Args:
             record: 事件字段 dict（ts/start_ts/end_ts/category/scenario/...）。
-                    缺省字段会自动补齐：ts 取 end_ts 兜底 now。
         """
         if not record or not isinstance(record, dict):
             return
         try:
-            now = time.time()
-            entry = dict(record)
-            # ts：事件记录时间（=end_ts 兜底）
-            if not entry.get("ts"):
-                entry["ts"] = entry.get("end_ts") or now
-            # topic 隐私截断（≤60 字）
-            topic = entry.get("topic")
-            if topic:
-                cleaned = " ".join(str(topic).split())[:TOPIC_MAX_CHARS]
-                entry["topic"] = cleaned
-            # 旧事件无 emotion/intensity → 读取时 .get("emotion","neutral")
+            entry = self.normalize_record(record)
             line = json.dumps(entry, ensure_ascii=False)
             with self._lock:
                 self._dir.mkdir(parents=True, exist_ok=True)
@@ -110,7 +159,8 @@ class EventStream:
             try:
                 rec = json.loads(line)
                 if isinstance(rec, dict):
-                    records.append(rec)
+                    # 旧文件兼容：读取时统一归一（补新字段默认值、夹 intensity）
+                    records.append(self.normalize_record(rec))
                 else:
                     logger.warning("EventStream 坏行跳过（第 %d 行，非对象）", i)
             except Exception as e:
@@ -194,4 +244,14 @@ class EventStream:
         return removed
 
 
-__all__ = ["EventStream", "DEFAULT_MEMORY_DIR", "TOPIC_MAX_CHARS"]
+__all__ = [
+    "EventStream",
+    "DEFAULT_MEMORY_DIR",
+    "TOPIC_MAX_CHARS",
+    "VISION_PRIVATE_KEYS",
+    "DEFAULT_SCENARIO",
+    "DEFAULT_INTENT",
+    "DEFAULT_EMOTION",
+    "DEFAULT_INTENSITY",
+    "DEFAULT_SOURCE",
+]

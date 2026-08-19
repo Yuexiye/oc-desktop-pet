@@ -32,13 +32,15 @@ class TTSProvider(ABC):
         ...
 
     @abstractmethod
-    def synthesize(self, text: str, character_id: str = "", instruct: str = "") -> Optional[str]:
+    def synthesize(self, text: str, character_id: str = "", instruct: str = "",
+                   voice: str = "") -> Optional[str]:
         """合成语音
 
         Args:
             text: 要合成的文本
             character_id: 角色 ID（用于音色选择）
             instruct: 情感指令（如"开心"、"温柔"）
+            voice: 音色名（P2-7 可选覆盖；空 = 使用 provider 默认音色）
 
         Returns:
             音频文件路径，失败返回 None

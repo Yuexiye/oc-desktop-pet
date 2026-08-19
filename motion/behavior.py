@@ -36,6 +36,14 @@ BEHAVIOR_MODES = {
         speed_mul=1.1,
         direction_to_mouse=True, min_pause=1500, max_pause=4000
     ),
+    # P0-5 专注模式：默认关（config.focus.enabled=false 时行为层不采用本模式）。
+    # 专注时行为安静：几乎不走动、速度慢、休息长——"降低打扰"的行为侧表达。
+    # 只有 FocusStateMachine.active 且 config.focus.enabled=true 时才会切到它。
+    "focus": BehaviorParams(
+        walk_chance=0.05, min_dist=10, max_dist=40,
+        speed_mul=0.5,
+        direction_to_mouse=False, min_pause=4000, max_pause=9000
+    ),
 }
 
 
@@ -78,6 +86,13 @@ MOUSE_REACTIONS = {
         chase_enabled=True, react_startle=False,
         nearby_anim="extra", startle_anim="idle",
         chase_walk_speed=1.1,
+    ),
+    # P0-5 专注模式：鼠标反应全关（不转头、不追逐、不惊吓）——安静不抢焦点。
+    "focus": MouseReactionParams(
+        gaze_enabled=False, react_nearby=False, react_hover=False,
+        chase_enabled=False, react_startle=False,
+        nearby_anim="idle", startle_anim="idle",
+        chase_walk_speed=0.8,
     ),
 }
 

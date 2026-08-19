@@ -65,6 +65,7 @@ from pet_mixins.chat_mixin import ChatMixin
 from pet_mixins.behavior_mixin import BehaviorMixin
 from pet_mixins.voice_provider_mixin import VoiceProviderMixin
 from pet_mixins.nurturing_mixin import NurturingMixin
+from pet_mixins.play_mixin import PlayMixin
 from pet_mixins.bubble_mixin import BubbleMixin
 
 logger = logging.getLogger(__name__)
@@ -79,7 +80,7 @@ except ImportError:
 
 # ─── 设置对话框 ─────────────────────────────────────────
 
-class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, InteractionMixin, ChatMixin, BehaviorMixin, VoiceProviderMixin, NurturingMixin, BubbleMixin, QWidget):
+class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, InteractionMixin, ChatMixin, BehaviorMixin, VoiceProviderMixin, NurturingMixin, PlayMixin, BubbleMixin, QWidget):
     """透明桌面宠物窗口"""
 
     # 跨线程信号：后台线程 -> 主线程
@@ -113,6 +114,8 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
     tts_celebration_signal = Signal(str)  # audio_path
     # F 本地状态口写转发：HTTP 线程只 emit 事件，经信号转主线程再驱动（不直连渲染线程）。
     pet_set_mode_signal = Signal(str)  # mode
+    # T05 专注状态 → 主线程 UI（FocusStateMachine listener 可能在后台线程触发）
+    focus_ui_signal = Signal(bool, float, object)  # active, charge, signals
 
     def __init__(self, agent_id: str = "yuexinmiao", sprite_dir: str = None,
                  position: dict = None, scale: float = 1.0,
@@ -143,6 +146,10 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self._init_engine()
         self._init_voice_audio()
         self._init_visual_startup()
+        # T05：N.E.K.O. 移植四线成果接入主循环（focus/chat_panel/memory_panel/proactive generator）
+        self._init_neko_t05()
+        # P2：互动层（小游戏邀请 / 音乐推荐 / 休息提醒）——防御式，失败不影响主功能
+        self._init_play_layer()
 
     def _init_diag_switches(self):
         """P0 调试开关：环境变量禁用各模块（二分法定位 0x8001010d）。
@@ -267,6 +274,9 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         )
         self._proactive.load_config(proactive_cfg)
         self._proactive_grace = time.time() + 120  # 启动后 2 分钟内不触发主动对话
+        # T02 P0-1：LLM 生成器注入（复用 Hanako 通道 source="proactive"）。
+        # 适配器在 _init_engine 里由 ConversationEngine.start() 创建，因此延迟到
+        # _init_engine 末尾统一注入（见 _inject_proactive_generator）。
 
         # ── Presence 轻存在感调度器（不同于 proactive：不说话只做动作）──
         # 与主动对话互补：proactive 会打断（说话），presence 只在空闲时做微动作，
@@ -405,6 +415,8 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
             tts_provider=tts_provider, builtin=is_builtin,
             agent_id=_dlg_agent,
         )
+        # P2-7: 挂接音色解析器（角色音色/情绪音色 → 每句合成前选音色；多桌宠各自独立）
+        self._wire_voice_resolver()
         self._engine.on_reply = self._on_engine_reply
         self._engine.on_status = self._on_engine_status
         self._engine.on_tts_ready = lambda: logger.info("Engine TTS ready")
@@ -584,6 +596,469 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
 
         # ── P3 表现：多宠打招呼（订阅 pet_enter，另一只宠上线时响应）──
         self._init_multi_pet_greeting()
+
+    # ────────────────────────────────────────────────────────────
+    # T05：N.E.K.O. 移植四线成果接入主循环（P0-1/P0-2/P0-5/P0-6/P0-7/P0-8）
+    # ────────────────────────────────────────────────────────────
+
+    def _init_neko_t05(self):
+        """把 T02/T03/T04 四线成果接进 PetWindow 主循环。
+
+        职责（全部防御式接线，任何一条失败都不影响既有功能）：
+          1. T02 P0-1：ProactiveScheduler 注入 ProactiveGenerator（Hanako 通道）
+          2. T04 P0-5：创建 FocusScorer+FocusStateMachine → self._focus_manager
+             （BehaviorMixin._focus_suppresses_proactive 自动读取；专注降频生效）
+          3. T04 P0-6/P0-7：ChatPanel 窗口 + message_submitted/close_requested 接线
+             + set_thinking/set_focus_active 联动
+          4. T04 P0-8：MemoryPanel 窗口挂到右键菜单「管理」组
+          5. 专注信号 → ChatPanel 辉光：focus 状态变化经 listener 回主线程更新
+
+        线程约束：FocusStateMachine 的 listener 可能在后台线程触发（对话引擎回调），
+        因此 focus → UI 的更新经 Qt Signal（focus_ui_signal）绕回主线程。
+        """
+        # 5. 专注 → ChatPanel 辉光信号（后台线程回调 → 主线程更新 UI）
+        self.focus_ui_signal.connect(self._on_focus_ui_changed)
+
+        # 2. 专注核心（FocusScorer + FocusStateMachine）
+        try:
+            from core.perception.focus import create_focus_core
+            self._focus_scorer, self._focus_manager = create_focus_core()
+            self._focus_manager.add_listener(self._on_focus_state_changed)
+            logger.info("T05 focus core ready | enabled=%s", self._focus_manager.enabled)
+        except Exception as e:
+            logger.warning("T05 focus core 初始化失败（专注模式禁用）: %s", e)
+            self._focus_scorer = None
+            self._focus_manager = None
+
+        # 1. ProactiveGenerator 注入（复用引擎的 HanakoPetAdapter，source="proactive"）
+        self._inject_proactive_generator()
+
+        # 3+4. ChatPanel / MemoryPanel（延迟到 UI 初始化完成后创建）
+        self._init_neko_panels()
+
+        # P1 集成：反重复 / 屏幕感知升级 / 事实库 / 反思引擎 / 向量嵌入确认
+        # （全部防御式，任何一线失败不影响既有功能）
+        self._init_neko_p1()
+
+    def _inject_proactive_generator(self):
+        """T02 P0-1：把 LLM 生成器注入 ProactiveScheduler。
+
+        生成器复用 ConversationEngine 创建的 HanakoPetAdapter（source="proactive"
+        走 chat_direct 直连，不写 Hanako 会话历史）。config proactive.llm_generation
+        在 scheduler.load_config 已读取；未启用 / 无适配器 / 未配置 LLM 时静默跳过
+        （回退模板池——避免把"(模型未配置)"当生成结果投递）。
+        """
+        try:
+            from core.perception.proactive_generation import ProactiveGenerator
+            adapter = getattr(getattr(self, "_engine", None), "_adapter", None)
+            if adapter is None:
+                logger.info("T05 proactive generator: 无 LLM 适配器，保持模板池")
+                return
+            if not getattr(self, "_proactive", None):
+                return
+            # 仅当适配器已配置 LLM（base_url + api_key 齐备）才注入；
+            # 否则 chat_direct 返回的"(模型未配置)"会被当成生成结果。
+            _base = (getattr(adapter, "_base_url", "") or "").strip()
+            _key = (getattr(adapter, "_api_key", "") or "").strip()
+            if not _base or not _key:
+                logger.info("T05 proactive generator: LLM 未配置，保持模板池")
+                return
+            gen = ProactiveGenerator(adapter=adapter, use_qt_bridge=True)
+            self._proactive.set_generator(gen)
+            logger.info("T05 proactive generator 注入成功（llm_generation=%s）",
+                        self._proactive._llm_generation)
+        except Exception as e:
+            logger.warning("T05 proactive generator 注入失败（回退模板池）: %s", e)
+
+    def _init_neko_panels(self):
+        """创建 ChatPanel / MemoryPanel / CharacterCard 窗口并接线（P0-6/P0-7/P0-8/P1-7）。"""
+        theme = getattr(self, "_ui_theme", "dark") or "dark"
+        agent_name = ""
+        try:
+            from config import CHARACTER_INFO
+            agent_name = (CHARACTER_INFO.get(self._current_char, {}) or {}).get("name", "")
+        except Exception:
+            agent_name = ""
+        self._agent_display_name = agent_name or self._current_char
+
+        # ── ChatPanel（P0-6/P0-7）──
+        try:
+            from ui.chat_panel import ChatPanel
+            self._chat_panel = ChatPanel(
+                theme=theme if theme in ("light", "dark") else "dark",
+                agent_name=self._agent_display_name,
+                parent=None,
+            )
+            self._chat_panel.setWindowFlags(self._chat_panel.windowFlags() | Qt.Tool)
+            self._chat_panel.resize(380, 520)
+            self._chat_panel.message_submitted.connect(self._on_chat_panel_submit)
+            self._chat_panel.close_requested.connect(self._close_chat_panel)
+            logger.info("T05 chat panel ready")
+        except Exception as e:
+            logger.warning("T05 chat panel 初始化失败: %s", e)
+            self._chat_panel = None
+
+        # ── MemoryPanel（P0-8）──
+        try:
+            from ui.memory_panel import MemoryPanel
+            self._memory_panel = MemoryPanel(
+                agent_id=self._agent_id,
+                theme=theme if theme in ("light", "dark") else "dark",
+                parent=None,
+            )
+            self._memory_panel.setWindowFlags(self._memory_panel.windowFlags() | Qt.Tool)
+            self._memory_panel.resize(400, 520)
+            logger.info("T05 memory panel ready")
+        except Exception as e:
+            logger.warning("T05 memory panel 初始化失败: %s", e)
+            self._memory_panel = None
+
+        # ── CharacterCard（P1-7 角色卡）──
+        try:
+            from ui.character_card import CharacterCard
+            self._character_card = CharacterCard(
+                agent_id=self._agent_id,
+                character_id=self._current_char,
+                theme=theme if theme in ("light", "dark") else "dark",
+                parent=None,
+            )
+            self._character_card.setWindowFlags(
+                self._character_card.windowFlags() | Qt.Tool,
+            )
+            self._character_card.resize(360, 460)
+            logger.info("P1-7 character card ready")
+        except Exception as e:
+            logger.warning("P1-7 character card 初始化失败: %s", e)
+            self._character_card = None
+
+        # 右键菜单「管理」组入口（活动流旁）
+        try:
+            if hasattr(self, "_manage_menu") and self._manage_menu is not None:
+                if self._chat_panel is not None:
+                    self._manage_menu.addAction("💬 聊天面板", self._toggle_chat_panel)
+                if self._memory_panel is not None:
+                    self._manage_menu.addAction("🧠 记忆", self._toggle_memory_panel)
+                if self._character_card is not None:
+                    self._manage_menu.addAction("🪪 角色卡", self._toggle_character_card)
+        except Exception as e:
+            logger.debug("T05 菜单入口注入失败: %s", e)
+
+    # ────────────────────────────────────────────────────────────
+    # P1 集成：四线（A 语义检索 / B 事实库+反思 / C 反重复+屏幕感知 / D 角色卡+HUD）
+    # 接进主循环。全部防御式 try/except——任何一线失败不影响既有功能（参照 P0
+    # _init_neko_t05 模式）；后台线程（LLM 抽取/反思/屏幕增强）一律经 Qt Signal
+    # 回主线程，不触碰 UI/COM（0x8001010D 约束）。
+    # ────────────────────────────────────────────────────────────
+
+    def _init_neko_p1(self):
+        """P1 集成总入口：反重复 / 屏幕感知升级 / 事实库 / 反思引擎 / 向量嵌入确认。"""
+        self._init_p1_anti_repeat()
+        self._init_p1_screen_enrich()
+        self._init_p1_fact_store()
+        self._init_p1_reflection()
+        self._init_p1_embedding_check()
+
+    def _init_p1_anti_repeat(self):
+        """C 线 P1-5：proactive 注入 AntiRepeatCorpus（语义指纹 + 时间窗去重）。"""
+        try:
+            from core.anti_repeat import get_anti_repeat_corpus
+            if not getattr(self, "_proactive", None):
+                return
+            if not (self.config.get("anti_repeat", {}) or {}).get("enabled", True):
+                logger.info("P1 anti_repeat disabled by config")
+                return
+            corpus = get_anti_repeat_corpus()
+            self._proactive.set_anti_repeat(corpus, self._current_char)
+            logger.info("P1 anti_repeat injected (agent=%s)", self._current_char)
+        except Exception as e:
+            logger.warning("P1 anti_repeat 注入失败（非致命）: %s", e)
+
+    def _init_p1_screen_enrich(self):
+        """C 线 P1-6：屏幕感知 → proactive 场景 provider + LLM 语义增强 provider。
+
+        - ``proactive.set_screen_scene_provider(screen.get_scene_snapshot)``：
+          场景快照并入 proactive signals（screen_scene/screen_intent/confidence）。
+        - ``screen.set_enrich_provider(adapter 包装 source="screen_enrich")``：
+          语义增强走 ``chat_direct`` 直连（不写 Hanako 会话历史，与
+          proactive/idle 同策略），失败/超时自动退化纯规则分类。
+        """
+        try:
+            screen = getattr(getattr(self, "_perception", None), "screen", None)
+            if screen is None:
+                return
+            proactive = getattr(self, "_proactive", None)
+            if proactive is not None:
+                proactive.set_screen_scene_provider(screen.get_scene_snapshot)
+            screen_cfg = self.config.get("screen", {}) or {}
+            llm_enrich = bool(screen_cfg.get("llm_enrich", True))
+            screen.set_llm_enrich(llm_enrich)
+            adapter = getattr(getattr(self, "_engine", None), "_adapter", None)
+            if llm_enrich and adapter is not None:
+                def _screen_enrich_provider(prompt: str):
+                    try:
+                        reply, _emotion = adapter.chat_direct(
+                            prompt, inject_memory=False, source="screen_enrich",
+                        )
+                        return (reply or "").strip() or None
+                    except Exception:
+                        return None
+                screen.set_enrich_provider(_screen_enrich_provider)
+            else:
+                screen.set_enrich_provider(None)
+            logger.info("P1 screen enrich injected (llm_enrich=%s, adapter=%s)",
+                        llm_enrich, "yes" if adapter else "no")
+        except Exception as e:
+            logger.warning("P1 屏幕感知升级接线失败（非致命）: %s", e)
+
+    def _init_p1_fact_store(self):
+        """B 线 P1-2：FactStore 注入 + 对话事实记录钩子。"""
+        try:
+            facts_cfg = (self.config.get("memory", {}) or {}).get("facts", {}) or {}
+            if not facts_cfg.get("enabled", True):
+                logger.info("P1 FactStore disabled by config")
+                self._fact_store = None
+                return
+            from core.memory_facts import FactStore
+            adapter = getattr(getattr(self, "_engine", None), "_adapter", None)
+            self._fact_store = FactStore(
+                agent_id=self._agent_id,
+                adapter=adapter,
+                use_qt_bridge=True,
+            )
+            self._fact_store.set_changed_callback(self._on_fact_store_changed)
+            logger.info("P1 FactStore ready (agent=%s, adapter=%s)",
+                        self._agent_id, "yes" if adapter else "no")
+        except Exception as e:
+            logger.warning("P1 FactStore 初始化失败（非致命）: %s", e)
+            self._fact_store = None
+
+    def _on_fact_store_changed(self, result: dict):
+        """主线程：事实库变化通知（日志；后续可接记忆面板刷新）。"""
+        try:
+            added = int(result.get("added", 0) or 0)
+            if added:
+                logger.info("[FactStore] added=%d facts", added)
+        except Exception:
+            pass
+
+    def _record_conversation_facts(self, text: str) -> None:
+        """对话记忆写入点：engine.send 后把用户文本交给 FactStore 抽取事实。
+
+        后台线程 LLM 抽取（FactStore.record_text 自带 Qt 信号回主线程），
+        任何失败静默跳过，绝不阻塞对话链路。
+        """
+        store = getattr(self, "_fact_store", None)
+        if store is None or not text or not str(text).strip():
+            return
+        try:
+            store.record_text(
+                str(text).strip(),
+                extra_context="对话",
+                evidence=[{"source": "conversation", "ts": time.time()}],
+            )
+        except Exception as exc:
+            logger.debug("P1 对话事实记录跳过: %s", exc)
+
+    def _init_p1_reflection(self):
+        """B 线 P1-3：ReflectionEngine 注入 + 定时触发（presence 60s tick）。"""
+        try:
+            refl_cfg = (self.config.get("memory", {}) or {}).get("reflection", {}) or {}
+            if not refl_cfg.get("enabled", True):
+                logger.info("P1 ReflectionEngine disabled by config")
+                self._reflection_engine = None
+                return
+            from core.memory_reflection import ReflectionEngine
+            adapter = getattr(getattr(self, "_engine", None), "_adapter", None)
+            self._reflection_engine = ReflectionEngine(
+                agent_id=self._agent_id,
+                adapter=adapter,
+                event_source=getattr(self, "_event_stream", None),
+                use_qt_bridge=True,
+            )
+            self._reflection_engine.set_changed_callback(self._on_reflection_changed)
+            logger.info("P1 ReflectionEngine ready (agent=%s, adapter=%s)",
+                        self._agent_id, "yes" if adapter else "no")
+        except Exception as e:
+            logger.warning("P1 ReflectionEngine 初始化失败（非致命）: %s", e)
+            self._reflection_engine = None
+
+    def _on_reflection_changed(self, result: dict):
+        """主线程：反思引擎变化通知（日志；后续可接记忆面板刷新）。"""
+        try:
+            added = int(result.get("added", 0) or 0)
+            if added:
+                logger.info("[Reflection] added=%d insights", added)
+        except Exception:
+            pass
+
+    def _maybe_reflect(self):
+        """主线程慢 tick（60s）：按周期触发反思。
+
+        ``schedule_reflect`` 把 LLM 工作放后台线程，结果经 Qt 信号回主线程，
+        不阻塞主线程（0x8001010D 约束）。
+        """
+        engine = getattr(self, "_reflection_engine", None)
+        if engine is None:
+            return
+        try:
+            engine.schedule_reflect()
+        except Exception as exc:
+            logger.debug("P1 反思调度失败（非致命）: %s", exc)
+
+    def _init_p1_embedding_check(self):
+        """A 线 P1-1：确认 HybridMemoryRecall 默认 embedding provider 已接。
+
+        ``core.memory_hybrid.HybridMemoryRecall`` 构造时已默认调用
+        ``memory_embedding.default_embedding_provider()``（config
+        ``memory.embedding.enabled=False`` → None → 纯 BM25 退化）。此处只做
+        确认与日志，不强制启用（用户后续自行开）。
+        """
+        try:
+            from core.memory_hybrid import _default_embedding_provider
+            provider = _default_embedding_provider()
+            emb_cfg = (self.config.get("memory", {}) or {}).get("embedding", {}) or {}
+            enabled = bool(emb_cfg.get("enabled", False))
+            if provider is not None:
+                logger.info("P1 embedding provider available (enabled=%s)", enabled)
+            else:
+                logger.info("P1 embedding provider 未启用（memory.embedding.enabled=false），hybrid 走纯 BM25")
+        except Exception as e:
+            logger.debug("P1 embedding provider 检查跳过: %s", e)
+
+    # ── 专注模式联动 ──
+
+    def _on_focus_state_changed(self, active: bool, charge: float, signals: dict):
+        """FocusStateMachine 状态变化回调（可能后台线程）→ 经信号回主线程更新 UI。"""
+        try:
+            self.focus_ui_signal.emit(active, charge, signals)
+        except Exception:
+            pass
+
+    def _on_focus_ui_changed(self, active: bool, charge: float, signals: dict):
+        """主线程处理专注状态变化：更新 ChatPanel 辉光强度。"""
+        try:
+            if self._chat_panel is not None:
+                strength = 0.3
+                try:
+                    strength = float((self.config.get("focus", {}) or {}).get("glow_strength", 0.3))
+                except Exception:
+                    strength = 0.3
+                self._chat_panel.set_focus_active(bool(active), strength if active else 0.0)
+            logger.info("T05 focus=%s charge=%.3f", "on" if active else "off", charge)
+        except Exception as e:
+            logger.debug("T05 focus UI 更新失败: %s", e)
+
+    def _feed_focus_score(self, user_text: str):
+        """T04 P0-5：用户消息 → FocusScorer 打分 → FocusStateMachine 积分（主线程）。"""
+        try:
+            if self._focus_scorer is None or self._focus_manager is None:
+                return
+            if not self._focus_manager.enabled:
+                return
+            from core.perception.focus import emotion_reading_from_state
+            reading = emotion_reading_from_state(getattr(self._perception, "emotion", None))
+            score = self._focus_scorer.score(user_text=user_text, emotion_reading=reading)
+            self._focus_manager.update(score, spoke=False)
+        except Exception as e:
+            logger.debug("T05 focus score feed 失败: %s", e)
+
+    # ── ChatPanel 接线（P0-6）──
+
+    def _on_chat_panel_submit(self, text: str):
+        """ChatPanel 输入提交 → 对话引擎发送（与 _send_message 一致语义）。"""
+        if not text or not text.strip():
+            return
+        text = text.strip()
+        self._mark_user_interaction()
+        try:
+            self._perception.reset_emotion()
+        except Exception:
+            pass
+        # 记录话题 + 打断旧回复 + 发送
+        try:
+            self._record_topic(text)
+        except Exception:
+            pass
+        if self._engine:
+            try:
+                self._engine.interrupt(reason="new_message")
+            except Exception:
+                pass
+            self._engine.send(text, character=self._current_char)
+        # P1-2：对话事实写入点（engine.send 成功后记录事实；后台 LLM 抽取）
+        try:
+            self._record_conversation_facts(text)
+        except Exception:
+            pass
+        # 聊天面板：用户消息回显 + 思考点
+        if self._chat_panel is not None:
+            self._chat_panel.append_user(text)
+            self._chat_panel.set_thinking(True)
+        # 专注打分（P0-5）
+        self._feed_focus_score(text)
+        # P2 互动层：聊天关键词 → 小游戏/音乐/休息卡片（防御式）
+        try:
+            self._dispatch_chat_interaction(text)
+        except Exception:
+            pass
+
+    def _toggle_chat_panel(self):
+        """打开/关闭聊天面板（右键菜单入口）。"""
+        if self._chat_panel is None:
+            return
+        if self._chat_panel.isVisible():
+            self._chat_panel.hide()
+            return
+        pet_geo = self.geometry()
+        self._chat_panel.move(pet_geo.right() + 16, max(8, pet_geo.top() - 8))
+        self._chat_panel.show()
+        self._chat_panel.raise_()
+        self._chat_panel.input_widget().setFocus()
+
+    def _close_chat_panel(self):
+        """ChatPanel 关闭按钮 → 隐藏窗口（不销毁，保留会话）。"""
+        if self._chat_panel is not None:
+            self._chat_panel.hide()
+
+    def _toggle_memory_panel(self):
+        """打开/关闭记忆面板（右键菜单入口，P0-8）。"""
+        if self._memory_panel is None:
+            return
+        if self._memory_panel.isVisible():
+            self._memory_panel.hide()
+            return
+        # 切换 agent 时刷新数据源
+        try:
+            if getattr(self._memory_panel, "set_agent", None) is not None:
+                self._memory_panel.set_agent(self._agent_id)
+            else:
+                self._memory_panel.reload()
+        except Exception:
+            pass
+        pet_geo = self.geometry()
+        self._memory_panel.move(pet_geo.right() + 16, max(8, pet_geo.top() - 8))
+        self._memory_panel.show()
+        self._memory_panel.raise_()
+
+    def _toggle_character_card(self):
+        """打开/关闭角色卡（右键菜单入口，P1-7）。"""
+        if self._character_card is None:
+            return
+        if self._character_card.isVisible():
+            self._character_card.hide()
+            return
+        # 切换角色/agent 时刷新数据源
+        try:
+            if getattr(self._character_card, "set_agent", None) is not None:
+                self._character_card.set_agent(self._agent_id, self._current_char)
+            else:
+                self._character_card.reload()
+        except Exception:
+            pass
+        pet_geo = self.geometry()
+        self._character_card.move(pet_geo.right() + 16, max(8, pet_geo.top() - 8))
+        self._character_card.show()
+        self._character_card.raise_()
 
     def _init_multi_pet_greeting(self):
         """订阅 MultiPetBridge 的 pet_enter 事件：另一只桌宠上线 → 打招呼。
@@ -1005,10 +1480,18 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
                 pass
 
     def _presence_tick(self):
-        """QTimer 每 60s 驱动一次存在感检查（主线程，无需跨线程处理）。"""
+        """QTimer 每 60s 驱动一次存在感检查（主线程，无需跨线程处理）。
+
+        P1-3：顺带触发反思引擎周期判断（schedule_reflect 后台线程 LLM，
+        经 Qt 信号回主线程，不阻塞）。
+        """
         try:
             if self._presence:
                 self._presence.tick()
+        except Exception:
+            pass
+        try:
+            self._maybe_reflect()
         except Exception:
             pass
 
@@ -1636,6 +2119,9 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
 
         # 动作联动(动态高亮,默认隐藏,匹配时显示)
         self._interact_menu.addSeparator()
+        # 🎬 模型动作子菜单（右键弹出时动态重建，见 _rebuild_motion_menu）
+        self._motion_submenu = self._interact_menu.addMenu("🎬 模型动作")
+        self._motion_submenu.setStyleSheet(self._menu_qss())
         self._action_menu_items = {}  # action_id -> QAction
         for action in self._action_linker.actions:
             a = self._interact_menu.addAction(f"{action.emoji} {action.label}", lambda a_id=action.id: self._trigger_action(a_id))
@@ -1688,6 +2174,64 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         # ── 退出（顶层置底,始终可见）──
         self._menu.addSeparator()
         self._menu.addAction("❌ 退出", self.close)
+
+    def _rebuild_motion_menu(self):
+        """动态重建「模型动作」子菜单：列出模型可用 motion / expression。"""
+        if not hasattr(self, '_motion_submenu'):
+            return
+        self._motion_submenu.clear()
+
+        renderer = getattr(self, '_renderer', None)
+        if not renderer:
+            return
+
+        # 动作列表
+        motion_files = getattr(renderer, '_motion_files', [])
+        if motion_files:
+            motion_header = self._motion_submenu.addAction("🎞️ 动作")
+            motion_header.setEnabled(False)
+            for idx, fpath in enumerate(motion_files):
+                # 去掉路径和双扩展名（.motion3.json），只留可读名
+                name = Path(fpath).stem.split('.')[0]
+                display = name.replace('_', ' ').replace('-', ' ').title()
+                self._motion_submenu.addAction(
+                    f"▶️ {display}",
+                    lambda checked, i=idx, r=renderer: r._start_motion_at(i),
+                )
+            self._motion_submenu.addSeparator()
+
+        # 表情列表（原始 Live2D 表情名，如 比心/葱/唱歌）
+        expr_names = getattr(renderer, '_expression_names', [])
+        if expr_names:
+            expr_header = self._motion_submenu.addAction("😊 表情")
+            expr_header.setEnabled(False)
+            for name in expr_names:
+                display = str(name).replace('_', ' ').title()
+                self._motion_submenu.addAction(
+                    f"✨ {display}",
+                    lambda checked, n=name, r=renderer: r.set_expression_by_name(n),
+                )
+            self._motion_submenu.addSeparator()
+
+        # 重置表情
+        self._motion_submenu.addAction("🔄 重置表情", self._reset_motion_expression)
+
+    def _reset_motion_expression(self):
+        """重置模型表情到默认，并回到 idle 动作。"""
+        renderer = getattr(self, '_renderer', None)
+        if not renderer:
+            return
+        model = getattr(renderer, '_model', None)
+        if not model:
+            return
+        try:
+            model.ResetExpressions()
+            renderer._expression_active = False
+            renderer._last_expression = ""
+            renderer._expression_suppress_until = 0.0
+            renderer._start_idle()
+        except Exception as e:
+            logger.warning("重置表情失败: %s", e)
 
     # ── 养成接入（set_nurturing 后才填充） ──
 
@@ -1781,6 +2325,11 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self._mark_user_interaction()
         if self._engine:
             self._engine.send(text, character=self._current_char)
+            # P1-2：对话事实写入点
+            try:
+                self._record_conversation_facts(text)
+            except Exception:
+                pass
             self._tts_player.stop()
             self.bubble.set_text("⏳ 思考中...")
             self._reposition_bubble()
@@ -1958,6 +2507,26 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
                 self._set_anim_seq("idle", emotion="neutral", style=get_transition_style("neutral"))
             except Exception:
                 pass
+            # P2-6：过期回 neutral 也同步程序化表情层（面部参数平滑回归）
+            self._sync_renderer_master_emotion("neutral")
+
+    def _sync_renderer_master_emotion(self, emotion: str) -> None:
+        """P2-6：把当前主导情绪（master emotion）同步到渲染器的程序化表情层。
+
+        在情绪更新链路的每个写入点调用（_set_surface_emotion /
+        _do_engine_reply_inner / _on_emotion_expired），渲染器据此做
+        面部参数平滑插值。各渲染器缺省实现（avatar/base.py）只更新状态，
+        Live2DRenderer 重写为同步表情 + 平滑过渡。全程 try/except 兜底。
+        """
+        renderer = getattr(self, "_renderer", None)
+        if renderer is None:
+            return
+        setter = getattr(renderer, "set_master_emotion", None)
+        if callable(setter):
+            try:
+                setter(emotion or "neutral")
+            except Exception:
+                pass
 
     # 情绪来源优先级（缺陷①）：数值越大越高优，低优先不能覆盖高优先。
     # neutral 视为最低（0），任何来源都可覆盖回 neutral。
@@ -1989,6 +2558,8 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self._emotion_source = source
         if hasattr(self, '_emotion_face'):
             self._emotion_face.set_emotion(self._current_emotion)
+        # P2-6：主导情绪同步到渲染器程序化表情层（面部参数平滑过渡）
+        self._sync_renderer_master_emotion(self._current_emotion)
         if self._current_emotion != "neutral":
             self._emotion_expiry_timer.stop()
             self._emotion_expiry_timer.start(duration_ms)
@@ -2065,6 +2636,8 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         # 对话情绪是最高优先级（缺陷①），直接写入并标记来源，屏幕/定时情绪此后不得覆盖
         self._current_emotion = emotion or "neutral"
         self._emotion_source = "dialog"
+        # P2-6：对话情绪同步到渲染器程序化表情层（面部参数平滑过渡）
+        self._sync_renderer_master_emotion(self._current_emotion)
         if self._current_emotion != "neutral":
             self._emotion_expiry_timer.start(3000)
         else:
@@ -2081,6 +2654,20 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         if self._pending_chat:
             self._pending_user_msg = ""
             self._pending_chat = False
+
+        # T05 P0-6：ChatPanel 同步——关闭思考点 + 追加助手回复
+        # P2-1：助手回复走流式打字机（逐字显示，点击气泡可跳过）
+        try:
+            if getattr(self, "_chat_panel", None) is not None:
+                self._chat_panel.set_thinking(False)
+                if reply and reply.strip() and reply.strip() not in ("\u2026", "..."):
+                    start = getattr(self._chat_panel, "start_assistant_stream", None)
+                    if callable(start):
+                        start(reply.strip())
+                    else:
+                        self._chat_panel.append_assistant(reply.strip())
+        except Exception as e:
+            logger.debug("T05 chat panel reply sync failed: %s", e)
 
         # 重置 idle
         self._is_thinking = False

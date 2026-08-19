@@ -28,6 +28,11 @@ import requests
 from PIL import ImageGrab
 
 from .screen_types import ScreenEvent, ActivityEvent
+from .screen_intent import (
+    ScreenScene,
+    classify_screen_scene,
+    enrich_screen_scene,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +223,11 @@ class ScreenPerception:
         self.on_update: callable = lambda desc: None
         self.on_emotion: callable = lambda emotion, intensity: None
         self.on_screen_proactive: callable = lambda prompt: None  # 屏幕内容触发主动对话
+        # P1-6 屏幕/意图感知升级：场景分类 + LLM 语义增强（可选）
+        self._last_scene: ScreenScene | None = None          # 最近一次场景分类结果
+        self._llm_enrich: bool = True                        # LLM 语义增强开关（config screen.llm_enrich）
+        self._enrich_provider: callable | None = None        # callable(prompt) -> str | None（走 Hanako source="screen_enrich"）
+        self.on_scene: callable = lambda scene: None         # 场景分类回调（规则结果，与 on_update 同线程）
 
     @property
     def last_description(self) -> str:
@@ -235,6 +245,119 @@ class ScreenPerception:
         """最近一次屏幕感知的结构化数据"""
         with self._lock:
             return self._last_event
+
+    # ── P1-6 屏幕/意图感知升级：场景分类 + LLM 增强 ──
+
+    @property
+    def last_scene(self) -> ScreenScene | None:
+        """最近一次场景分类结果（ScreenScene；无结果返回 None）。"""
+        with self._lock:
+            return self._last_scene
+
+    def get_scene_snapshot(self) -> dict | None:
+        """场景快照（dict 形式，供 proactive/focus 读取；无结果返回 None）。"""
+        with self._lock:
+            scene = self._last_scene
+            return scene.to_dict() if scene is not None else None
+
+    def set_llm_enrich(self, enabled: bool):
+        """开关 LLM 语义增强（默认开；未注入 provider 时自动退化为规则）。"""
+        self._llm_enrich = bool(enabled)
+
+    def set_enrich_provider(self, provider: callable | None):
+        """注入 LLM 语义增强提供函数 ``fn(prompt: str) -> str | None``。
+
+        生产环境建议包装 Hanako 适配器：``adapter.chat(prompt, inject_memory=False,
+        source="screen_enrich")`` 返回文本；None=关闭增强（纯规则分类）。
+        """
+        self._enrich_provider = provider
+
+    def _classify_activity(self, activity: ActivityEvent, app: str, title: str) -> ScreenScene:
+        """对一次 ActivityEvent 做纯规则场景分类（P1-6）。
+
+        在截图后台线程执行（同步、廉价、无 I/O）。时间上下文从 TimePerception
+        读取；任何异常回退 other（不阻塞感知）。
+        """
+        period = "other"
+        hour = 12
+        weekday = 0
+        is_weekend = False
+        fg_duration_min = getattr(self, "_fg_duration_min", 0.0) or 0.0
+        try:
+            from .time import TimePerception
+            tctx = TimePerception().get_context()
+            period = tctx.get("period", "other")
+            hour = int(tctx.get("hour", 12) or 12)
+            weekday = int(tctx.get("weekday", 0) or 0)
+            is_weekend = bool(tctx.get("is_weekend", False))
+        except Exception:
+            pass
+        try:
+            return classify_screen_scene(
+                category=activity.category or "other",
+                activity=getattr(activity, "activity", "") or "idle",
+                period=period,
+                hour=hour,
+                weekday=weekday,
+                is_weekend=is_weekend,
+                fg_duration_min=fg_duration_min,
+                app=app or "",
+                title=title or "",
+                description=getattr(activity, "summary", "") or "",
+                detail=getattr(activity, "detail", "") or "",
+            )
+        except Exception as exc:
+            logger.debug("Screen scene classify failed: %s", exc)
+            return ScreenScene(
+                scene="other", intent="work", confidence=0.4,
+                category=activity.category or "other",
+                activity=getattr(activity, "activity", "") or "idle",
+                period=period,
+            )
+
+    def _launch_enrichment(self, activity: ActivityEvent, scene: ScreenScene, app: str, title: str):
+        """后台线程做 LLM 语义增强（不阻塞感知循环）。
+
+        失败/超时/解析错误 → enrich_screen_scene 返回原规则结果（不丢场景）。
+        只更新数据 + 发事件总线（不触碰 UI/COM）；UI 侧如有需要请订阅
+        ``screen_scene_enriched`` 事件并在主线程处理。
+        """
+        if self._enrich_provider is None:
+            return
+
+        def _worker():
+            try:
+                extra = {
+                    "app": app or "",
+                    "title": title or "",
+                    "summary": getattr(activity, "summary", "") or "",
+                    "detail": getattr(activity, "detail", "") or "",
+                    "fg_duration_min": getattr(self, "_fg_duration_min", 0.0) or 0.0,
+                }
+                merged = enrich_screen_scene(scene, self._enrich_provider, **extra)
+            except Exception as exc:
+                logger.debug("Screen enrich worker failed: %s", exc)
+                return
+            if merged is None or merged.source == "rule":
+                return  # 增强失败 → 保留规则结果，不发事件
+            with self._lock:
+                self._last_scene = merged
+                if activity is not None:
+                    activity.scene = merged.scene
+                    activity.scene_confidence = merged.confidence
+                    activity.scene_propensity = merged.propensity
+                    activity.scene_source = merged.source
+            try:
+                from core.event_bus import EventBus
+                EventBus.emit("screen_scene_enriched", scene=merged)
+            except Exception as exc:
+                logger.debug("screen_scene_enriched emit failed: %s", exc)
+
+        threading.Thread(
+            target=_worker,
+            daemon=True,
+            name="ScreenEnrich",
+        ).start()
 
     def capture_now(self, mode: str = "manual") -> ScreenEvent | None:
         """主动截图（不等待定时器）
@@ -498,6 +621,15 @@ class ScreenPerception:
                     # 保留自然语言描述用于兼容
                     description = activity.summary if activity else raw
 
+                    # P1-6 屏幕/意图感知升级：场景分类（规则，永不阻塞；失败回退 other）
+                    scene = None
+                    if activity:
+                        scene = self._classify_activity(activity, app or "", title or "")
+                        activity.scene = scene.scene
+                        activity.scene_confidence = scene.confidence
+                        activity.scene_propensity = scene.propensity
+                        activity.scene_source = scene.source
+
                     event = ScreenEvent(
                         app=app or "",
                         title=title or "",
@@ -513,6 +645,8 @@ class ScreenPerception:
                             self._activity_history.append(activity)
                             if len(self._activity_history) > 50:
                                 self._activity_history.pop(0)
+                        if scene is not None:
+                            self._last_scene = scene
                     # A 记忆地基：活动事件 → 事件总线（PetWindow 订阅后写事件流）。
                     # 注意：summary/detail 文本不进流（隐私约束），只发结构化事件。
                     try:
@@ -521,6 +655,20 @@ class ScreenPerception:
                             EventBus.emit("activity_event", event=activity)
                     except Exception as e:
                         logger.debug("activity_event emit failed: %s", e)
+
+                    # P1-6 屏幕场景 → 事件总线 + 回调 + 可选 LLM 增强（后台线程，失败回退规则）
+                    if scene is not None:
+                        try:
+                            from core.event_bus import EventBus
+                            EventBus.emit("screen_scene", scene=scene)
+                        except Exception as e:
+                            logger.debug("screen_scene emit failed: %s", e)
+                        try:
+                            self.on_scene(scene)
+                        except Exception as e:
+                            logger.debug("on_scene callback failed: %s", e)
+                        if self._llm_enrich:
+                            self._launch_enrichment(activity, scene, app or "", title or "")
                     self._consecutive_failures = 0
                     self._consecutive_empty = 0  # 成功一次即重置空响应计数
                     self._interval = self._next_interval()  # 恢复正常（随机）间隔

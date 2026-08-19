@@ -161,11 +161,18 @@ class HanakoPetAdapter:
     def chat_direct(self, message: str, inject_memory: bool = True, extra_context: str = "", tools: list = None, source: str = "user") -> tuple:
         """直接调用 LLM API（不走 Hanako WS） - 原 chat() 的完整实现
 
-        由 chat() 路由器在 Hanako 不可用或 transport_mode==direct 时调用。
+        由 chat() 路由器在内部来源（proactive/idle/memory_extract/memory_reflect/
+        screen_enrich）、Hanako 不可用或 transport_mode==direct 时调用。
 
         source 标记消息来源：user（用户主动）/ proactive（桌宠主动搭话）/
-        idle（闲置闲聊）。proactive/idle 消息会加 [source] 前缀，让 LLM 能
-        区分说话人，避免把桌宠自己的主动文案当成用户消息计入上下文。
+        idle（闲置闲聊）/ memory_extract（事实抽取）/ memory_reflect（反思）/
+        screen_enrich（屏幕感知标注）。proactive/idle 消息会加 [source] 前缀，
+        让 LLM 能区分说话人，避免把桌宠自己的主动文案当成用户消息计入上下文。
+
+        历史写入：仅 ``user`` 来源写入 ``self._history``（本地上下文 deque）。
+        内部来源（proactive/idle/memory_extract/memory_reflect/screen_enrich）
+        不写历史——否则抽取/反思/主动文案会污染后续对话注入的上下文
+        （``list(self._history)[-10:]``），QA 实测确认 memory 来源会污染。
         """
         if not self._base_url or not self._api_key:
             return "...(模型未配置,请在设置中配置模型)", "neutral"
@@ -204,8 +211,9 @@ class HanakoPetAdapter:
 
             # 检查是否是 tool_calls 响应
             if isinstance(resp, dict) and resp.get("tool_calls"):
-                # 保存用户消息到历史
-                self._history.append({"role": "user", "content": user_content})
+                # 保存用户消息到历史（仅用户真实对话）
+                if self._records_history(source):
+                    self._history.append({"role": "user", "content": user_content})
                 return resp, None  # 返回 tool_calls 给调用方处理
 
             text = resp.strip() if resp and resp.strip() else ""
@@ -215,23 +223,26 @@ class HanakoPetAdapter:
                 parsed = self._parse_function_in_content(text)
                 if parsed:
                     logger.info("Parsed tool call from content (non-standard)")
-                    self._history.append({"role": "user", "content": user_content})
+                    if self._records_history(source):
+                        self._history.append({"role": "user", "content": user_content})
                     return {"tool_calls": parsed, "message": {"content": text}}, None
 
             if not text:
                 logger.warning("LLM returned empty: %s", repr(resp[:100] if resp else None))
                 text = "(......想不起来要说什么了)"
                 emotion = "thinking"
-                self._history.append({"role": "user", "content": user_content})
-                self._history.append({"role": "assistant", "content": text})
+                if self._records_history(source):
+                    self._history.append({"role": "user", "content": user_content})
+                    self._history.append({"role": "assistant", "content": text})
                 return text, emotion
 
             # 解析情绪标签（匹配全文，支持多个，取最后一个）
             text, emotion = self.parse_emotion(text)
 
-            # 保存到历史
-            self._history.append({"role": "user", "content": user_content})
-            self._history.append({"role": "assistant", "content": text})
+            # 保存到历史（仅用户真实对话；内部来源不写，避免污染上下文）
+            if self._records_history(source):
+                self._history.append({"role": "user", "content": user_content})
+                self._history.append({"role": "assistant", "content": text})
 
             return text, emotion
         except requests.exceptions.Timeout:
@@ -265,17 +276,31 @@ class HanakoPetAdapter:
             logger.warning("Chat failed: %s", e)
             return "(出了点岔子)", "neutral"
 
+    @staticmethod
+    def _records_history(source: str) -> bool:
+        """是否把本轮写入本地 ``self._history``（后续对话会注入该上下文）。
+
+        仅用户真实对话（source 为空/未指定/显式 "user"）写历史；
+        内部来源（proactive/idle/memory_extract/memory_reflect/screen_enrich）
+        不写——抽取/反思/主动文案作为系统指令发给 LLM，不应进入对话上下文。
+        """
+        return source in (None, "", "user")
+
     def chat(self, message: str, inject_memory: bool = True, extra_context: str = "", tools: list = None, source: str = "user") -> tuple:
         """入口路由 - 根据 transport_mode 和 source 选择路径
 
         - user 消息：走 Hanako session（工具、记忆、多轮）
-        - proactive/idle 消息：直接走 LLM API（轻量快速，不占 session）
+        - 内部来源（proactive/idle/memory_extract/memory_reflect/screen_enrich）：
+          直接走 LLM API（轻量快速，不占 session、不写本地 _history）
         """
-        # 主动消息：不走 Hanako session（避免"[主动对话触发]"指令包装以 user 身份
-        # 写进 Hanako 会话历史污染记忆）。直接走本地 LLM 直连——chat_direct 已有
-        # [proactive]/[idle] 前缀机制区分说话人。任务一已保证 proactive 触发直接弹
-        # 文案，即使 chat_direct 因未配置模型不可用，返回 ("…", "neutral") 也可接受。
-        if source in ("proactive", "idle"):
+        # 内部来源（非用户真实对话）：一律本地 LLM 直连，绝不进 Hanako session——
+        # proactive/idle：主动搭话/闲置闲聊；
+        # memory_extract/memory_reflect：事实抽取/反思（prompt 以 user 身份发进
+        #   Hanako 会话会污染 display_text 历史，QA 实测确认）；
+        # screen_enrich：屏幕感知语义化标注（pet.py 已显式走 chat_direct，设计意图如此）。
+        # chat_direct 内部对非 user 来源不写 self._history（见 _records_history），
+        # 避免抽取/反思/主动文案污染本地上下文（deque 会被注入后续对话）。
+        if source in ("proactive", "idle", "memory_extract", "memory_reflect", "screen_enrich"):
             return self.chat_direct(message, False, extra_context, tools=None, source=source)
 
         # direct 模式：跳过 Hanako

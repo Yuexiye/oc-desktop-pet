@@ -203,13 +203,16 @@ class CompanionMemory:
     # ── A/B：事件流写入 ──
 
     def record_event(self, category: str = "", scenario: str = "", intent: str = "",
-                     emotion: str = "", topic: str = "", start_ts: float = 0.0,
-                     end_ts: float = 0.0, source: str = "") -> None:
+                     emotion: str = "", intensity: float = 0.0, topic: str = "",
+                     start_ts: float = 0.0, end_ts: float = 0.0,
+                     source: str = "") -> None:
         """写入一条事件到事件流（A 事件流 + B 情绪标签）。
 
-        - emotion 为空时由 emotion_provider 自动快照（B 的落地）
-        - topic 隐私截断（≤60 字）
-        - source="vision" 时只记 category/时间，不记 summary/detail 文本（隐私）
+        - emotion 为空时由 emotion_provider 自动快照（B 的落地）；
+          emotion 非空但未给 intensity 时 intensity 保持传入值（默认 0.0）
+        - topic 隐私截断（≤60 字，EventStream 内再兜底一次）
+        - source="vision" 时只记 category/时间，不落 topic 文本（隐私，
+          EventStream.normalize_record 也会再剥离一次，双保险）
         - 未注入 EventStream 时为空操作（回滚安全）
 
         Args:
@@ -217,6 +220,7 @@ class CompanionMemory:
             scenario: 意图分类场景名（可空）
             intent: 意图名（可空）
             emotion: 情绪名（可空，由 provider 自动填）
+            intensity: 情绪强度 0.0~1.0（emotion 为空时由 provider 快照）
             topic: 最近对话话题（≤60 字，可选，隐私截断）
             start_ts: 活动开始时间
             end_ts: 活动结束时间（0 = 用当前时间）
@@ -229,9 +233,11 @@ class CompanionMemory:
             end = end_ts or now
             start = start_ts or end
             emo = emotion
-            intensity = 0.0
+            emo_intensity = intensity
             if not emo:
-                emo, intensity = self._snapshot_emotion()
+                emo, emo_intensity = self._snapshot_emotion()
+            # 隐私：vision 事件不携带对话/视觉文本
+            privacy_topic = "" if str(source or "").strip() == "vision" else (topic or "")
             self._event_stream.append({
                 "ts": end,
                 "start_ts": start,
@@ -240,8 +246,8 @@ class CompanionMemory:
                 "scenario": scenario or "",
                 "intent": intent or "",
                 "emotion": emo or "neutral",
-                "intensity": intensity,
-                "topic": topic or "",
+                "intensity": emo_intensity,
+                "topic": privacy_topic,
                 "source": source or "",
             })
         except Exception as e:

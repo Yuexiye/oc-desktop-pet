@@ -55,6 +55,69 @@ from .screen import (
 # ── 主动对话调度 ──
 from .proactive import ProactiveScheduler, DEFAULT_RULES
 
+# ── P0-1/P0-2 主动搭话升级：契约 / 节流 / LLM 生成 ──
+from .proactive_contracts import (
+    proactive_chat_body,
+    proactive_pass_body,
+    proactive_error_body,
+    proactive_stage_for_reason,
+    PROACTIVE_ACTION_CHAT,
+    PROACTIVE_ACTION_PASS,
+    PROACTIVE_ACTION_ERROR,
+    PROACTIVE_REASON_CHAT_DELIVERED,
+    PROACTIVE_REASON_PASS_THROTTLED,
+    PROACTIVE_REASON_PASS_DUPLICATE,
+    PROACTIVE_REASON_PASS_GENERATION_EMPTY,
+    PROACTIVE_STAGE_GENERATION,
+    PROACTIVE_STAGE_DEDUP,
+    PROACTIVE_STAGE_DELIVERY,
+)
+from .proactive_state import (
+    ProactiveThrottle,
+    _half_life_for,
+    _source_skip_probability,
+    DEFAULT_DAILY_LIMIT,
+)
+from .proactive_generation import (
+    ProactiveGenerator,
+    build_proactive_prompt,
+    clean_generated,
+)
+
+# ── 专注模式（P0-5：FocusScorer + hysteresis 状态机）──
+from .focus import (
+    FocusScore,
+    FocusScorer,
+    FocusStateMachine,
+    EmotionReading,
+    create_focus_core,
+    emotion_reading_from_state,
+    load_focus_settings,
+    scan_vulnerability_keywords,
+)
+
+# ── P1-6 屏幕/意图感知升级：场景分类 + LLM 语义增强 + 联动适配 ──
+from .screen_intent import (
+    ScreenScene,
+    classify_screen_scene,
+    enrich_screen_scene,
+    build_screen_enrich_prompt,
+    to_intent_scenario,
+    focus_score_from_scene,
+    SCREEN_ENRICH_PROMPT,
+    SCENE_LABELS,
+)
+
+# ── P1-5 反重复（语义指纹 + 时间窗去重）──
+from core.anti_repeat import (
+    AntiRepeatCorpus,
+    UnansweredProactiveRepeatSignal,
+    bm25_score,
+    get_anti_repeat_corpus,
+    ANTI_REPEAT_DROP_THRESHOLD,
+    ANTI_REPEAT_REGEN_THRESHOLD,
+)
+
 # ── 统一控制器 ──
 from .controller import PerceptionController
 
@@ -83,6 +146,40 @@ __all__ = [
     # 主动对话
     "ProactiveScheduler",
     "DEFAULT_RULES",
+    # P0-1/P0-2 主动搭话升级
+    "ProactiveGenerator",
+    "ProactiveThrottle",
+    "build_proactive_prompt",
+    "clean_generated",
+    "proactive_chat_body",
+    "proactive_pass_body",
+    "proactive_error_body",
+    "proactive_stage_for_reason",
+    # 专注模式（P0-5）
+    "FocusScore",
+    "FocusScorer",
+    "FocusStateMachine",
+    "EmotionReading",
+    "create_focus_core",
+    "emotion_reading_from_state",
+    "load_focus_settings",
+    "scan_vulnerability_keywords",
+    # P1-6 屏幕/意图感知升级
+    "ScreenScene",
+    "classify_screen_scene",
+    "enrich_screen_scene",
+    "build_screen_enrich_prompt",
+    "to_intent_scenario",
+    "focus_score_from_scene",
+    "SCREEN_ENRICH_PROMPT",
+    "SCENE_LABELS",
+    # P1-5 反重复
+    "AntiRepeatCorpus",
+    "UnansweredProactiveRepeatSignal",
+    "bm25_score",
+    "get_anti_repeat_corpus",
+    "ANTI_REPEAT_DROP_THRESHOLD",
+    "ANTI_REPEAT_REGEN_THRESHOLD",
     # 统一入口
     "PerceptionController",
 ]

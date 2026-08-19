@@ -31,6 +31,44 @@ class BehaviorMixin:
     # 鼠标反应冷却
     _mouse_reaction_cooldown: float = 0.0
 
+    # ── 专注模式联动（P0-5：专注时降低 proactive 频率）──
+
+    def _focus_manager(self):
+        """返回注入的 FocusStateMachine 实例（T05 注入；未注入返回 None）。
+
+        鸭子类型访问：``self._focus_manager`` 由 PetWindow 注入。缺失时
+        一律按"非专注"处理 → 零行为（满足 focus.enabled=false 零行为）。
+        """
+        return getattr(self, "_focus_manager", None)
+
+    def _is_focus_active(self) -> bool:
+        """专注模式是否处于 active 且已启用（线程安全由状态机保证）。
+
+        ``FocusStateMachine.active`` 为 True 且 ``enabled`` 为 True 才算；
+        两者任一不满足（默认关）都返回 False → 不抑制任何行为。
+        """
+        fm = self._focus_manager()
+        if fm is None:
+            return False
+        try:
+            return bool(fm.enabled and fm.active)
+        except Exception:
+            return False
+
+    def _focus_suppresses_proactive(self) -> bool:
+        """专注模式下是否抑制主动搭话/自言自语（默认抑制）。
+
+        可由 ``config.focus.suppress_proactive=false`` 显式关闭抑制
+        （保留专注视觉但允许搭话）；默认缺省为 True。
+        """
+        if not self._is_focus_active():
+            return False
+        try:
+            cfg = getattr(self, "config", None) or {}
+            return bool((cfg.get("focus", {}) or {}).get("suppress_proactive", True))
+        except Exception:
+            return True
+
     # ── 用户交互标记 ──
 
     def _mark_user_interaction(self):
@@ -53,6 +91,9 @@ class BehaviorMixin:
 
     def _can_idle_chatter(self) -> bool:
         """仅在桌宠和对话链都空闲时允许生成自言自语。"""
+        # P0-5 专注模式：安静优先，抑制自言自语（主动搭话频率下降）
+        if self._focus_suppresses_proactive():
+            return False
         idle_chatter = getattr(self, "_idle_chatter", None)
         if not idle_chatter or not idle_chatter.enabled:
             return False
@@ -115,16 +156,25 @@ class BehaviorMixin:
         elif self._idle_stage is None and idle_secs >= 300:
             self._idle_stage = "idle"
 
-        # Proactive 主动对话
-        try:
-            if time.time() > self._proactive_grace:
-                self._proactive.tick()
-        except Exception:
-            pass
+        # Proactive 主动对话（P0-5：专注模式下降低频率——跳过 tick，让冷却自然拉长）
+        if not self._focus_suppresses_proactive():
+            try:
+                if time.time() > self._proactive_grace:
+                    self._proactive.tick()
+            except Exception:
+                pass
 
         # 感知系统 tick(情绪衰减 + 主动对话 + 日程刷新)
         try:
             self._perception.tick()
+        except Exception:
+            pass
+
+        # P2-5 休息提醒（联动专注模式）：连续工作计时 + 深夜降频（防御式）
+        try:
+            tick = getattr(self, "_work_reminder_tick", None)
+            if tick is not None:
+                tick()
         except Exception:
             pass
 
@@ -310,6 +360,9 @@ class BehaviorMixin:
 
     def _tick_idle_life(self):
         """待机时偶发微动作 + 有性格的表情节奏。"""
+        # P0-5 专注模式：视觉安静——不做随机微动作/张望/伸展/Live2D 小动作
+        if self._is_focus_active():
+            return
         if getattr(self, '_is_dragging', False) or self._is_thinking:
             return
         if getattr(self, '_chasing', False) or self._physics.is_active:

@@ -65,15 +65,18 @@ class MimoTtsProvider(TTSProvider):
         else:
             logger.warning("MIMO TTS config missing (need base_url + api_key)")
 
-    def synthesize(self, text: str, character_id: str = "", instruct: str = "") -> Optional[str]:
+    def synthesize(self, text: str, character_id: str = "", instruct: str = "",
+                   voice: str = "") -> Optional[str]:
         if not text or not text.strip() or not self._ready or self._auth_error:
             return None
 
         text = text.strip()[:500]
+        # P2-7: 显式 voice 参数优先（角色/情绪音色映射），未提供则用本 provider 默认
+        eff_voice = voice or self._voice
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-        # 缓存
-        cache_key = f"mimo:{self._voice}:{self._model}:{text}"
+        # 缓存（音色进缓存键：换了嗓子必须重新合成，否则一直放旧声音）
+        cache_key = f"mimo:{eff_voice}:{self._model}:{text}"
         text_hash = hashlib.md5(cache_key.encode()).hexdigest()[:12]
         output_path = OUTPUT_DIR / f"mimo_{text_hash}.wav"
 
@@ -92,7 +95,7 @@ class MimoTtsProvider(TTSProvider):
             "messages": messages,
             "audio": {
                 "format": "wav",
-                "voice": self._voice,
+                "voice": eff_voice,
             },
         }
 

@@ -63,6 +63,61 @@ class Live2DRenderer(AvatarRenderer):
         "thinking": ("think", "doubt"),
     }
 
+    # P2-6: 程序化表情层插值时间常数（秒）。越大过渡越慢越柔，越小越跟手。
+    # 情绪切换时所有面部参数按此常数做指数平滑（帧率无关：alpha = 1 - exp(-dt/tau)）。
+    PROCEDURAL_SMOOTH_TAU = 0.28
+
+    # P2-6: 情绪 -> 面部参数目标（master emotion 驱动）。
+    # 全部为归一化值，经 _proc_cur 平滑插值后以 weight<1 叠加在 motion 之上：
+    #   eye_open    - 眼睛开合 0=闭 1=全开（surprised 超 1 会被 clamp）
+    #   eye_smile   - 眯眼（正=笑眼 负=瞪眼/吊眼）
+    #   brow_angle  - 眉毛角度（正=挑眉 负=皱眉）
+    #   brow_form   - 眉毛形态（正=弯 负=八字/竖）
+    #   mouth_form  - 嘴型（正=笑 负=撇嘴）
+    #   mouth_open  - 嘴张开（说话时让位给 _update_mouth，不叠加）
+    #   eye_ball_x/y - 眼神方向偏移（低权重叠在视线跟随之上）
+    #   head_angle_x/y - 头部轻微转向（仅视线跟随关闭时生效，避免打架）
+    #   breath_amp / breath_rate - 呼吸幅度/频率倍率（1.0 = 常态）
+    # 约束：miku moc3 无手/臂/腿参数（双手固定祈祷），只驱动面部/眼神/呼吸，
+    # 不尝试任何肢体动作（ParamArm*/ParamLeg*/ParamBodyAngle* 一律不碰）。
+    _EMOTION_FACIAL_TARGETS = {
+        "neutral": {
+            "eye_open": 0.85, "eye_smile": 0.0, "brow_angle": 0.0, "brow_form": 0.0,
+            "mouth_form": 0.0, "mouth_open": 0.0, "eye_ball_x": 0.0, "eye_ball_y": 0.0,
+            "head_angle_x": 0.0, "head_angle_y": 0.0, "breath_amp": 1.0, "breath_rate": 1.0,
+        },
+        "happy": {
+            "eye_open": 0.9, "eye_smile": 0.75, "brow_angle": 0.35, "brow_form": 0.3,
+            "mouth_form": 0.45, "mouth_open": 0.12, "eye_ball_x": 0.0, "eye_ball_y": 0.05,
+            "head_angle_x": 0.0, "head_angle_y": 0.0, "breath_amp": 1.15, "breath_rate": 1.1,
+        },
+        "sad": {
+            "eye_open": 0.72, "eye_smile": -0.35, "brow_angle": -0.45, "brow_form": -0.4,
+            "mouth_form": -0.45, "mouth_open": 0.04, "eye_ball_x": 0.0, "eye_ball_y": -0.08,
+            "head_angle_x": 0.0, "head_angle_y": 0.0, "breath_amp": 0.85, "breath_rate": 0.75,
+        },
+        "angry": {
+            "eye_open": 0.8, "eye_smile": -0.25, "brow_angle": -0.7, "brow_form": -0.5,
+            "mouth_form": -0.35, "mouth_open": 0.05, "eye_ball_x": 0.06, "eye_ball_y": -0.05,
+            "head_angle_x": 0.0, "head_angle_y": 0.0, "breath_amp": 1.2, "breath_rate": 1.25,
+        },
+        "surprised": {
+            "eye_open": 1.1, "eye_smile": 0.1, "brow_angle": 0.6, "brow_form": 0.45,
+            "mouth_form": 0.5, "mouth_open": 0.55, "eye_ball_x": 0.05, "eye_ball_y": 0.12,
+            "head_angle_x": 0.0, "head_angle_y": 0.0, "breath_amp": 1.3, "breath_rate": 1.4,
+        },
+        "thinking": {
+            "eye_open": 0.78, "eye_smile": 0.05, "brow_angle": 0.28, "brow_form": 0.22,
+            "mouth_form": -0.18, "mouth_open": 0.03, "eye_ball_x": 0.14, "eye_ball_y": 0.12,
+            "head_angle_x": 0.08, "head_angle_y": 0.0, "breath_amp": 1.0, "breath_rate": 0.9,
+        },
+        "cute": {
+            "eye_open": 0.92, "eye_smile": 0.68, "brow_angle": 0.25, "brow_form": 0.3,
+            "mouth_form": 0.35, "mouth_open": 0.1, "eye_ball_x": 0.02, "eye_ball_y": 0.06,
+            "head_angle_x": 0.0, "head_angle_y": 0.0, "breath_amp": 1.1, "breath_rate": 1.05,
+        },
+    }
+
     def __init__(self, parent):
         super().__init__()
         self._parent = parent
@@ -95,6 +150,15 @@ class Live2DRenderer(AvatarRenderer):
 
         # 当前情绪
         self._emotion_target: str = "neutral"
+
+        # P2-6: 程序化表情层平滑插值状态（master emotion 驱动的面部参数）
+        self._proc_cur: dict[str, float] = {
+            "eye_open": 0.85, "eye_smile": 0.0, "brow_angle": 0.0, "brow_form": 0.0,
+            "mouth_form": 0.0, "mouth_open": 0.0, "eye_ball_x": 0.0, "eye_ball_y": 0.0,
+            "head_angle_x": 0.0, "head_angle_y": 0.0, "breath_amp": 1.0, "breath_rate": 1.0,
+        }
+        self._proc_smooth_tau: float = float(self.PROCEDURAL_SMOOTH_TAU)
+        self._proc_last_t: float = time.monotonic()
 
         # 兼容属性（避免 pet.py 直接访问崩溃）
         self._base_label_pos: QPoint = QPoint(10, 0)
@@ -906,72 +970,138 @@ class Live2DRenderer(AvatarRenderer):
         except Exception:
             pass
 
-    # ── P4: 程序化自主动作层（让 Live2D 真正"活"，不依赖 motion 文件）──
+    # ── P4/P2-6: 程序化自主动作层（让 Live2D 真正"活"，不依赖 motion 文件）──
+
+    @property
+    def master_emotion(self) -> str:
+        """当前主导情绪（master emotion）：程序化表情层的驱动源。
+
+        与 pet.py 的情绪更新链路（_set_surface_emotion / _do_engine_reply_inner /
+        _on_emotion_expired）通过 set_master_emotion 保持同步；读不到时回退
+        _current_emotion（set_emotion / play_anim 也会更新它）。
+        """
+        return getattr(self, "_current_emotion", "neutral") or "neutral"
+
+    def set_master_emotion(self, emotion: str) -> None:
+        """P2-6: 推送主导情绪到程序化表情层（只同步表情，不触发 motion/手势）。
+
+        与 set_emotion 的区别：set_emotion 可能播放情绪 motion（有手势冷却），
+        这里只更新 _current_emotion/_emotion_target 并应用 Live2D Expression，
+        供 pet.py 在情绪更新链路（对话/屏幕/过期回 neutral）里高频调用，
+        程序化表情层据此做面部参数平滑过渡。
+        """
+        emotion = emotion or "neutral"
+        self._current_emotion = emotion
+        self._emotion_target = emotion
+        if self._model:
+            try:
+                self._apply_expression(emotion)
+            except Exception:
+                pass
+
+    def set_procedural_smoothing(self, seconds: float) -> None:
+        """P2-6: 配置面部参数插值时间常数（秒，可配）。
+
+        例：set_procedural_smoothing(0.5) → 情绪切换约 0.5s 内平滑过渡到新表情；
+        0.1 更跟手、1.0 更舒缓。无效/非正输入回退默认。
+        """
+        try:
+            val = float(seconds)
+        except (TypeError, ValueError):
+            val = -1.0
+        self._proc_smooth_tau = val if val > 0.0 else float(self.PROCEDURAL_SMOOTH_TAU)
 
     def _update_procedural_emotion(self) -> None:
-        """每帧程序化驱动情绪表情 + 头发微动（叠加在 motion 之上）。
+        """每帧程序化驱动情绪表情 + 眼神 + 呼吸（叠加在 motion 之上）。
 
-        背景：miku 模型的 7 个 motion 文件曾全是同一份占位（只动 5 个数字参数），
-        眼睛/嘴巴/眉毛/头发从没被驱动过——角色像静态图。
-        这里在 motion 更新之后、Draw 之前，用 StandardParams 实时驱动：
-          - 情绪表情：眯眼(EyeSmile)/皱眉(BrowAngle)/嘴形(MouthForm) 组合
-          - 头发微动：ParamHairFront/Side 慢正弦（轻盈感）
-        weight 用 0.6 与 motion 混合（motion 为主、此层为辅），避免打架。
-        情绪值经 _proc_cur 平滑插值，避免瞬跳。
+        P2-6 升级（对比 P4 版）：
+          - 由 master_emotion 驱动，参数从 3 个扩展到 12 个：
+            眼睛开合(EyeLOpen/ROpen)、眯眼(EyeLSmile/RSmile)、
+            眉毛(Angle/Form)、嘴型(MouthForm)、嘴张(MouthOpenY，说话时让位)、
+            眼神方向(EyeBallX/Y，低权重叠加视线跟随)、头部转向(AngleX/Y，仅视线关闭)、
+            呼吸节律(ParamBreath，幅度/频率随情绪变化)。
+          - 平滑插值改为帧率无关的指数平滑：alpha = 1 - exp(-dt/tau)，
+            tau 可配（PROCEDURAL_SMOOTH_TAU / set_procedural_smoothing）。
+          - 每组参数独立 try/except：模型缺某个参数时该组跳过，绝不崩溃。
+          - 约束：miku moc3 无手/臂/腿参数，只驱动面部/眼神/呼吸，不碰肢体。
+        weight 保持 <1 与 motion 混合（motion 为主、此层为辅），避免打架。
         """
         if not self._model:
             return
         P = self._live2d.StandardParams
         try:
-            # 情绪目标值（中性 = 全 0）
-            emo = getattr(self, "_current_emotion", "neutral") or "neutral"
-            targets = {
-                "happy":     {"smile": 0.6, "brow": 0.3, "mouth": 0.4},
-                "sad":       {"smile": -0.3, "brow": -0.5, "mouth": -0.4},
-                "angry":     {"smile": -0.2, "brow": -0.7, "mouth": -0.3},
-                "surprised": {"smile": 0.2, "brow": 0.6, "mouth": 0.6},
-                "thinking":  {"smile": 0.1, "brow": 0.2, "mouth": -0.2},
-                "cute":      {"smile": 0.5, "brow": 0.2, "mouth": 0.3},
-                "neutral":   {"smile": 0.0, "brow": 0.0, "mouth": 0.0},
-            }
-            t = targets.get(emo, targets["neutral"])
-            # 平滑插值
-            s = 0.08
-            cur = getattr(self, "_proc_cur", {"smile": 0.0, "brow": 0.0, "mouth": 0.0})
-            for k in ("smile", "brow", "mouth"):
-                cur[k] += (t[k] - cur[k]) * s
+            # 目标值（未知情绪回退 neutral；neutral = 全 0 + 常态呼吸）
+            emo = self.master_emotion
+            targets = self._EMOTION_FACIAL_TARGETS.get(emo) or self._EMOTION_FACIAL_TARGETS["neutral"]
+            # 帧率无关指数平滑
+            now = time.monotonic()
+            dt = min(max(now - getattr(self, "_proc_last_t", now), 0.0), 0.1)
+            self._proc_last_t = now
+            tau = getattr(self, "_proc_smooth_tau", self.PROCEDURAL_SMOOTH_TAU) or self.PROCEDURAL_SMOOTH_TAU
+            alpha = 1.0 - math.exp(-dt / tau) if dt > 0.0 else 1.0
+            cur = getattr(self, "_proc_cur", {})
+            for k in targets:
+                cur[k] = cur.get(k, 0.0) + (targets[k] - cur.get(k, 0.0)) * alpha
             self._proc_cur = cur
 
-            # 眯眼（微笑时眼睛变细）
+            # 眼睛开合（0=闭 1=全开；surprised 超 1 截断）
             try:
-                self._model.SetParameterValue(P.ParamEyeLSmile, cur["smile"], 0.6)
-                self._model.SetParameterValue(P.ParamEyeRSmile, cur["smile"], 0.6)
+                eye_open = max(0.0, min(1.0, cur["eye_open"]))
+                self._model.SetParameterValue(P.ParamEyeLOpen, eye_open, 0.5)
+                self._model.SetParameterValue(P.ParamEyeROpen, eye_open, 0.5)
             except Exception:
                 pass
-            # 眉毛角度（生气皱眉负 / 惊讶挑眉正）
+            # 眯眼（微笑时眼睛变细 / 瞪眼）
             try:
-                self._model.SetParameterValue(P.ParamBrowLAngle, cur["brow"], 0.6)
-                self._model.SetParameterValue(P.ParamBrowRAngle, cur["brow"], 0.6)
-                self._model.SetParameterValue(P.ParamBrowLForm, cur["brow"] * 0.5, 0.6)
-                self._model.SetParameterValue(P.ParamBrowRForm, cur["brow"] * 0.5, 0.6)
+                self._model.SetParameterValue(P.ParamEyeLSmile, cur["eye_smile"], 0.6)
+                self._model.SetParameterValue(P.ParamEyeRSmile, cur["eye_smile"], 0.6)
             except Exception:
                 pass
-            # 嘴形（笑 / 撇嘴）
+            # 眉毛角度/形态（生气皱眉负 / 惊讶挑眉正）
             try:
-                self._model.SetParameterValue(P.ParamMouthForm, cur["mouth"], 0.6)
+                self._model.SetParameterValue(P.ParamBrowLAngle, cur["brow_angle"], 0.6)
+                self._model.SetParameterValue(P.ParamBrowRAngle, cur["brow_angle"], 0.6)
+                self._model.SetParameterValue(P.ParamBrowLForm, cur["brow_form"], 0.6)
+                self._model.SetParameterValue(P.ParamBrowRForm, cur["brow_form"], 0.6)
             except Exception:
                 pass
-            # 身体微动：情绪越强身体越前倾/后仰（有 ParamBodyAngleX/Y 的模型生效）
+            # 嘴型（笑 / 撇嘴）
             try:
-                body_tilt = cur["brow"] * 4.0   # 情绪强烈时身体倾角
-                self._model.SetParameterValue(P.ParamBodyAngleX, body_tilt, 0.4)
-                self._model.SetParameterValue(P.ParamBodyAngleY, body_tilt * 0.5, 0.4)
+                self._model.SetParameterValue(P.ParamMouthForm, cur["mouth_form"], 0.6)
             except Exception:
                 pass
-            # 头发微动：慢正弦（轻盈呼吸感）
-            now = time.monotonic()
-            hair = math.sin(now * 0.8) * 3.0
+            # 嘴张开：说话时让位给 _update_mouth（口型由 TTS 驱动），不叠加
+            if not getattr(self, "_speaking", False):
+                try:
+                    mouth_open = max(0.0, min(1.0, cur["mouth_open"]))
+                    self._model.SetParameterValue(P.ParamMouthOpenY, mouth_open, 0.5)
+                except Exception:
+                    pass
+            # 眼神方向：情绪偏移低权重叠加在视线跟随之上（不打架）
             try:
+                self._model.SetParameterValue(P.ParamEyeBallX, cur["eye_ball_x"], 0.3)
+                self._model.SetParameterValue(P.ParamEyeBallY, cur["eye_ball_y"], 0.3)
+            except Exception:
+                pass
+            # 头部轻微转向（思考/斜视）：仅视线跟随关闭时生效，避免覆盖 gaze
+            if not getattr(self, "_gaze_enabled", True):
+                try:
+                    self._model.SetParameterValue(P.ParamAngleX, cur["head_angle_x"] * 15.0, 0.35)
+                    self._model.SetParameterValue(P.ParamAngleY, cur["head_angle_y"] * 12.0, 0.35)
+                except Exception:
+                    pass
+            # 呼吸节律：ParamBreath 慢正弦，幅度/频率随情绪变化
+            # （惊讶急促、悲伤深缓；程序化值在 UpdateBreath 之后写入，覆盖自动呼吸）
+            try:
+                amp = max(0.0, min(2.0, cur["breath_amp"]))
+                rate = max(0.5, min(2.5, cur["breath_rate"]))
+                breath = (0.5 + 0.5 * math.sin(now * 1.6 * rate)) * 0.5 * amp
+                self._model.SetParameterValue(P.ParamBreath, breath, 1.0)
+            except Exception:
+                pass
+            # 头发微动：慢正弦（轻盈呼吸感，P4 已有行为保留）
+            try:
+                hair = math.sin(now * 0.8) * 3.0
                 self._model.SetParameterValue(P.ParamHairFront, hair * 0.6, 0.5)
                 self._model.SetParameterValue(P.ParamHairSide, hair * 0.4, 0.5)
             except Exception:
@@ -1209,6 +1339,25 @@ class Live2DRenderer(AvatarRenderer):
         if not self._model:
             return
         self._apply_expression(emotion)
+
+    def set_expression_by_name(self, name: str) -> None:
+        """按 Live2D 表情名直接设置表情（供右键菜单手动触发）。
+
+        与 set_emotion_expression_only（情绪→表情映射）不同，这里 name 是
+        _expression_names 里的原始表情 ID（如 比心/葱/唱歌/前倾）。
+        复用 _expire_expression_if_stale 超时兜底，表情会在 GESTURE_TIMEOUT
+        后自动 ResetExpressions 回默认。
+        """
+        if not self._model:
+            return
+        try:
+            self._model.SetExpression(str(name))
+            self._expression_active = True
+            self._last_expression = str(name)
+            self._expression_set_at = time.monotonic()
+            self._expression_suppress_until = 0.0
+        except Exception as e:
+            logger.warning("Live2DRenderer: 设置表情失败: %s", e)
 
     def _apply_expression(self, emotion: str) -> None:
         """应用情绪对应的表情（不碰 motion）。

@@ -1,45 +1,35 @@
-"""Amadeus 风格 HUD —— 绿字 monospace + 圆点状态灯（视觉升级版）。
+"""Amadeus 风格 HUD —— monospace + 圆点状态灯（N.E.K.O. 设计语言重上色，P1-8）。
 
-升级点：
-  - 玻璃质感面板（半透明深底 + 顶部内高光 + 发光描边）
+功能保持原样（只换肤）：
+  - 玻璃质感面板（半透明底 + 顶部内高光 + 发光描边）
   - 文字磷光辉光
   - 状态点带呼吸脉冲，整体「活」起来
+
+P1-8：配色/圆角/间距全部取自 ``ui/theme/neko_palette.py`` 设计 token
+（hud_* 段），替换原 cyberpunk 绿硬编码；主题感知（跟随 ThemeManager）。
 """
 from __future__ import annotations
 
 import math
 
 from PySide6.QtCore import Qt, QRect, QPoint, QTimer
-from PySide6.QtGui import QPainter, QColor, QFont, QFontMetrics, QPainterPath
+from PySide6.QtGui import QPainter, QColor, QFont, QFontMetrics
 from PySide6.QtWidgets import QWidget
 
 from ui.crt_effects import glass_panel, phosphor_glow_text, phosphor_glow_ellipse
-
-
-# 配色（cyberpunk 绿 + 暗底）
-COLOR_BG = QColor(8, 16, 13, 170)
-COLOR_BORDER = QColor(120, 255, 160, 110)
-COLOR_BORDER_GLOW = QColor(120, 255, 160, 120)
-COLOR_TEXT_DIM = QColor(150, 195, 172, 220)
-COLOR_TEXT_BRIGHT = QColor(150, 255, 190)
-COLOR_DOT_RUNNING = QColor(120, 255, 160)
-COLOR_DOT_NEEDYOU = QColor(255, 220, 100)
-COLOR_DOT_ACTIVE = QColor(120, 200, 255)
-COLOR_DOT_IDLE = QColor(140, 140, 140)
+from ui.theme.neko_palette import NEKO_LAYOUT, neko_qcolor
 
 
 class AmadeusHUD(QWidget):
     """右上角 Amadeus 风格 HUD。
 
     调用 set_counts(running, need_you, active) 更新数字。
-    数字 0 = 灰色，>0 = 主题色（绿 / 黄 / 蓝）。状态点带呼吸脉冲。
+    数字 0 = 灰色，>0 = 主题色（蓝 / 黄 / 青）。状态点带呼吸脉冲。
     """
 
     DOT_RUNNING = 0
     DOT_NEEDYOU = 1
     DOT_ACTIVE = 2
-
-    DOT_COLORS = (COLOR_DOT_RUNNING, COLOR_DOT_NEEDYOU, COLOR_DOT_ACTIVE)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -50,11 +40,15 @@ class AmadeusHUD(QWidget):
         self._need_you = 0
         self._active = 0
         self._pulse = 0.0
+        self._theme = "dark"
 
-        self._pad_x = 12
-        self._pad_y = 7
-        self._dot_r = 4
-        self._gap = 14
+        # 布局 token 来自 neko_palette（P1-8 去硬编码）
+        self._pad_x = NEKO_LAYOUT["amadeus_pad_x"]
+        self._pad_y = NEKO_LAYOUT["amadeus_pad_y"]
+        self._dot_r = NEKO_LAYOUT["amadeus_dot_r"]
+        self._gap = NEKO_LAYOUT["amadeus_gap"]
+        self._radius = NEKO_LAYOUT["amadeus_radius"]
+        self._pulse_ms = NEKO_LAYOUT["amadeus_pulse_ms"]
 
         self._font = QFont("Consolas", 9)
         self._font.setStyleHint(QFont.Monospace)
@@ -65,12 +59,25 @@ class AmadeusHUD(QWidget):
         # 状态点呼吸脉冲
         self._pulse_timer = QTimer(self)
         self._pulse_timer.timeout.connect(self._tick_pulse)
-        self._pulse_timer.start(500)
+        self._pulse_timer.start(self._pulse_ms)
+
+        try:
+            from ui.theme import get_default
+            mgr = get_default()
+            if mgr is not None:
+                self._theme = mgr.current
+                mgr.theme_changed.connect(self._on_theme)
+        except Exception:
+            pass
 
     def set_counts(self, running: int, need_you: int, active: int) -> None:
         self._running = max(0, int(running))
         self._need_you = max(0, int(need_you))
         self._active = max(0, int(active))
+        self.update()
+
+    def _on_theme(self, theme: str) -> None:
+        self._theme = theme
         self.update()
 
     def _tick_pulse(self) -> None:
@@ -86,15 +93,42 @@ class AmadeusHUD(QWidget):
         h = text_h + self._pad_y * 2
         self.setFixedSize(w, h)
 
+    def _colors(self, theme: str | None = None) -> dict[str, QColor]:
+        """当前主题的全部 HUD 颜色（取自 neko_palette hud_* token）。"""
+        t = (theme or self._theme)
+        t = t if t in ("light", "dark") else "dark"
+        return {
+            "bg": neko_qcolor(t, "hud_panel_bg"),
+            "border": neko_qcolor(t, "hud_panel_border"),
+            "border_glow": neko_qcolor(t, "hud_border_glow"),
+            "text_dim": neko_qcolor(t, "hud_text_secondary"),
+            "text_bright": neko_qcolor(t, "hud_glow_text"),
+            "dot_running": neko_qcolor(t, "hud_dot_running"),
+            "dot_needyou": neko_qcolor(t, "hud_dot_needyou"),
+            "dot_active": neko_qcolor(t, "hud_dot_active"),
+            "dot_idle": neko_qcolor(t, "hud_dot_idle"),
+        }
+
+    @property
+    def DOT_COLORS(self) -> tuple[QColor, QColor, QColor]:
+        """兼容旧接口：当前主题的三个状态点颜色。"""
+        cols = self._colors()
+        return (cols["dot_running"], cols["dot_needyou"], cols["dot_active"])
+
+    @property
+    def theme(self) -> str:
+        return self._theme
+
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
+        cols = self._colors()
 
         # 玻璃面板
         glass_panel(
-            p, QRect(0, 0, w, h), 9,
-            COLOR_BG, COLOR_BORDER, COLOR_BORDER_GLOW, top_highlight=True,
+            p, QRect(0, 0, w, h), self._radius,
+            cols["bg"], cols["border"], cols["border_glow"], top_highlight=True,
         )
 
         # 三组 [圆点 + 数字 + 文字]
@@ -107,12 +141,13 @@ class AmadeusHUD(QWidget):
             (self._need_you, "NEED YOU", self.DOT_NEEDYOU),
             (self._active, "ACTIVE", self.DOT_ACTIVE),
         )
+        dot_colors = (cols["dot_running"], cols["dot_needyou"], cols["dot_active"])
 
         x = self._pad_x
         pulse_a = 0.75 + 0.25 * (0.5 + 0.5 * math.sin(self._pulse))
         for idx, (count, label, dot_kind) in enumerate(sections):
             active = count > 0
-            dot_color = self.DOT_COLORS[dot_kind] if active else COLOR_DOT_IDLE
+            dot_color = dot_colors[dot_kind] if active else cols["dot_idle"]
             cy = h // 2
 
             if active:
@@ -129,18 +164,18 @@ class AmadeusHUD(QWidget):
             x += self._dot_r * 2 + 4
 
             seg = f"{count} {label}"
-            text_color = COLOR_TEXT_BRIGHT if active else COLOR_TEXT_DIM
-            # 数字用更亮的绿做辉光，标签用本色
+            text_color = cols["text_bright"] if active else cols["text_dim"]
+            # 数字用更亮的主题色做辉光，标签用本色
             phosphor_glow_text(
                 p, seg, x, text_y,
-                self._font, text_color, COLOR_TEXT_BRIGHT,
+                self._font, text_color, cols["text_bright"],
                 align=Qt.AlignLeft, glow_passes=2, glow_spread=0.45,
             )
             x += fm.horizontalAdvance(seg)
 
             if idx < len(sections) - 1:
                 sep = " · "
-                p.setPen(COLOR_TEXT_DIM)
+                p.setPen(cols["text_dim"])
                 p.drawText(x, text_y, sep)
                 x += fm.horizontalAdvance(sep)
 
