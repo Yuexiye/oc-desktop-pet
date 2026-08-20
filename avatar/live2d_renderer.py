@@ -558,12 +558,12 @@ class Live2DRenderer(AvatarRenderer):
             # 但模型在窗口里实际占的高度 ≈ bbox + 1.2x 脚部高度。所以 pad_bottom 必须
             # 大到够装下"看不见的脚"，否则用户站在小窗口里看不到脚。
             # pad_w：横向留余量给左右摆动的手/头发（hit-bbox 不含这些）。
-            # 旧 0.20*bw=57 → 窗口 344x684（瘦高柱子，模型居中只占 266 宽）。
-            # 改 0.40*bw=115 → 窗口更宽，角色比例更接近正常"宠物窗口"。
-            # pad_bottom 保留脚部余量（bh*0.25≈120）防截脚，只在窗口瘦高时放宽。
-            pad_w = max(16, int(bw * 0.40))
-            pad_h = max(24, int(bh * 0.18))
-            pad_bottom = max(80, int(bh * 0.25))
+            # 2026-08-20 修复"动作被窗口截断"：静态 bbox 不含动作摆幅（举葱/挥手/
+            # 比心手部都会伸出 bbox 外），边距再加大一档，并收敛 offsetY 上移量
+            # （少上移，给头顶/动作留空间）。
+            pad_w = max(24, int(bw * 0.55))
+            pad_h = max(32, int(bh * 0.25))
+            pad_bottom = max(120, int(bh * 0.35))
             target_w = max(40, bw + pad_w)
             target_h = max(40, bh + pad_h + pad_bottom)
 
@@ -584,12 +584,13 @@ class Live2DRenderer(AvatarRenderer):
                 pass
 
             # 居中偏移：把模型在画布里轻微上移，让脚贴近窗口下缘但不裁头顶。
-            # 上限 0.28（旧 0.45 会截头顶），保底 0.10 保证脚基本可见。
+            # 上限 0.20（2026-08-20 从 0.28 收敛：上移过多会把头顶/举葱动作推出窗口）。
+            # 保底 0.10 保证脚基本可见。
             try:
                 _ratio = pad_bottom / float(target_h) if target_h > 0 else 0.18
             except Exception:
                 _ratio = 0.18
-            self._fit_offset_y = max(0.10, min(0.28, _ratio))
+            self._fit_offset_y = max(0.10, min(0.20, _ratio))
             logger.info(
                 "Live2DRenderer: 角色 bbox=%dx%d (偏移 %d,%d)，窗口贴合到 %dx%d (+%dpx 边距, 上移 offsetY=%.3f)",
                 bw, bh, min_x, min_y, target_w, target_h, pad_w, self._fit_offset_y,
