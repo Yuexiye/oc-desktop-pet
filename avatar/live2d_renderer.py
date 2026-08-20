@@ -133,6 +133,15 @@ class Live2DRenderer(AvatarRenderer):
         self._facing_right: bool = True
         self._offset_scale: tuple[float, float] = (0.0, 0.0)
 
+        # 自动随机动作：miku 只有 idle 一个默认 motion 看着"一直比心"。【2026-08-20
+        # 用户反馈"表情不生动"】启动后随机周期（默认 30~80s）播 waving/happy/
+        # thinking 等非 idle 动作，结束后回到 idle，每次 emotion 切换也触发一次新
+        # 动作（让表情/动作同步变化）。开关由 enable_auto_motion 控制（默认开）。
+        self._auto_motion_enabled: bool = True
+        self._auto_motion_min_s: float = 30.0
+        self._auto_motion_max_s: float = 80.0
+        self._auto_motion_next_at: float = 0.0  # 0 表示 ready 后立刻算第一个随机值
+
         # 视线/朝向目标（draw 中平滑插值）
         self._gaze_target_angle_x: float = 0.0
         self._gaze_target_angle_y: float = 0.0
@@ -552,15 +561,16 @@ class Live2DRenderer(AvatarRenderer):
                 logger.debug("居中补偿失败（跳过）: %s", _e)
             # 边距：给 idle 摆幅留余量，同时避免窗口被 fit 成瘦高异形。
             # 旧实现用 pad_bottom=200 + 大幅 offsetY 上移来防截脚，结果头顶被推出窗口、
-            # 比例瘦高。新策略：底部只留合理边距，靠【窗口高度足够】来包容模型，
-            # 而不是把模型在画布里拼命上移。
+            # 比例瘦高。新策略：**不主动上移模型**，靠【窗口上下都留足边距】来包容
+            # 头顶摆幅 + 裙摆/脚。
             # 关键：hit-bbox 不含脚/裙摆（这些区域通常在 HitDrawable 命中区外），
-            # 但模型在窗口里实际占的高度 ≈ bbox + 1.2x 脚部高度。所以 pad_bottom 必须
-            # 大到够装下"看不见的脚"，否则用户站在小窗口里看不到脚。
+            # 所以底部 pad_bottom 必须大到够装下"看不见的脚"，否则用户站在小窗口
+            # 里看不到脚。顶部同理——waving/happy 动作的头发/角度变化会暂时向上超出
+            # bbox，需留余量；但**绝不能用 SetOffsetY 上移**模型（等价把头顶推出）。
             # pad_w：横向留余量给左右摆动的手/头发（hit-bbox 不含这些）。
             # 2026-08-20 修复"动作被窗口截断"：静态 bbox 不含动作摆幅（举葱/挥手/
-            # 比心手部都会伸出 bbox 外），边距再加大一档，并收敛 offsetY 上移量
-            # （少上移，给头顶/动作留空间）。
+            # 比心手部都会伸出 bbox 外），边距再加大一档，并**禁用 offsetY 上移**
+            # （上移会把头顶/举葱动作推出窗口——这是用户反馈双马尾顶被裁的根因）。
             pad_w = max(24, int(bw * 0.55))
             pad_h = max(32, int(bh * 0.25))
             pad_bottom = max(120, int(bh * 0.35))
@@ -583,14 +593,13 @@ class Live2DRenderer(AvatarRenderer):
             except Exception:
                 pass
 
-            # 居中偏移：把模型在画布里轻微上移，让脚贴近窗口下缘但不裁头顶。
-            # 上限 0.20（2026-08-20 从 0.28 收敛：上移过多会把头顶/举葱动作推出窗口）。
-            # 保底 0.10 保证脚基本可见。
-            try:
-                _ratio = pad_bottom / float(target_h) if target_h > 0 else 0.18
-            except Exception:
-                _ratio = 0.18
-            self._fit_offset_y = max(0.10, min(0.20, _ratio))
+            # 居中偏移：用户物理不主动改变模型 Y 位置（固定 0），避免上移截头顶。
+            # 【2026-08-20 用户反馈双马尾顶被裁】【诊断】之前 _fit_offset_y 上移
+            # 0.10~0.20 的 SetOffsetY 是把模型在画布里向上推——效果恰恰相反：本意
+            # 是"给脚留底边"，结果把头顶推出窗口。正确做法是在 _recompute_fit 时
+            # 取 **pad_bottom** 多大于顶部 offset 自然就能装下脚，头顶不会被推。
+            # 所以此处设置 _fit_offset_y = 0，fit 路径永远不动模型的 Y 位置。
+            self._fit_offset_y = 0.0
             logger.info(
                 "Live2DRenderer: 角色 bbox=%dx%d (偏移 %d,%d)，窗口贴合到 %dx%d (+%dpx 边距, 上移 offsetY=%.3f)",
                 bw, bh, min_x, min_y, target_w, target_h, pad_w, self._fit_offset_y,
@@ -772,12 +781,21 @@ class Live2DRenderer(AvatarRenderer):
             except Exception as e:
                 logger.warning("Live2DRenderer.motion 超时检查异常: %s", e)
 
-        # P4-1 表情超时兜底：比心/葱/唱歌等贴图开关表情播满 GESTURE_TIMEOUT 自动重置，
-        # 与上方 motion 超时对称（之前只有 motion 有兜底，表情没有 → "一直比心"）。
-        try:
-            self._expire_expression_if_stale()
-        except Exception as e:
-            logger.warning("Live2DRenderer.expression 超时检查异常: %s", e)
+# 自动随机动作：让 idle 不再"一直祈祷"。【2026-08-20 用户反馈】周期
+            # 30~80s 随机播一次非 idle motion（waving/happy/thinking/touch），
+            # 配合 GESTURE_TIMEOUT 自动回 idle 形成自然节奏。每次 emotion
+            # 切换也由 emotion_api 接口触发新 motion。
+            try:
+                self._tick_auto_motion()
+            except Exception as e:
+                logger.debug("Live2DRenderer: 自动动作调度异常: %s", e)
+
+            # P4-1 表情超时兜底：比心/葱/唱歌等贴图开关表情播满 GESTURE_TIMEOUT 自动重置，
+            # 与上方 motion 超时对称（之前只有 motion 有兜底，表情没有 → "一直比心"）。
+            try:
+                self._expire_expression_if_stale()
+            except Exception as e:
+                logger.warning("Live2DRenderer.expression 超时检查异常: %s", e)
 
         # 完整帧更新：绕过 live2d-py 0.7.0.4 wrapper 残缺的 Update()（motion/blink/呼吸全被注释），
         # 直接驱动 C++ Model 的完整更新序列（UpdateMotion → Blink → Breath → Physics → Pose）。
@@ -1119,6 +1137,59 @@ class Live2DRenderer(AvatarRenderer):
         """
         self._motion_is_idle = bool(is_idle)
         self._motion_started_at = time.monotonic()
+
+    def _tick_auto_motion(self) -> None:
+        """周期 30~80s 随机播一次非 idle motion，避免"一直比心"的视觉疲劳。
+
+        仅在 idle 时触发（手动播手势期间不打断）；首次触发是 _ready 后随机
+        第一次。依赖 _motion_files / _start_motion_at 既有的播放栈，不修改
+        GESTURE_TIMEOUT 兜底逻辑——播满 GESTURE_TIMEOUT 自然回 idle，配合
+        本方法形成"随机播 ~idle 的循环"。
+        """
+        if not self._auto_motion_enabled or not self._model or not self._motion_files:
+            return
+        if len(self._motion_files) < 2:  # 只有一个 motion（或 idle）就不用调
+            return
+        # 仅在 idle 状态下触发随机调度
+        try:
+            if not getattr(self, "_motion_is_idle", True):
+                return
+        except Exception:
+            return
+        now = time.monotonic()
+        if self._auto_motion_next_at == 0.0:
+            # 首次随机化（首次触发时机设远一些，让用户先看清初始 idle）
+            self._auto_motion_next_at = now + 45.0
+            return
+        if now < self._auto_motion_next_at:
+            return
+        # 到点：选一个非 idle 的 motion；过滤名为 idle.motion3.json 的项
+        import random
+        candidates = []
+        for i, f in enumerate(self._motion_files):
+            try:
+                if "idle.motion3" not in str(f).lower():
+                    candidates.append(i)
+            except Exception:
+                continue
+        if not candidates:
+            return
+        chosen = random.choice(candidates)
+        try:
+            self._start_motion_at(chosen, None)  # 默认 NORMAL 优先级
+            logger.info(
+                "Live2DRenderer: 自动随机动作 idx=%d（%s）",
+                chosen, self._motion_files[chosen],
+            )
+        except Exception as e:
+            logger.debug("Live2DRenderer: 自动随机动作启动失败: %s", e)
+        # 安排下一次（30~80s 随机区间）
+        try:
+            self._auto_motion_next_at = now + random.uniform(
+                self._auto_motion_min_s, self._auto_motion_max_s
+            )
+        except Exception:
+            self._auto_motion_next_at = now + 45.0
 
     def _force_idle(self) -> None:
         """StopAllMotions 后用 FORCE 优先级重启 idle（最高优先级强制接管）。
