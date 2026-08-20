@@ -43,12 +43,14 @@ def _setup_file_logging():
 # ── 导入追踪探针（默认追踪 C 扩展重型依赖）──
 # 用法：OC_TRACE_IMPORTS=funasr,wetext python main.py 覆盖默认追踪列表；
 #       OC_TRACE_IMPORTS=（空）可整体关闭。
-# 默认对 faster_whisper/ctranslate2/live2d 开启追踪：这些包会拉起 C 扩展
-# （.pyd），而 0x8001010d 这类 COM 错误与"在哪个线程初始化 C 扩展"强相关，
-# 打印完整调用栈 + 所在线程，用于定位"谁在哪个线程拉起重型本地依赖"。
+# 默认关闭（生产启动不被刷屏拖慢）：探针在每次 import 目标模块时打印完整
+# 调用栈，默认开启会让 faster_whisper/ctranslate2/live2d 的几十个子模块导入
+# 全部打印堆栈，显著拖慢启动（2026-08-20 实测日志刷屏 + 启动 35s+）。
+# 定位 0x8001010d（COM 错误与"在哪个线程初始化 C 扩展"强相关）时，
+# 显式设置 OC_TRACE_IMPORTS=faster_whisper,ctranslate2,live2d 再启动即可。
 _trace = os.environ.get("OC_TRACE_IMPORTS")
 if _trace is None:
-    _trace = "faster_whisper,ctranslate2,live2d"
+    _trace = ""
 if _trace:
     import traceback as _tb
     import threading as _th
