@@ -2194,9 +2194,11 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
                 # 去掉路径和双扩展名（.motion3.json），只留可读名
                 name = Path(fpath).stem.split('.')[0]
                 display = name.replace('_', ' ').replace('-', ' ').title()
+                # ⚠️ PySide6 addAction(text, callable) 的 callable 在不同绑定
+                # 版本下有时传 triggered(bool checked)、有时不传。用 *args 兼容。
                 self._motion_submenu.addAction(
                     f"▶️ {display}",
-                    lambda checked, i=idx, r=renderer: r._start_motion_at(i),
+                    lambda *args, i=idx, r=renderer: r._start_motion_at(i),
                 )
             self._motion_submenu.addSeparator()
 
@@ -2207,9 +2209,10 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
             expr_header.setEnabled(False)
             for name in expr_names:
                 display = str(name).replace('_', ' ').title()
+                # ⚠️ 同上：*args 兼容 addAction slot 的 checked 参数
                 self._motion_submenu.addAction(
                     f"✨ {display}",
-                    lambda checked, n=name, r=renderer: r.set_expression_by_name(n),
+                    lambda *args, n=name, r=renderer: r.set_expression_by_name(n),
                 )
             self._motion_submenu.addSeparator()
 
