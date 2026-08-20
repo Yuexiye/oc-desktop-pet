@@ -33,9 +33,12 @@ class BehaviorMixin:
 
     # ── 专注模式联动（P0-5：专注时降低 proactive 频率）──
 
-    def _focus_manager(self):
+    def _get_focus_manager(self):
         """返回注入的 FocusStateMachine 实例（T05 注入；未注入返回 None）。
 
+        注意：方法名避免与注入属性 ``self._focus_manager``（FocusStateMachine
+        实例）同名——否则实例属性会覆盖绑定方法，调用会得到
+        ``'FocusStateMachine' object is not callable``（2026-08-20 启动崩溃）。
         鸭子类型访问：``self._focus_manager`` 由 PetWindow 注入。缺失时
         一律按"非专注"处理 → 零行为（满足 focus.enabled=false 零行为）。
         """
@@ -47,7 +50,7 @@ class BehaviorMixin:
         ``FocusStateMachine.active`` 为 True 且 ``enabled`` 为 True 才算；
         两者任一不满足（默认关）都返回 False → 不抑制任何行为。
         """
-        fm = self._focus_manager()
+        fm = self._get_focus_manager()
         if fm is None:
             return False
         try:
