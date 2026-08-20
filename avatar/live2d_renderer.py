@@ -1347,10 +1347,16 @@ class Live2DRenderer(AvatarRenderer):
         _expression_names 里的原始表情 ID（如 比心/葱/唱歌/前倾）。
         复用 _expire_expression_if_stale 超时兜底，表情会在 GESTURE_TIMEOUT
         后自动 ResetExpressions 回默认。
+
+        2026-08-20 修复：SetExpression 不自动清空之前激活的表情（miku 的
+        expression 是独立 Param 切换），导致"比心+葱"叠加。先 ResetExpressions
+        再设新表情，确保用户主动切换是互斥的。情绪系统走 _apply_expression
+        不走此路径。
         """
         if not self._model:
             return
         try:
+            self._model.ResetExpressions()
             self._model.SetExpression(str(name))
             self._expression_active = True
             self._last_expression = str(name)

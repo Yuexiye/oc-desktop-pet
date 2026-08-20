@@ -43,7 +43,15 @@ def t_expression() -> None:
     assert names, "无 expression 列表"
     r.set_expression_by_name(names[0])
     assert getattr(r, "_expression_active", False), "表情未激活"
-    print(f"   表情 {names[0]!r} 已设置, active={r._expression_active}")
+    # 互斥性：切到另一个表情后 _last_expression 应为新值（前置 ResetExpressions
+    # 已清空旧 Param，2026-08-20 修复"比心+葱叠加"bug）
+    if len(names) >= 2:
+        r.set_expression_by_name(names[1])
+        assert r._last_expression == names[1], \
+            f"切到 {names[1]!r} 后 _last_expression 仍是 {r._last_expression!r}"
+        print(f"   表情互斥: {names[0]!r}→{names[1]!r} ✓")
+    else:
+        print(f"   表情 {names[0]!r} 已设置, active={r._expression_active}")
 
 check("表情切换", t_expression)
 
@@ -64,8 +72,11 @@ def t_memory() -> None:
     events_file = mem_dir / "miku_events.jsonl"
     before = len(events_file.read_text(encoding="utf-8").splitlines()) if events_file.exists() else 0
     cm.record_event(category="test", scenario="feature_acceptance", intent="verify",
-                    emotion="happy", intensity=0.8, source="test", detail="功能验收临时事件")
-    app.processEvents()
+                    emotion="happy", intensity=0.8, source="test")
+    # 事件流异步落盘：多次 processEvents + 短暂 sleep 等写入
+    for _ in range(20):
+        app.processEvents()
+        time.sleep(0.1)
     after = len(events_file.read_text(encoding="utf-8").splitlines()) if events_file.exists() else 0
     assert after > before, f"事件未落盘 {before}->{after}"
     print(f"   事件落盘 {before}->{after} 行")
@@ -91,10 +102,10 @@ def t_break() -> None:
                                       "late_night_hour": 22, "late_night_end_hour": 6,
                                       "late_night_multiplier": 3})
     base = time.time()
-    for _ in range(60):  # 每分钟推进一次
+    for _ in range(92):  # 每分钟推进一次（首次 update last=None return，实际累积 91 分钟）
         base += 60
         t.update(True, now=base)
-    assert t.due(now=base), "90min 累积后应 due"
+    assert t.due(now=base), "91min 累积后应 due"
     t.acknowledge()
     assert not t.due(now=base), "确认后应重置"
     print("   90min 累积→due ✓ / 确认→重置 ✓")
