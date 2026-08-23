@@ -1,0 +1,127 @@
+# oc-pet config.json 配置指南
+
+> 本项目配置文件为 `config.json`（运行时实际生效）。`config.template.json` 是
+> **规范模板**（干净、完整、可复制），改坏了配置可从模板恢复。
+> JSON 不支持注释，本指南就是 config.json 各字段的"注释说明"。
+
+## ⚠️ 历史坑（改 config.json 前必读）
+
+1. **重复 key 覆盖**：JSON 允许重复 key，解析时**取最后一个**。历史上出现过
+   两个 `plugin_tools` 块（一个 `true` 一个 `false`），`false` 在后面的把
+   `true` 覆盖掉，导致插件工具静默关闭。
+   **改之前先检查：**
+   ```bash
+   python -c "import json,collections;
+   def d(o,p=''):
+    r=[]
+    if isinstance(o,dict):
+     c=collections.Counter(o); r+=[f'{p}.{k}x{c[k]}' for k in c if c[k]>1]
+     for k,v in o.items(): r+=d(v,f'{p}.{k}')
+    elif isinstance(o,list):
+     for i,v in enumerate(o): r+=d(v,f'{p}[{i}]')
+    return r
+   print(d(json.load(open('config.json',encoding='utf-8'))))"
+   ```
+   输出 `[]` 才是干净。
+
+2. **Python 3 `\w` 匹配中文**：写路由/正则时用 `[a-zA-Z0-9_]`，不要用 `\w`。
+
+3. **JSON 不能带注释**：`//`、`/* */` 都会让 `json.load` 崩溃。要加说明写在这份指南里。
+
+## 各区块说明
+
+### agents / character / scale / opacity / behavior / theme_mode / window
+- `agents`: 多桌宠实例列表（`enabled` 控制是否随启动出现；`position` 是桌面坐标）。
+- `character`: 当前默认角色（如 `miku`；官方示例模型可用 `sample_live2d`）。
+- `scale`: 整体缩放；`opacity`: 不透明度 0~1。
+- `behavior`: 行为模式（`normal` 等，对应 motion/behavior.py 的 BEHAVIOR_MODES）。
+- `theme_mode`: `auto`/`light`/`dark`。
+- `window`: 窗口位置与尺寸（x/y 为 -1 表示由系统放置）。
+
+### break_reminder / work_reminder
+- 休息提醒：`idle_minutes` 空闲多久提醒；`gradual` 渐进式提醒。
+- 工作提醒：连续工作超 `after_minutes` 提醒；深夜（≥`late_night_hour` 或
+  <`late_night_end_hour`）阈值 ×`late_night_multiplier` 降频；
+  `cooldown_minutes` 提醒冷却；`snooze_minutes` 稍后提醒间隔。
+
+### tts / sfx / asr
+- `tts`: `enabled` 总开关；`provider`（edge 等）；`edge_voice` 音色；
+  `voices` 角色音色映射；`voice_emotion_map` 情绪音色映射。
+- `sfx`: 音效开关/音量。
+- `asr`: 语音识别（`whisper_local` + faster_whisper，`model`=small/medium 等）。
+
+### proactive（主动搭话）
+- `enabled` 总开关；`cooldown_minutes` 基础冷却；`daily_limit` 每日主动搭话上限（20）。
+- `llm_generation`: 主动搭话是否走 LLM 生成更自然文案（默认 true；失败自动回退模板池）。
+- `fullscreen_suppress` / `fullscreen_threshold`: 全屏（游戏/视频）时不打扰。
+- `rules`: 规则池（按 idle_min 倒序匹配 foreground 分类，weight 是触发概率）。
+- **429 相关**：`llm_generation` 每次触发会打一次 LLM（source="proactive"）。
+  若限流严重可先关 `llm_generation`（回退模板池，不调用 LLM）。
+
+### window_interaction / mouse_interaction
+- 窗口交互（拖拽等）与鼠标反应开关。
+
+### memory（记忆）
+- `budget_*`: 注入 LLM 的记忆预算；`hybrid_bm25`: BM25 混合检索。
+- `embedding`: 本地 ONNX 向量嵌入（默认关；缺失自动降级纯 BM25）。
+- `recall` / `associate`: 场景回忆/联想（proactive 说带记忆的话）。
+- `facts`: 事实库（LLM 抽取，`dedup_threshold` 去重阈值）。
+- `reflection`: 反思引擎（事件流 → LLM 摘要，`interval_hours` 周期）。
+- **429 相关**：`reflection` 每天一次 LLM 摘要；`facts` 每次对话抽取。
+  限流严重可关 `facts.enabled` / `reflection.enabled`。
+
+### focus
+- 专注模式（默认关）：开启后主动搭话频率下降、气泡轻微辉光。
+
+### screen（屏幕感知）—— 429 重点
+- `enabled`: 总开关（关掉后完全不截屏、不打视觉 API）。
+- `interval`: 基准截屏间隔（秒）；`interval_min`/`interval_max` 随机浮动范围
+  （默认 84~156s，即约每 2 分钟一次视觉分析）。
+- `blur` / `blacklist`: 隐私保护（高斯模糊 / 敏感窗口黑名单）。
+- `compress`: 截图缩放+压缩（省流量/省 token）。
+- `llm_enrich`: LLM 语义增强（场景标注）。**每成功截屏一次都会打一次**
+  （source="screen_enrich"），加上视觉 API 本身 = 每周期 **2 次** LLM 请求。
+- `llm_enrich_cooldown`: **429 限流缓解**（新增，默认 300 秒）。场景未变化时
+  最多每 300s 补一次 enrich；场景变化立即补一次（保持灵敏）。
+- **429 调优建议**（按优先级）：
+  1. 把 `interval_min`/`interval_max` 调大（如 240~420s），直接降低视觉频率；
+  2. 保持 `llm_enrich=true` + `llm_enrich_cooldown=300`（默认），减少重复 enrich；
+  3. 限流仍严重：`llm_enrich=false`（纯规则分类，不再打 enrich）；
+  4. 终极手段：`screen.enabled=false`（关闭屏幕感知）。
+
+### anti_repeat（反重复）
+- 语义指纹 + 时间窗去重：`bg_window`/`fg_window` 窗口大小、
+  `drop_threshold` 重复丢弃阈值。一般不用动。
+
+### presence（轻存在感）
+- 不说话只做动作：`min_idle_minutes` 空闲多久可触发；
+  `interval_minutes` 触发间隔。**不调 LLM**（纯动作），429 无关。
+
+### plugin_tools（插件工具）
+- `enabled`: 是否扫描并启用 Hanako/本地插件工具（默认**保持 true**，
+  桌宠全链路插件调用依赖它）。
+- 108 个工具在线后，播放类自然语言（"播首歌"）由 **LLM 自动选 play 工具**处理
+  （见 core/capability_registry.py 设计决策）；本地静态能力只保留确定性控制
+  （暂停/下一首/状态/清空）。
+
+### 其他
+- `state_http` / `external_trigger`: 本地 HTTP 口（默认关）。
+- `celebrating`: 庆祝态（撒花动作 + 完工音）。
+- `render_format`: `sprite` / `live2d`（miku 用 live2d）。
+- `greeting`: 开场问候。
+
+## 429 根因速览（2026-08-23 排查结论）
+
+| 来源 | 频率 | 是否 LLM |
+|---|---|---|
+| 屏幕视觉分析（screen 定时截屏） | 每 84~156s | 是（视觉 API） |
+| 屏幕语义增强 llm_enrich | 每次截屏一次（已加 300s 冷却） | 是（Hanako） |
+| 屏幕主动评论（_check_screen_proactive） | 5~15min 冷却 × 20% 概率 | 是（对话回复） |
+| 主动搭话 LLM 生成（proactive） | 冷却 10min，每日上限 20 | 是（Hanako） |
+| 对话回复 | 用户驱动 | 是 |
+| presence（轻存在感） | 空闲 5min 后每 8min | **否**（纯动作） |
+
+**主要嫌疑**：`screen.llm_enrich` 让"每次截图 = 视觉 API + enrich LLM 两次请求"，
+8 小时高频期可达约 400+ 次 Hanako 请求，极易打满限流。
+**本次缓解**：新增 `llm_enrich_cooldown`（默认 300s）+ 场景变化立即补，
+enrich 请求量预计降到约 1/4~1/8；建议用户再按上面调优步骤放大截屏间隔。

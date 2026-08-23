@@ -1,0 +1,221 @@
+{
+  "agents": [
+    {
+      "id": "miku",
+      "enabled": true,
+      "position": {
+        "x": 1566,
+        "y": 387
+      },
+      "scale": 1.0,
+      "builtin": true
+    },
+    {
+      "id": "yuexinmiao",
+      "enabled": false,
+      "position": {
+        "x": 1885,
+        "y": 897
+      },
+      "scale": 1.0,
+      "builtin": true
+    }
+  ],
+  "dialog": {
+    "agent_id": "aimis"
+  },
+  "character": "miku",
+  "scale": 0.8,
+  "opacity": 1.0,
+  "behavior": "normal",
+  "theme_mode": "auto",
+  "window": {
+    "x": 6,
+    "y": 506,
+    "width": 200,
+    "height": 300
+  },
+  "break_reminder": {
+    "enabled": true,
+    "idle_minutes": 15,
+    "gradual": true,
+    "cooldown_minutes": 30
+  },
+  "work_reminder": {
+    "enabled": true,
+    "after_minutes": 90,
+    "late_night_hour": 22,
+    "late_night_end_hour": 6,
+    "late_night_multiplier": 3.0,
+    "cooldown_minutes": 60,
+    "snooze_minutes": 10,
+    "tts_enabled": false
+  },
+  "action_linker": {
+    "enabled": true,
+    "highlight_duration": 30
+  },
+  "tts": {
+    "enabled": true,
+    "volume": 0.8,
+    "provider": "edge",
+    "voices": {
+      "miku": "ophelia"
+    },
+    "edge_voice": "zh-CN-XiaoxiaoNeural",
+    "voice_emotion_map": {}
+  },
+  "sfx": {
+    "enabled": true,
+    "volume": 0.5
+  },
+  "ui": {
+    "onboarded": false
+  },
+  "proactive": {
+    "enabled": true,
+    "cooldown_minutes": 10,
+    "llm_generation": true,
+    "fullscreen_suppress": true,
+    "fullscreen_threshold": 0.95,
+    "daily_limit": 20,
+    "rules": [
+      {
+        "idle_min": 5,
+        "foreground": [
+          "writing",
+          "development",
+          "browsing"
+        ],
+        "prompt": "写了这么久，休息一下吧？",
+        "weight": 0.7
+      },
+      {
+        "idle_min": 15,
+        "foreground": [
+          "gaming",
+          "entertainment"
+        ],
+        "prompt": "带我一起玩嘛～",
+        "weight": 0.5
+      },
+      {
+        "idle_min": 30,
+        "foreground": [
+          "communication"
+        ],
+        "prompt": "还在忙吗？想和你说说话～",
+        "weight": 0.3
+      },
+      {
+        "idle_min": 60,
+        "foreground": [
+          "*"
+        ],
+        "prompt": "好安静啊……你在做什么呢？",
+        "weight": 0.3
+      }
+    ]
+  },
+  "window_interaction": {
+    "enabled": true,
+    "cooldown_seconds": 600,
+    "auto_walk": false
+  },
+  "memory": {
+    "budget_chars": 500,
+    "budget_percent": 1.0,
+    "budget_mode": "manual",
+    "hybrid_bm25": true,
+    "embedding": {
+      "enabled": false,
+      "model_path": "",
+      "model_name": "jinaai/jina-embeddings-v5-text-nano-retrieval",
+      "dim": 256,
+      "quantization": "auto",
+      "max_length": 1024,
+      "timeout_seconds": 8.0,
+      "load_timeout_seconds": 60.0
+    },
+    "recall": {
+      "enabled": true,
+      "cooldown_minutes": 30
+    },
+    "associate": {
+      "enabled": true
+    },
+    "facts": {
+      "enabled": true,
+      "dedup_threshold": 0.75
+    },
+    "reflection": {
+      "enabled": true,
+      "interval_hours": 24,
+      "min_events": 5,
+      "max_events": 200,
+      "retry_minutes": 60
+    }
+  },
+  "focus": {
+    "enabled": false,
+    "glow_strength": 0.3
+  },
+  "mouse_interaction": true,
+  "screen": {
+    "enabled": true,
+    "interval": 120,
+    "interval_min": 84,
+    "interval_max": 156,
+    "blur": false,
+    "blacklist": false,
+    "compress": true,
+    "llm_enrich": true,
+    "llm_enrich_cooldown": 300
+  },
+  "anti_repeat": {
+    "enabled": true,
+    "bg_window": 100,
+    "fg_window": 5,
+    "fg_ttl_seconds": 600.0,
+    "bm25_k1": 1.5,
+    "bm25_b": 0.75,
+    "min_draft_tokens": 12,
+    "regen_threshold": 8.0,
+    "drop_threshold": 16.0
+  },
+  "asr": {
+    "provider": "whisper_local",
+    "backend": "faster_whisper",
+    "model": "small",
+    "language": "zh",
+    "device": ""
+  },
+  "character_package": "default",
+  "render_format": "live2d",
+  "greeting": {
+    "enabled": true
+  },
+  "presence": {
+    "enabled": true,
+    "min_idle_minutes": 5,
+    "interval_minutes": 8
+  },
+  "celebrating": {
+    "enabled": true,
+    "tts_enabled": true
+  },
+  "state_http": {
+    "enabled": false,
+    "port": 8977,
+    "auth_token": "",
+    "allow_set_mode": false
+  },
+  "external_trigger": {
+    "enabled": false,
+    "port": 8988,
+    "auth_token": ""
+  },
+  "plugin_tools": {
+    "enabled": true
+  }
+}
