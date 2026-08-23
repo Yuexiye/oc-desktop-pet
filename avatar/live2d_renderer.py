@@ -1844,7 +1844,16 @@ class Live2DRenderer(AvatarRenderer):
           不打断正在播的 motion，StartMotion(idle, NORMAL) 被静默拒绝 → 仍死锁
         - v3（当前）用 FORCE 优先级（最高）→ 强制替换任何正在播的 motion，
           再叠加双重 StopAllMotions 清理，确保 idle 一定能接管
+          
+        P1 修复：同时 ResetExpressions，清除前倾/脸红等贴图表情。
+        旧实现只切 motion 不清表情，导致 motion 回 idle 后前倾贴图仍挂着。
         """
+        # P1: 先重置表情，再切 motion（确保贴图清除优先）
+        try:
+            if hasattr(self._model, "ResetExpressions"):
+                self._model.ResetExpressions()
+        except Exception:
+            pass
         # 双重 StopAllMotions：某些 wrapper 实现需要两次才彻底清
         try:
             if hasattr(self._model, "StopAllMotions"):
@@ -2090,11 +2099,14 @@ class Live2DRenderer(AvatarRenderer):
     def _apply_expression(self, emotion: str) -> None:
         """应用情绪对应的表情（不碰 motion）。
 
-        P4-1 表情超时重置（根治"一直比心"）：
-        - 模型如 miku 用 Param131-137 贴图开关做"比心/葱/唱歌/前倾"等手势表情。
+        P4-1 表情超时重置（根治“一直比心”）：
+        - 模型如 miku 用 Param131-137 贴图开关做“比心/葱/唱歌/前倾”等手势表情。
         - 旧逻辑：happy 情绪每帧 set_emotion → SetExpression("比心") → 表情永不重置。
         - 修：同表情激活中不刷新超时（让手势自然过期）；超时后 ResetExpressions 回默认；
-          重置后同表情进入冷却期，防止情绪持续时"3秒亮/3秒灭"闪烁。
+          重置后同表情进入冷却期，防止情绪持续时“3秒亮/3秒灭”闪烁。
+          
+        P1 修复：SetExpression 前先 ResetExpressions，杜绝多表情叠加（如“前倾+脸红”）。
+        旧实现只 Set 不设 Reset，导致多个贴图表情同时激活。
         """
         expr = self._match_expression(emotion)
         try:
@@ -2111,6 +2123,8 @@ class Live2DRenderer(AvatarRenderer):
             # 刚被超时重置的同表情，冷却期内不重播（防闪烁）
             if expr == self._last_expression and now < self._expression_suppress_until:
                 return
+            # P1: SetExpression 前先 Reset，确保新表情独占总有贴图参数
+            self._model.ResetExpressions()
             self._model.SetExpression(expr)
             self._expression_active = True
             self._expression_set_at = now

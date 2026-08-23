@@ -535,6 +535,10 @@ class HanakoMonitor:
     def push_event(self, event: dict):
         """直接推送事件（WebSocket 模式回调）。
         当 BridgeClient 通过 WebSocket 收到事件时调用此方法。
+        
+        P0 修复：thinking/tool 事件节流，避免高频覆盖情绪。
+        只有转台状态变化（thinking→idle, working→idle）才立即推送，
+        同状态高频事件节流 1s。
         """
         # 会话过滤：只观测本桌宠对应助手的活动
         if not self._event_belongs_to_agent(event):
@@ -542,6 +546,18 @@ class HanakoMonitor:
         result = map_event_to_mood(event)
         if result:
             mood, message, emotion = result
+            # P0 节流：thinking/tool 事件在 turn 期间高频到来，
+            # 同一 mood 事件 1s 内只推送一次，避免持续重置情绪过期计时器。
+            # turn_end/tool_end(success) 等终态事件不受节流限制。
+            now = time.time()
+            event_type = event.get("type", "")
+            is_terminal = event_type in ("turn_end", "tool_end")
+            if not is_terminal:
+                last_push = getattr(self, "_last_event_push_at", 0.0)
+                if now - last_push < 1.0:
+                    return  # 节流：1s 内同类型事件只推一次
+                self._last_event_push_at = now
+            
             # P3: EXPRESSION_MAP 已改为 tuple 格式，提取序列名
             mapped = EXPRESSION_MAP.get(emotion, ("idle", None, None))
             anim = mapped[0] if isinstance(mapped, tuple) else mapped

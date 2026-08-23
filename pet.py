@@ -2606,16 +2606,24 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
                     return
 
     def _on_emotion_expired(self):
-        """A2: 情绪过期 — 3秒无新情绪后回到 idle"""
+        """A2: 情绪过期 — 3秒无新情绪后回到 idle
+        
+        E4 修复：同时复位 _emotion_source 和 _last_body_emotion，
+        保证状态机一致性。旧实现只改 _current_emotion，
+        导致 _last_body_emotion 陈旧，下一轮 set_emotion 判断失效。
+        """
         if self._current_emotion != "neutral":
             logger.debug("Emotion expired: %s -> neutral", self._current_emotion)
             self._current_emotion = "neutral"
+            self._emotion_source = "neutral"  # E4: 复位来源
             try:
                 self._set_anim_seq("idle", emotion="neutral", style=get_transition_style("neutral"))
             except Exception:
                 pass
             # P2-6：过期回 neutral 也同步程序化表情层（面部参数平滑回归）
             self._sync_renderer_master_emotion("neutral")
+            # E4: 复位 _last_body_emotion，避免下一轮 set_emotion 判断错误
+            self._last_body_emotion = "neutral"
 
     def _sync_renderer_master_emotion(self, emotion: str) -> None:
         """P2-6：把当前主导情绪（master emotion）同步到渲染器的程序化表情层。
