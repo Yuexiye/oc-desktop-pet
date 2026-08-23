@@ -229,6 +229,9 @@ EMOTION_KEYWORDS = {
 }
 
 STALE_TIMEOUT = 30
+# E-watchdog: 最后一次事件后超过此秒数且未收到 turn_end，强制回 idle
+# 旧实现只依赖 tick() 的 STALE_TIMEOUT=30s，但对高频事件场景无效（每次事件都重置 last_update）
+WATCHDOG_TIMEOUT = 15.0
 
 
 # 状态名称与显示文本
@@ -539,6 +542,8 @@ class HanakoMonitor:
         P0 修复：thinking/tool 事件节流，避免高频覆盖情绪。
         只有转台状态变化（thinking→idle, working→idle）才立即推送，
         同状态高频事件节流 1s。
+        
+        E-watchdog: turn_end 后立即回 idle，不等 STALE_TIMEOUT。
         """
         # 会话过滤：只观测本桌宠对应助手的活动
         if not self._event_belongs_to_agent(event):
@@ -546,12 +551,23 @@ class HanakoMonitor:
         result = map_event_to_mood(event)
         if result:
             mood, message, emotion = result
+            event_type = event.get("type", "")
+            
+            # E-watchdog: turn_end 是明确终止信号，立即回 idle
+            if event_type == "turn_end":
+                self._last_event_push_at = 0.0  # 重置节流，允许下一条立即推送
+                self._current_emotion = "neutral"
+                self._current_state_name = "idle"
+                self._current_anim = "idle"
+                if self._on_state_change:
+                    self._on_state_change("idle", "", emotion="neutral", state="idle")
+                return
+            
             # P0 节流：thinking/tool 事件在 turn 期间高频到来，
             # 同一 mood 事件 1s 内只推送一次，避免持续重置情绪过期计时器。
             # turn_end/tool_end(success) 等终态事件不受节流限制。
             now = time.time()
-            event_type = event.get("type", "")
-            is_terminal = event_type in ("turn_end", "tool_end")
+            is_terminal = event_type in ("tool_end", "turn_end")
             if not is_terminal:
                 last_push = getattr(self, "_last_event_push_at", 0.0)
                 if now - last_push < 1.0:

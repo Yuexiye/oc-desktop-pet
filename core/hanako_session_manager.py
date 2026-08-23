@@ -604,6 +604,13 @@ class HanakoSessionManager:
             self._finish_with_error(turn, str(event.get("message") or event.get("error") or "Hanako turn failed"))
         elif event_type == "abort_rejected":
             self._emit("progress", turn.session, "终止请求被拒绝…")
+        elif event_type == "abort_result":
+            # P5 修复：abort_result 视为中止成功，完成 turn
+            # 旧实现无此分支，导致 abort 后 turn 永久 pending
+            turn.aborted = True
+            turn.state = TurnState.ABORTED
+            self._complete_turn(turn)
+            self._emit("progress", turn.session, "已终止")
 
     def _handle_user_echo(self, turn: TurnAccumulator, event: dict[str, Any]) -> None:
         client_id = event.get("clientMessageId") or (event.get("message") or {}).get("clientMessageId")
