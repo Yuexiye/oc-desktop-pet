@@ -606,7 +606,8 @@ class HanakoSessionManager:
             self._emit("progress", turn.session, "终止请求被拒绝…")
         elif event_type == "abort_result":
             # P5 修复：abort_result 视为中止成功，完成 turn
-            # 旧实现无此分支，导致 abort 后 turn 永久 pending
+            # 服务端会先发 status(aborted=true) 再发 abort_result，两者都触发完成
+            # _handle_status 已经处理了 status(aborted=true)，这里处理 abort_result
             turn.aborted = True
             turn.state = TurnState.ABORTED
             self._complete_turn(turn)
