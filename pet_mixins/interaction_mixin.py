@@ -348,6 +348,16 @@ class InteractionMixin:
             self._pending_click = False
             self._click_timer.stop()
 
+    # P3 交互反馈文案池（深化：按连击场景分层，避免千篇一律）
+    _PAT_BUBBLES = {
+        1: ["喵~", "呼噜呼噜~", "好舒服~", "摸头好开心~"],
+        2: ["再摸摸嘛~", "头顶有点痒~", "嘿嘿…"],
+        3: ["喵呜…要被摸成毛毯了", "这里这里，往上一点~"],
+        4: ["就差一下了！", "快破纪录啦~"],
+    }
+    _PAT_BIG_TEXT = "最喜欢主人了！"
+    _STROKE_BUBBLES = ["呜喵…", "咕噜咕噜…", "好困…像被按了关机键", "这里也要摸~"]
+
     def _on_pet_pat(self):
         """双击 = 摸一下：开心反应 + 连击累计"""
         self._mark_user_interaction()
@@ -370,10 +380,11 @@ class InteractionMixin:
         head = self._head_local_point()
         self._heart_overlay.burst(count=6 if big else 2, x=head.x(), y=head.y())
         if big:
-            self._show_sticker("💕", "最喜欢主人了！")
-        elif self._pet_combo == 1:
+            self._show_sticker("💕", self._PAT_BIG_TEXT)
+        else:
             import random
-            self._show_bubble(random.choice(["喵~", "呼噜呼噜~", "好舒服~"]), emotion="happy")
+            pool = self._PAT_BUBBLES.get(min(self._pet_combo, 4), self._PAT_BUBBLES[1])
+            self._show_bubble(random.choice(pool), emotion="happy")
 
     def _on_pet_stroke(self):
         """按住不动 = 连续撸：涓流心情 + 单颗爱心"""
@@ -384,6 +395,10 @@ class InteractionMixin:
         self._pet_play_happy(big=False, revert=400, style="snap")
         head = self._head_local_point()
         self._heart_overlay.burst(count=1, x=head.x(), y=head.y())
+        # P3：抚摸低频气泡（每 3 次一次），避免刷屏但增加反馈层次
+        if self._pet_stroke_count % 3 == 0:
+            import random
+            self._show_bubble(random.choice(self._STROKE_BUBBLES), emotion="happy")
 
     def _pet_play_happy(self, big=False, revert=650, seq=None, style="spring", surface=True):
         if seq is None:

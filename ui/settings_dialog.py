@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
-    QCheckBox, QSlider, QSpinBox, QComboBox,
+    QCheckBox, QSlider, QSpinBox, QDoubleSpinBox, QComboBox,
     QPushButton, QLabel, QGroupBox, QTabWidget, QWidget,
     QLineEdit, QListWidget, QListWidgetItem, QAbstractItemView,
     QMessageBox
@@ -384,6 +384,45 @@ class SettingsDialog(QDialog):
             asr_lang_map.get(self._config.get("asr", {}).get("language", "auto"), 1)
         )
         asr_layout.addRow("识别语言", self.asr_lang)
+
+        # 麦克风设备选择（2026-08-22 新增：解决默认设备不是麦克风导致录不到人声）
+        self.asr_device = QComboBox()
+        self.asr_device.setMinimumWidth(220)
+        try:
+            import sounddevice as sd
+            _devs = sd.query_devices()
+            _default_in = None
+            try:
+                _default_in = sd.default.device[0]
+            except Exception:
+                pass
+            self._asr_device_names = []  # (display, value)
+            self.asr_device.addItem("系统默认设备", "")
+            for _di, _d in enumerate(_devs):
+                if _d.get("max_input_channels", 0) > 0:
+                    _nm = str(_d.get("name", f"设备 {_di}"))
+                    self._asr_device_names.append((_nm, _di))
+                    self.asr_device.addItem(f"{_di}: {_nm}", str(_di))
+            # 当前配置值
+            _cur_dev = self._config.get("asr", {}).get("device", "")
+            _found = False
+            if _cur_dev:
+                for _disp, _val in self._asr_device_names:
+                    if str(_cur_dev) in (_nm := _disp) or str(_cur_dev) == str(_val):
+                        _idx = self.asr_device.findData(str(_val))
+                        if _idx >= 0:
+                            self.asr_device.setCurrentIndex(_idx)
+                            _found = True
+                            break
+            if not _found and _cur_dev:
+                self.asr_device.addItem(f"{_cur_dev} (未找到)", str(_cur_dev))
+                self.asr_device.setCurrentIndex(self.asr_device.count() - 1)
+        except Exception as _e:
+            # sounddevice 不可用时仍允许手动填写设备
+            self.asr_device.setEditable(True)
+            self.asr_device.setCurrentText(self._config.get("asr", {}).get("device", ""))
+            logger.warning("麦克风设备枚举失败: %s", _e)
+        asr_layout.addRow("麦克风设备", self.asr_device)
 
         voice_layout.addWidget(asr_group)
         voice_layout.addStretch()
@@ -1319,6 +1358,9 @@ class SettingsDialog(QDialog):
             c["asr"]["backend"] = ["whisper", "faster_whisper"][self.asr_backend.currentIndex()]
         if hasattr(self, "asr_lang"):
             c["asr"]["language"] = ["zh", "auto"][self.asr_lang.currentIndex()]
+        # 麦克风设备（2026-08-22 新增）
+        if hasattr(self, "asr_device"):
+            c["asr"]["device"] = self.asr_device.currentData() or ""
 
         # 记忆注入
         c.setdefault("memory", {})["budget_mode"] = "auto" if self.mem_mode.currentIndex() == 0 else "manual"

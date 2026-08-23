@@ -433,6 +433,12 @@ class PetManager:
                             "[%s] work done: %s reason=%s +%.0f money +%.0f exp",
                             _aid, info.work.name, info.reason, info.money, info.exp,
                         )
+                        # P6: work 完成时通过公共接口触发桌宠反馈（不依赖 HTTP 端口）
+                        try:
+                            text = f"完成了{info.work.name}！辛苦了~"
+                            window.trigger(text, action="praise", emotion="happy")
+                        except Exception as e:
+                            logger.debug("work finish trigger failed: %s", e)
 
                     state_mgr = PetStateManager(save_mgr, on_mode_change=_on_mode_change)
                     work_timer = WorkTimer(save_mgr, state_mgr, on_finish=_on_work_finish)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 import uuid
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
@@ -147,6 +148,9 @@ class TurnAccumulator:
     timeout_timer: threading.Timer | None = field(default=None, repr=False)
     last_seq_by_stream: dict[str, int] = field(default_factory=dict, repr=False)
     tool_indexes: dict[str, int] = field(default_factory=dict, repr=False)
+    # 活跃时间戳：每次收到本 turn 的事件时刷新（工具链/tool 结果后继续流式回复时，
+    # 用"最近活动"判断 turn 是否还活着，而不是死等固定的 reply_timeout 墙）。
+    last_event_ts: float = field(default_factory=time.monotonic)
 
     @property
     def done(self) -> bool:
@@ -162,6 +166,7 @@ class TurnAccumulator:
             return False
         self.last_seq_by_stream[stream_id] = seq
         self.last_seq = max(self.last_seq, seq)
+        self.last_event_ts = time.monotonic()
         return True
 
     def bind_stream(self, stream_id: str | None) -> None:
@@ -254,6 +259,7 @@ class HanakoSessionManager:
         request_timeout: float = 15.0,
         reply_timeout: float = 180.0,
         mirror_external_replies: bool = True,
+        activity_timeout: float = 60.0,
     ):
         self.ws_client = ws_client
         self.base_url = (base_url or ws_client.base_url).rstrip("/")
@@ -261,6 +267,11 @@ class HanakoSessionManager:
         self.request_timeout = max(1.0, float(request_timeout))
         self.reply_timeout = max(1.0, float(reply_timeout))
         self.mirror_external_replies = bool(mirror_external_replies)
+        # 活跃超时：turn 在 reply_timeout 墙内只要持续收到事件（tool_*/text_delta/
+        # thinking_*），就按此窗口顺延。避免"服务端工具链（play→tts→tts_bus 等
+        # 慢工具）>180s"被固定超时墙误杀，导致最终回复没回灌桌宠（Bug A）。
+        # send_and_wait 的超时墙同样按活跃窗口顺延。默认 60s；下限 0.5s 仅防病态配置。
+        self.activity_timeout = max(0.5, float(activity_timeout))
         self._http = requests.Session()
 
         self._lock = threading.RLock()
@@ -472,14 +483,36 @@ class HanakoSessionManager:
             display_text=display_text,
             ui_context=ui_context,
         )
-        try:
-            return future.result(timeout=max(1.0, float(timeout)))
-        except FutureTimeoutError:
-            with self._lock:
-                turn = next((item for item in self._unique_pending_locked() if item.future is future), None)
-            if turn is not None:
+        # Bug A 修复：超时改为"活跃窗口顺延"——服务端工具链（play→tts→tts_bus 等
+        # 慢工具）期间 turn 持续收到 tool_*/text_delta 事件，deadline 随最近活动顺延，
+        # 不再被固定的 timeout 墙误杀。真正超时（长时间无事件）时先尝试从会话历史
+        # 恢复最终回复（云端有文本，只是 WS 没送达），恢复失败才判失败。
+        deadline = time.monotonic() + max(1.0, float(timeout))
+        while True:
+            try:
+                return future.result(timeout=max(0.1, deadline - time.monotonic()))
+            except FutureTimeoutError:
+                with self._lock:
+                    turn = next(
+                        (item for item in self._unique_pending_locked() if item.future is future),
+                        None,
+                    )
+                if turn is None:
+                    return future.result(timeout=1.0)
+                now = time.monotonic()
+                last = getattr(turn, "last_event_ts", 0.0)
+                if last and (now - last) < self.activity_timeout:
+                    deadline = now + self.activity_timeout
+                    continue
+                # 超时前先尝试从历史恢复最终回复（工具结果/最终文本在云端历史里）
+                try:
+                    self._recover_from_history(turn)
+                except Exception:
+                    pass
+                if turn.done:
+                    return future.result(timeout=1.0)
                 self._finish_with_error(turn, f"Hanako reply timed out after {timeout:g}s")
-            return future.result(timeout=1.0)
+                return future.result(timeout=1.0)
 
     def abort(self, session: SessionRef, reason: str = "user_abort") -> bool:
         with self._lock:
@@ -667,7 +700,7 @@ class HanakoSessionManager:
         if turn.done:
             return
         try:
-            history = self.get_history(turn.session, limit=20)
+            history = self.get_history(turn.session, limit=30)
             messages = list(history.messages)
             start = -1
             expected = (turn.display_text or turn.prompt_text).strip()
@@ -679,10 +712,32 @@ class HanakoSessionManager:
                 if not expected or content == expected:
                     start = index
                     break
-            assistant = next(
-                (message for message in messages[start + 1:] if message.get("role") == "assistant"),
-                None,
-            )
+            if start < 0:
+                # 精确匹配失败（如服务端历史存了带 [pet-context] 前缀的完整文本）：
+                # 退而取**最后一条** user 消息之后的区间（单轮场景下就是我们这条 prompt）。
+                for index in range(len(messages) - 1, -1, -1):
+                    if messages[index].get("role") == "user":
+                        start = index
+                        break
+            # Bug A 修复：取用户消息之后**最后一条**有正文的 assistant 消息。
+            # 工具调用轮历史里第一条 assistant 消息往往是 tool_call 决策（content 空
+            # 或只有"我来播放"），最终回复在最后一条——取最后一条有内容的才回灌正确文本。
+            candidate_span = messages[start + 1:] if start >= 0 else messages
+            assistant = None
+            for message in reversed(candidate_span):
+                if message.get("role") != "assistant":
+                    continue
+                content = str(message.get("content") or "").strip()
+                # 工具调用决策消息常带 tool_calls 而 content 为空——跳过
+                if not content:
+                    continue
+                assistant = message
+                break
+            if assistant is None and start >= 0:
+                assistant = next(
+                    (message for message in candidate_span if message.get("role") == "assistant"),
+                    None,
+                )
             if assistant is None:
                 self._finish_with_error(turn, "Stream ended before reply history was available")
                 return
@@ -799,12 +854,48 @@ class HanakoSessionManager:
     def _finish_with_error(self, turn: TurnAccumulator, message: str) -> None:
         if turn.done:
             return
+        # 诊断：记录 turn 在失败时刻的状态（文本/工具事件数），便于区分
+        # "WS 没送达最终回复" 与 "服务端根本没生成"（Bug A 排查）。
+        logger.warning(
+            "[SM] turn failed: %s | text_parts=%d tool_events=%d seq=%d last_event=%.1fs ago",
+            message, len(turn.text_parts), len(turn.tool_calls),
+            turn.last_seq,
+            time.monotonic() - getattr(turn, "last_event_ts", time.monotonic()),
+        )
         turn.error = message
         turn.state = TurnState.FAILED
         self._complete_turn(turn)
 
     def _expire_turn(self, turn: TurnAccumulator) -> None:
-        self._finish_with_error(turn, f"Hanako reply timed out after {self.reply_timeout:g}s")
+        """超时定时器回调：活跃则顺延，否则先尝试历史恢复，再判失败。
+
+        Bug A 修复：服务端工具链（play→tts→tts_bus 等）可能远超 reply_timeout，
+        只要 turn 持续收到事件就顺延活动窗口；长时间无事件才真正超时，并且
+        超时前先从会话历史恢复最终回复（云端有文本，只是 WS 没送达）。
+        """
+        if turn.done:
+            return
+        now = time.monotonic()
+        last = getattr(turn, "last_event_ts", 0.0)
+        if last and (now - last) < self.activity_timeout:
+            with self._lock:
+                turn.timeout_timer = threading.Timer(
+                    self.activity_timeout, self._expire_turn, args=(turn,)
+                )
+                turn.timeout_timer.daemon = True
+                turn.timeout_timer.start()
+            return
+        try:
+            self._recover_from_history(turn)
+        except Exception:
+            pass
+        if turn.done:
+            return
+        self._finish_with_error(
+            turn,
+            f"Hanako reply timed out after {self.reply_timeout:g}s "
+            f"(no activity for {self.activity_timeout:g}s)",
+        )
 
     def _remove_turn_locked(self, turn: TurnAccumulator) -> None:
         for mapping in (self._pending_by_session, self._pending_by_client, self._pending_by_stream):

@@ -72,7 +72,8 @@ def build_vision_prompt(app: str = "", title: str = "") -> str:
         return VISION_PROMPT
     window_hint = (
         f"\n[当前窗口] 进程={app or '未知'}, 标题={title or '未知'}\n"
-        "规则：优先结合窗口名判断用户在做什么；窗口名与截图内容矛盾时以窗口名为准，并说明判断依据。"
+        "规则：窗口标题是最准确的信息，截图可能包含残留图标、菜单、无关窗口区域。"
+        "窗口标题与截图内容矛盾时，绝对以窗口标题为准，并说明判断依据。"
     )
     return VISION_PROMPT + window_hint
 
@@ -228,6 +229,12 @@ class ScreenPerception:
         self._llm_enrich: bool = True                        # LLM 语义增强开关（config screen.llm_enrich）
         self._enrich_provider: callable | None = None        # callable(prompt) -> str | None（走 Hanako source="screen_enrich"）
         self.on_scene: callable = lambda scene: None         # 场景分类回调（规则结果，与 on_update 同线程）
+        # 429 限流缓解：LLM 语义增强冷却（秒）。视觉分析每次截图本来就打一次 API，
+        # 若每次成功都再打一次 enrich，等于每 2 分钟 2 次 LLM 请求——高频期很容易 429。
+        # 默认 300s：场景未变化时最多 5 分钟打一次 enrich；场景变化立即补一次（保持灵敏）。
+        self._enrich_cooldown: int = 300
+        self._last_enrich_at: float = 0.0
+        self._last_enriched_scene: str = ""
 
     @property
     def last_description(self) -> str:
@@ -271,6 +278,36 @@ class ScreenPerception:
         source="screen_enrich")`` 返回文本；None=关闭增强（纯规则分类）。
         """
         self._enrich_provider = provider
+
+    def set_enrich_cooldown(self, seconds: int) -> None:
+        """配置 LLM 语义增强冷却（秒，429 限流缓解）。
+
+        场景未变化时最多每 ``seconds`` 秒补一次 enrich；场景变化立即补（保持灵敏）。
+        过小输入（<30）钳到 30s 下限（避免把感知增强彻底关掉）；
+        无效（非数字/空）回退默认 300s。
+        """
+        try:
+            val = int(seconds or 300)
+        except (TypeError, ValueError):
+            val = 300
+        self._enrich_cooldown = max(30, val)
+
+    def _should_enrich(self, scene: ScreenScene | None, now: float) -> bool:
+        """是否应发起一次 LLM 语义增强（冷却 + 场景变化判断）。
+
+        Returns:
+            True=放行（并已记录本次 enrich 时间/场景，供下次判断）。
+        """
+        if scene is None:
+            return False
+        scene_changed = (scene.scene or "") != getattr(self, "_last_enriched_scene", "")
+        if scene_changed or (now - self._last_enrich_at >= self._enrich_cooldown):
+            self._last_enrich_at = now
+            self._last_enriched_scene = scene.scene or ""
+            return True
+        logger.debug("Screen enrich skipped (cooldown %.0fs, scene '%s' unchanged)",
+                     self._enrich_cooldown, scene.scene)
+        return False
 
     def _classify_activity(self, activity: ActivityEvent, app: str, title: str) -> ScreenScene:
         """对一次 ActivityEvent 做纯规则场景分类（P1-6）。
@@ -667,7 +704,9 @@ class ScreenPerception:
                             self.on_scene(scene)
                         except Exception as e:
                             logger.debug("on_scene callback failed: %s", e)
-                        if self._llm_enrich:
+                        # LLM 语义增强：加冷却（429 限流缓解）——场景变化立即补一次，
+                        # 场景未变化时最多每 _enrich_cooldown 秒补一次，避免每次截图都打 LLM。
+                        if self._llm_enrich and self._should_enrich(scene, time.time()):
                             self._launch_enrichment(activity, scene, app or "", title or "")
                     self._consecutive_failures = 0
                     self._consecutive_empty = 0  # 成功一次即重置空响应计数

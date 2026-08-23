@@ -99,10 +99,10 @@ MOUSE_REACTIONS = {
 # ─── 惯性运动常量 ───────────────────────────────────────
 
 PHYSICS_INTERVAL = 30          # 物理更新间隔 (ms)，≈33fps
-INERTIA_FACTOR = 0.90          # 惯性保持 (0-1, 越高越滑)
+INERTIA_FACTOR = 0.86          # 惯性保持 (0-1, 越高越滑；P3: 0.90→0.86 行走更稳不滑头)
 INTENT_FACTOR = 0.10           # 目标牵引力 (0-1)
 ARRIVAL_DISTANCE = 6           # 到达判定距离 (px)
-WALK_SPEED_BASE = 4.0          # 基础走路速度 (px/帧)
+WALK_SPEED_BASE = 3.2          # 基础走路速度 (px/帧; P3: 4.0→3.2 更从容)
 
 # ─── 弹跳物理常量 ───────────────────────────────────────
 

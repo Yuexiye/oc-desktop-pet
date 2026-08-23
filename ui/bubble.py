@@ -91,9 +91,9 @@ class ChatBubble(QWidget):
             self._shadow_color = self._color("shadow")
             mgr.theme_changed.connect(self.set_theme)
 
-        # 淡入动画
+        # 淡入动画（P3：250ms→170ms，反馈更跟手）
         self._fade_anim = QPropertyAnimation(self, b"windowOpacity")
-        self._fade_anim.setDuration(250)
+        self._fade_anim.setDuration(170)
         self._fade_anim.setStartValue(0.0)
         self._fade_anim.setEndValue(1.0)
 
@@ -169,13 +169,14 @@ class ChatBubble(QWidget):
         self._fade_anim.stop()
         self._fade_anim.start()
 
+        # P3：短文本更快出字（28ms/字符），长文本 8ms/字符，交互反馈不拖沓
         length = len(text)
         if length <= 8:
-            speed = 42
+            speed = 28
         elif length >= 80:
-            speed = 10
+            speed = 8
         else:
-            speed = 42 - (length - 8) * (42 - 10) / (80 - 8)
+            speed = 28 - (length - 8) * (28 - 8) / (80 - 8)
         self._typewriter_speed = int(speed)
 
         if length > 0:

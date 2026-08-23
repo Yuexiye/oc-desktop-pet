@@ -332,7 +332,18 @@ class SpriteRenderer(AvatarRenderer):
             if frames:
                 self._frames[seq_name] = frames
                 self._frame_tops[seq_name] = tops
-                logger.info("Loaded %s: %d frames", seq_name, len(frames))
+                # P5：frames 模式也读 pet.json 的 animations.fps。之前缺失导致
+                # _seq_fps 为空 → play_anim 回退 330ms/250ms 硬编码（≈3~4fps），
+                # 帧动画看起来"钝"的根源。现在角色配置多少 fps 就播多快。
+                fps = None
+                if meta:
+                    try:
+                        fps = (meta.get('animations', {}) or {}).get(seq_name, {}).get('fps')
+                    except Exception:
+                        fps = None
+                if fps and int(fps) > 0:
+                    self._seq_fps[seq_name] = int(fps)
+                logger.info("Loaded %s: %d frames fps=%s", seq_name, len(frames), fps or 'default')
 
         # 确保 idle 存在作为默认序列
         if "idle" not in self._frames and self._frames:
@@ -697,6 +708,17 @@ class SpriteRenderer(AvatarRenderer):
 
         返回的是**基准值**（不乘 scale）：PetWindow.fit_window_to_model 会
         统一应用 _pet_scale（与 Live2D 路径语义一致，避免双重缩放）。
+        """
+        base_w, base_h = self._get_frame_size()
+        pad_w = max(14, int(base_w * 0.15))
+        pad_h = max(26, int(base_h * 0.15))
+        return (base_w + pad_w, base_h + pad_h)
+
+    def calc_ideal_window_size(self) -> tuple[int, int]:
+        """返回精灵图模式下建议的窗口尺寸（帧尺寸 + 15% 边距）。
+
+        Live2D 用 bbox 贴合走 _fit_window_to_model，不调用此方法。
+        避免窗口远大于精灵图（P7 修复）。
         """
         base_w, base_h = self._get_frame_size()
         pad_w = max(14, int(base_w * 0.15))

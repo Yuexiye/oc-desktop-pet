@@ -131,7 +131,19 @@ APP_CATEGORY_MAP: dict[str, str] = {
 
 def classify_app(process_name: str) -> str:
     """根据进程名分类应用"""
-    return APP_CATEGORY_MAP.get(process_name, "other")
+    direct = APP_CATEGORY_MAP.get(process_name, "other")
+    if direct != "other":
+        return direct
+    # P6: 模糊匹配兜底——不依赖精确 exe 名，覆盖鸣潮/星穹/崩坏/原神等中英文进程名
+    low = str(process_name).lower()
+    GAME_KEYWORDS = (
+        "wuthering", "鸣潮", "starrail", "星穹", "genshin", "yuanshen",
+        "原神", "崩坏", "bh3", "honkai", "zzz", "绝区零", "minecraft",
+        "dota", "lol", "valorant", "apex", "csgo", "cs2", "elden", "steam",
+    )
+    if any(k in low for k in GAME_KEYWORDS):
+        return "gaming"
+    return "other"
 
 
 # ── 情绪映射 ─────────────────────────────────────────────

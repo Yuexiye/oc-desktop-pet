@@ -45,6 +45,13 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "highlight_duration": 30
     },
+    "asr": {
+        "provider": "whisper_local",
+        "backend": "faster_whisper",
+        "model": "small",
+        "language": "zh",
+        "device": ""
+    },
     "tts": {
         "enabled": True,
         "volume": 0.8,
@@ -179,6 +186,18 @@ DEFAULT_CONFIG = {
         "auth_token": "",
         "allow_set_mode": False,
     },
+    # P4 通用外部触发入口（默认关；开启后 127.0.0.1:8988 接收 POST /trigger）。
+    # 任何外部调度器可推送动作触发（remind/say/praise/custom），桌宠自身本地
+    # 提醒保持自包含；这是可选附加入口，不绑定任何特定调度器或个人任务。
+    "external_trigger": {
+        "enabled": False,
+        "port": 8988,
+        "auth_token": "",
+    },
+    # P6 插件工具（默认关：plugins/ 目录为空时保留接口但不扫，避免误导用户以为可用）
+    "plugin_tools": {
+        "enabled": False,
+    },
     # P1-5 反重复（语义指纹 + 时间窗去重）：阈值与 N.E.K.O. session_settings 一致，
     # 可在此覆盖；关闭 enabled 后 proactive 仅保留字符串相似去重（旧行为）
     "anti_repeat": {
@@ -202,6 +221,9 @@ DEFAULT_CONFIG = {
         # LLM 语义增强开关（默认开）：未注入 provider 时自动退化为纯规则分类；
         # 增强失败/超时/解析错误 → 保留规则结果，不阻塞感知
         "llm_enrich": True,
+        # 429 限流缓解：LLM 语义增强冷却（秒）。场景未变化时最多每 N 秒补一次，
+        # 避免"每次截图 = 视觉 API + enrich LLM 两次请求"打满限流；场景变化立即补。
+        "llm_enrich_cooldown": 300,
     },
 }
 
@@ -226,8 +248,8 @@ CHARACTER_INFO = {
 #          起始/结束为 None 时使用全序列
 EXPRESSION_MAP = {
     "happy":      ("waving",   None, None),  # 开心 -> 挥手
-    "surprised":  ("jumping",  None, None),  # 惊讶 -> 跳跃
-    "angry":      ("jumping",  None, None),  # 生气 -> 复用跳跃（激烈动作）
+    "surprised":  ("surprise", None, None),  # 惊讶 -> 专属惊讶帧（P5：不再复用 jumping）
+    "angry":      ("angry",    None, None),  # 生气 -> 专属生气帧（P5）
     "sad":        ("failed",   None, None),  # 悲伤 -> 失败（低落动画）
     "thinking":   ("waiting",  None, None),  # 思考 -> 等待（张望）
     "working":    ("review",   None, None),  # 工作 -> 审阅

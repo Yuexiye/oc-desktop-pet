@@ -7,9 +7,9 @@
 QWidget {
     background: #0c0e1c;
     color: #e8ecf5;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
-                 "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI",
-                 "Helvetica Neue", Arial, sans-serif;
+    font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei",
+                 "PingFang SC", "Hiragino Sans GB", "Helvetica Neue",
+                 Arial, sans-serif;
     font-size: 13px;
 }
 

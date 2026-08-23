@@ -79,6 +79,18 @@ def _make_handler(perception: 'PhoneActivityPerception', auth_token: str):
             try:
                 perception.add_activity(app_name, event)
                 logger.info("Phone activity: app=%s event=%s", app_name, event)
+                # P6: 同时转发到通用外部触发事件总线
+                try:
+                    from core.event_bus import EventBus
+                    EventBus.emit(
+                        "external_trigger",
+                        action="custom",
+                        text=f"手机显示在用 {app_name}（{event}）",
+                        emotion="neutral",
+                        source="phone",
+                    )
+                except Exception:
+                    pass
                 self._send_json(200, {'ok': True, 'app': app_name, 'event': event})
             except Exception as e:
                 logger.warning("Phone activity error: %s", e)

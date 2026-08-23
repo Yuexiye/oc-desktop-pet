@@ -76,7 +76,8 @@ class PluginPanel(QDialog):
         self._ui_theme = mgr.current if mgr else "dark"
 
         # 玻璃卡：无边框 + 透明窗 + 居中玻璃容器 + 软阴影
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        # P7: 显式 Qt.Window 标记顶级窗口（防止挂在特殊 parent 下不显示）
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Window)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setWindowOpacity(1.0)
         self.setStyleSheet(_build_style(self._ui_theme))

@@ -409,12 +409,32 @@ class HanakoPetAdapter:
                 raise HanakoUnavailableAfterSend(f"send_and_wait raised: {e}") from e
 
         if getattr(result, "error", None):
+            # Bug A 兜底：turn 失败（超时/异常）但工具确实在云端执行了——
+            # 用已记录的工具结果合成一句可显示的回复，避免用户只看到"…"。
+            # 注意这不是 fallback 到本地 LLM（不会双执行），只是把云端工具结果上屏。
+            synthesized = self._synthesize_reply_from_tools(
+                getattr(result, "tool_calls", ()) or ()
+            )
+            if synthesized:
+                logger.info("Hanako turn 失败但工具已执行，用工具结果兜底: %s", synthesized[:60])
+                return synthesized, "neutral"
             raise HanakoUnavailableAfterSend(f"reply error: {result.error}")
         if getattr(result, "aborted", False):
             return "(对话被打断了)", "neutral"
 
         reply_text = (getattr(result, "text", "") or "").strip()
         cleaned, emotion = self.parse_emotion(reply_text)
+        if not cleaned or cleaned in ("…", "...", "..."):
+            # Bug A 修复：工具轮若最终文本为空/“…”（WS 没送达最终回复，或服务端
+            # 工具链把最终文本放在 tool_end 的 details 里），用最后成功的工具结果
+            # 合成一句有意义的回复，避免桌宠只显示“…”的空话。
+            synthesized = self._synthesize_reply_from_tools(
+                getattr(result, "tool_calls", ()) or ()
+            )
+            if synthesized:
+                cleaned = synthesized
+                if emotion == "neutral":
+                    emotion = "happy"
         if not cleaned:
             cleaned = "…"
             if emotion == "neutral":
@@ -441,6 +461,34 @@ class HanakoPetAdapter:
             pass
 
         return cleaned, emotion
+
+    @staticmethod
+    def _synthesize_reply_from_tools(tool_calls) -> str:
+        """工具轮最终文本缺失时，从工具执行结果合成一句可显示的回复。
+
+        取最后一条成功（phase=end 且 success 非 False）的工具：
+          - 优先用 tool_end 事件 details 里的结果文本（服务端常把工具输出放这里）
+          - 其次用工具名生成"已完成「xx」"占位
+        返回空串表示无可合成内容（调用方回退默认）。
+        """
+        if not tool_calls:
+            return ""
+        for tc in reversed(list(tool_calls)):
+            if not isinstance(tc, dict):
+                continue
+            if tc.get("phase") == "end" and tc.get("success") is False:
+                continue
+            name = str(tc.get("name") or tc.get("tool") or "")
+            details = tc.get("details")
+            if isinstance(details, dict):
+                text = str(details.get("text") or details.get("content") or "").strip()
+                if text:
+                    return text[:120]
+            elif isinstance(details, str) and details.strip():
+                return details.strip()[:120]
+            if name:
+                return f"已为你完成「{name}」"
+        return ""
 
     @staticmethod
     def parse_emotion(text: str) -> tuple:

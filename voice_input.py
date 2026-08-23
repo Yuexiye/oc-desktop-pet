@@ -128,8 +128,15 @@ class VoiceInput:
     CHANNELS = 1
     DTYPE = np.float32
 
-    def __init__(self, asr_provider=None):
+    def __init__(self, asr_provider=None, device=None):
+        """
+        Args:
+            asr_provider: ASR provider 实例
+            device: 录音设备 ID（sounddevice 索引或子串），空/None 用系统默认。
+                    2026-08-22 新增：解决默认设备不是麦克风导致录不到人声的问题。
+        """
         self._asr = asr_provider
+        self._device = device
         self._recording = False
         self._audio_data: list[np.ndarray] = []
         self._stream = None
@@ -141,6 +148,16 @@ class VoiceInput:
         self._vad_speech_audio: list = []  # 语音段缓存
         self._vad_silent_frames = 0  # 连续静音帧计数
         self._vad_callback: callable = None  # 语音段结束回调
+
+        # 解析 device 字段（空字符串 → None → 系统默认）
+        if device is None or (isinstance(device, str) and not device.strip()):
+            self._device_idx = None
+        else:
+            # 支持两种写法：纯数字索引（"1"）或设备名子串（"麦克风 (Realtek"）
+            if isinstance(device, str) and device.strip().isdigit():
+                self._device_idx = int(device.strip())
+            else:
+                self._device_idx = device  # 交给 sounddevice 按名称/索引解析
 
     @property
     def is_recording(self) -> bool:
@@ -163,9 +180,11 @@ class VoiceInput:
         self._on_status("正在录音... 再点一次停止")
 
         try:
+            # 指定录音设备：空/None → 系统默认；否则用配置的设备索引/名称
             self._stream = sd.Stream(
                 samplerate=self.SAMPLE_RATE,
                 channels=self.CHANNELS,
+                device=self._device_idx,
                 dtype=self.DTYPE,
                 callback=self._audio_callback,
             )

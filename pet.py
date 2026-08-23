@@ -481,7 +481,12 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self._voice_continuous_silence = 0      # 连续静音帧计数
         self._voice_continuous_started = False  # 是否已检测到语音开始
         if _voice_available:
-            self._voice_input = VoiceInput(asr_provider=asr_provider)
+            # 传入 config.asr.device（默认空=系统默认麦克风；2026-08-22 新增）
+            _asr_cfg = self.config.get("asr", {}) or {}
+            self._voice_input = VoiceInput(
+                asr_provider=asr_provider,
+                device=_asr_cfg.get("device", ""),
+            )
             self._voice_input._on_status = self._on_voice_status
             # 持续监听：VAD 回调（每帧音频数据到达时触发）
             self._voice_input.set_vad_callback(self._on_voice_vad)
@@ -792,6 +797,14 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
             screen_cfg = self.config.get("screen", {}) or {}
             llm_enrich = bool(screen_cfg.get("llm_enrich", True))
             screen.set_llm_enrich(llm_enrich)
+            # 429 限流缓解：LLM 语义增强冷却（秒）。场景未变化时最多每 N 秒补一次，
+            # 避免"每次截图 = 视觉 API + enrich LLM 两次请求"的高频打满限流。
+            # hasattr 兜底：兼容未实现该方法的 duck-typed screen（测试 fake 等）。
+            try:
+                if hasattr(screen, "set_enrich_cooldown"):
+                    screen.set_enrich_cooldown(int(screen_cfg.get("llm_enrich_cooldown", 300) or 300))
+            except Exception:
+                pass
             adapter = getattr(getattr(self, "_engine", None), "_adapter", None)
             if llm_enrich and adapter is not None:
                 def _screen_enrich_provider(prompt: str):
@@ -1186,6 +1199,9 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
             # F：启动本地状态口（默认关）
             self._status_http = None
             self._init_status_http()
+            # P4：启动通用外部触发入口（默认关）
+            self._external_trigger = None
+            self._init_external_trigger()
             # 前台分类活动 → 记忆（常做的事）
             if hasattr(self, '_foreground_watcher'):
                 self._foreground_watcher.on_change = self._on_foreground_change_with_memory
@@ -1258,6 +1274,72 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         except Exception as e:
             logger.warning("F 本地状态口启动失败（非致命）: %s", e)
             self._status_http = None
+
+    # ── P4：通用外部触发入口（默认关；复用 status_http 范式）──
+
+    def _init_external_trigger(self):
+        """按 config.external_trigger.enabled 启动通用外部触发接收器（默认关）。
+
+        任何外部调度器 POST /trigger 推送给桌宠，回调经 QTimer 转主线程后
+        驱动气泡 + 情绪动画；桌宠本地提醒保持自包含，此入口纯通用附加。
+        """
+        try:
+            et_cfg = self.config.get("external_trigger", {}) or {}
+            if not et_cfg.get("enabled", False):
+                return
+            from core.external_trigger_receiver import ExternalTriggerReceiver
+            from core.event_bus import EventBus
+            # P6: 订阅 EventBus 上的 external_trigger 事件（与 phone_receiver 共享）
+            def _on_external_trigger_event(action, text, emotion, source="unknown"):
+                try:
+                    from PySide6.QtCore import QTimer
+                    QTimer.singleShot(0, lambda: self._apply_external_trigger(action, text, emotion, source))
+                except Exception as e:
+                    logger.warning("外部触发调度失败（via EventBus）: %s", e)
+            self._ext_trigger_event_handler = _on_external_trigger_event
+            EventBus.on("external_trigger", _on_external_trigger_event)
+            self._external_trigger = ExternalTriggerReceiver(
+                on_trigger=lambda a, t, e: None,  # 已改走 EventBus，on_trigger 空操作
+                auth_token=et_cfg.get("auth_token", ""),
+                port=int(et_cfg.get("port", 8988) or 8988),
+            )
+            self._external_trigger.start()
+            logger.info("P4/P6 通用外部触发入口已启动: port=%s, EventBus 已订阅", et_cfg.get("port", 8988))
+        except Exception as e:
+            logger.warning("P4 通用外部触发入口启动失败（非致命）: %s", e)
+            self._external_trigger = None
+
+    def _on_external_trigger(self, action: str, text: str, emotion: str):
+        """外部触发回调（HTTP 线程）→ QTimer 转主线程应用。"""
+        try:
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: self._apply_external_trigger(action, text, emotion))
+        except Exception as e:
+            logger.warning("外部触发调度失败: %s", e)
+
+    def _apply_external_trigger(self, action: str, text: str, emotion: str, source: str = "unknown"):
+        """主线程应用外部触发：气泡 + 情绪动画（非致命包裹）。"""
+        try:
+            emo = emotion or "neutral"
+            if text:
+                self._show_bubble(text, emotion=emo)
+            if emo != "neutral" and hasattr(self, "_set_surface_emotion"):
+                self._set_surface_emotion(emo, duration_ms=2500)
+            logger.info("外部触发 [%s]: action=%s source=%s text=%s", action, action, source, text[:30])
+        except Exception as e:
+            logger.warning("外部触发应用失败: %s", e)
+
+    def trigger(self, text: str, action: str = "custom", emotion: str = ""):
+        """公共入口：从任意线程发起外部触发（work/任务/内部事件均可调）。
+
+        用途：内部模块（如 work 完成）可直接调用 window.trigger(...) 而不需要
+        持有 HTTP 句柄。内部经 EventBus 转发到统一处理逻辑。
+        """
+        try:
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: self._apply_external_trigger(action, text, emotion or "neutral"))
+        except Exception as e:
+            logger.warning("window.trigger 调度失败: %s", e)
 
     def _status_snapshot(self) -> dict:
         """状态快照（F GET /pet/state 只读输出）。"""
@@ -1810,13 +1892,14 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
 
     def _recalc_geometry(self):
         """缩放后重算窗口和角色图片尺寸(保持窗口中心不变)"""
-        # 基准尺寸来自 _setup_window 读的 config.window（默认 458x520）。
-        # 放大后角色更大更清晰。setFixedSize 默认左上角锚定（向右下扩展），
-        # 会让模型中心漂移；这里先记中心，resize 后对齐回原位置。
-        # 注意：不能用 max(base_w, ...)——那会让 scale<1 时窗口被拉回基准宽，
-        # 用户滚轮缩不下去（"只能缩小到那么大"）。改用 60px 安全下限防缩没。
-        w = max(60, int(self._base_w * self._pet_scale))
-        h = max(60, int(self._base_h * self._pet_scale))
+        # P7: 精灵图模式下用 calc_ideal_window_size 算窗口尺寸，而非 458x520 默认
+        # （精灵图帧尺寸+15%边距，比默认窗口小得多，避免窗口远大于精灵图的问题）
+        if hasattr(self._renderer, "calc_ideal_window_size"):
+            base_w, base_h = self._renderer.calc_ideal_window_size()
+        else:
+            base_w, base_h = self._base_w, self._base_h
+        w = max(60, int(base_w * self._pet_scale))
+        h = max(60, int(base_h * self._pet_scale))
         _center = self.frameGeometry().center()
         self.setFixedSize(w, h)
         if self.isVisible():
@@ -2319,9 +2402,30 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
 
     def _open_plugin_panel(self):
         """打开插件面板"""
-        from ui.plugin_panel import PluginPanel
-        panel = PluginPanel(on_send_command=self._send_plugin_command, parent=self)
-        panel.exec()
+        # 无条件日志：确认菜单项是否真的触发到本函数（R3-4 诊断）
+        logger.info("打开插件面板请求被触发")
+        try:
+            from ui.plugin_panel import PluginPanel
+            logger.info("PluginPanel 构造中...")
+            # parent=None：不挂在 PetWindow 下。PetWindow 是 WS_EX_LAYERED/
+            # WS_EX_TRANSPARENT 的特殊透明窗口（且带鼠标穿透），以此为 parent 的
+            # 对话框会被约束/穿透，导致“exec 在跑但窗口不显示”。独立窗口最干净。
+            panel = PluginPanel(on_send_command=self._send_plugin_command)
+            logger.info("PluginPanel 构造成功，显式显示")
+            panel.show()
+            panel.raise_()
+            panel.activateWindow()
+            logger.info("开始 exec")
+            panel.exec()
+            logger.info("PluginPanel 已关闭")
+        except Exception as e:
+            # 异常若被 Qt 信号处理器吞掉，用户看到“点了没反应”且日志无记录。
+            # 这里兜底：记录完整堆栈 + 气泡提示，让问题可见。
+            logger.exception("打开插件面板失败: %s", e)
+            try:
+                self._show_bubble("插件面板打开失败", emotion="sad")
+            except Exception:
+                pass
 
     def _send_plugin_command(self, text: str):
         """从插件面板发送指令到对话引擎"""
