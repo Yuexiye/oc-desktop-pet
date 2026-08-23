@@ -3,22 +3,45 @@
 注意：仅直连模式 (transport_mode=direct) 使用。
 Hanako WS 模式下工具由服务端执行，不需要本地路由。
 
-快速路径：用户说"放首歌" → 匹配 play_music → 直接调用 audio_player.play()
+快速路径：用户说"暂停一下" → 匹配 pause_music → 直接调用 audio_bus
 LLM 路径：匹配失败 → 回退到 LLM 选工具
+
+设计决策（2026-08-2x R3 架构收敛）：
+- **搜索/网页/图库/RSS/B站/待办/时间统计一律走 Hanako LLM 自动选工具**，
+  oc-pet 不静态绑定 Hanako 插件。这些能力原先是 oc-pet 侧写 pattern + 参数提取
+  替 Hanako 插件"抢活"——web_search（tavily-usage-monitor/tavily_search）、
+  fetch_webpage/save_webpage（webpage-archiver）、search_images（hanako-gallery）、
+  check_feeds（hanako-rss）、search_bilibili（hanako-bilibili-intake）、
+  list_todos（todo-list）、time_stats（hana-time-tracker）已全部从 CAPABILITIES 移除。
+  相关触发词（"搜一下"/"查一下"等）不再被本地静态路由拦截，交给 Hanako 端 LLM
+  按工具名+描述+参数 schema 语义自动选工具（Hanako 插件工具由 Hanako 服务端执行，
+  oc-pet 只做消息转发 + WS 事件回灌气泡/TTS）。
+- play_music 保留**收窄版**随机播放（Bug B 修复的过渡方案）：只匹配明确的随机
+  播放意图（随机放/随便放/来一首），本地直接从 hanako-audio-player 音乐库
+  （~/.hanako/plugin-data/.../playlist.json）随机选一首真实可播曲目调 play 工具。
+  pattern 不含"播放"/"暂停"等通用词；带具体歌名/歌手时 _handle_internal 检测
+  余量内容返回 None 让位给 LLM（不拦截"播放周杰伦的晴天"）。
+- 保留 pause/resume/next/state/clear：这些是确定性动作（audio_bus 固定 action
+  参数），本地直达又快又准，不劳烦 LLM。
+- 其余自然语言（"播首歌"/"播放周杰伦的晴天"/"搜一下XXX"）走 LLM 工具调用路径：
+  LLM 自动选择对应插件工具并传参，像 Hana 原界面一样自然。
 
 用法:
     from core.capability_registry import CapabilityRouter
     router = CapabilityRouter(perception, tool_registry, tool_executor)
-    result = router.route("放首歌 周杰伦的晴天")
+    result = router.route("暂停一下")
     if result:
         # 直接执行，不走 LLM
         on_reply(result.text, result.emotion, result.anim, result.audio_path)
 """
 from __future__ import annotations
 
+import json
 import logging
+import random
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional, Callable, Any
 
 logger = logging.getLogger(__name__)
@@ -27,8 +50,8 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Capability:
     """一个可路由的能力"""
-    name: str                       # 唯一标识 "play_music"
-    patterns: list[str]             # 触发词 ["放歌", "播放", "放一首"]
+    name: str                       # 唯一标识，如 "pause_music"
+    patterns: list[str]             # 触发词，如 ["暂停", "暂停播放", "停一下"]
     handler: str                    # 处理方式 "tool" / "internal"
     tool_name: str = ""             # 工具名（handler=tool 时）
     plugin_id: str = ""             # 插件 ID（handler=tool 时）
@@ -49,63 +72,27 @@ class RouteResult:
     tool_result: str = ""           # 工具执行结果
 
 
-# ── 参数提取函数 ──────────────────────────────────────────
-
-def _extract_song_name(text: str) -> dict:
-    """从文本中提取歌名"""
-    # 去掉触发词
-    triggers = ["放歌", "播放", "放一首", "来首", "听", "play", "给我放", "来点"]
-    cleaned = text
-    for t in triggers:
-        cleaned = cleaned.replace(t, "").strip()
-    # 去掉"的"
-    cleaned = cleaned.replace("的", "").strip()
-    if cleaned:
-        return {"source": cleaned}
-    return {}
-
-
-def _extract_search_query(text: str) -> dict:
-    """从文本中提取搜索关键词"""
-    triggers = ["搜", "搜索", "搜一下", "查", "查一下", "search", "帮我搜", "帮我查"]
-    cleaned = text
-    for t in triggers:
-        cleaned = cleaned.replace(t, "").strip()
-    if cleaned:
-        return {"query": cleaned}
-    return {}
-
-
-def _extract_url(text: str) -> dict:
-    """从文本中提取 URL"""
-    url_match = re.search(r'https?://\S+', text)
-    if url_match:
-        return {"url": url_match.group()}
-    return {}
-
-
 # ── 能力定义 ──────────────────────────────────────────────
 
 CAPABILITIES: list[Capability] = [
     # ── 音乐 ──
+    # 注意：play_music 于 2026-08-23 重新恢复（收窄版）。上一轮移除它是因为
+    # pattern 太宽（'play'/'播放'）会拦截"播放周杰伦的晴天"等自然语言并把歌名
+    # 乱传给 play 工具。本轮恢复只覆盖**明确的随机播放意图**（随机/随便/来一首），
+    # 本地直接从 hanako-audio-player 音乐库随机选一首真实可播的曲目调用 play 工具，
+    # 不再让 LLM 瞎传 source（Bug B：日志里 play 收到过 source="随便放首歌"）。
+    # pattern 不含"播放"/"暂停"等通用词，避免拦截"播放进度/暂停"等表达；
+    # 有具体歌名/歌手的请求（如"来一首周杰伦的晴天"）在 _handle_internal 里
+    # 检测到余量内容会返回 None 让位给 LLM。search_music 保持移除状态不恢复。
     Capability(
         name="play_music",
-        patterns=["放歌", "放首歌", "放个歌", "播放", "放一首", "来首", "听歌", "来点音乐", "play"],
-        handler="tool",
-        tool_name="play",
-        plugin_id="hanako-audio-player",
-        extract_args=_extract_song_name,
-        description="播放音乐",
+        patterns=["随机放", "随机播", "随机播放", "随便放", "随便播", "来一首", "来首歌", "来一曲"],
+        handler="internal",
+        description="随机播放音乐（从音乐库随机选一首）",
+        emotion="happy",
+        anim="extra",
     ),
-    Capability(
-        name="search_music",
-        patterns=["搜歌", "搜音乐", "找歌", "search music"],
-        handler="tool",
-        tool_name="play",
-        plugin_id="hanako-audio-player",
-        extract_args=_extract_search_query,
-        description="搜索音乐",
-    ),
+    # pause/resume/next/state/clear 都是 audio_bus 的固定 action，本地直达又快又准。
     Capability(
         name="pause_music",
         patterns=["暂停", "暂停播放", "停一下", "pause"],
@@ -185,91 +172,6 @@ CAPABILITIES: list[Capability] = [
         description="查看近期活动",
     ),
 
-    # ── 网页与搜索 ──
-    Capability(
-        name="web_search",
-        patterns=["搜一下", "搜索", "帮我搜", "帮我查", "search", "查一下", "搜搜"],
-        handler="tool",
-        tool_name="tavily_search",
-        plugin_id="tavily-usage-monitor",
-        extract_args=_extract_search_query,
-        description="网页搜索",
-        emotion="thinking",
-    ),
-    Capability(
-        name="fetch_webpage",
-        patterns=["打开网页", "读网页", "看看这个链接", "fetch"],
-        handler="tool",
-        tool_name="fetch_page",
-        plugin_id="webpage-archiver",
-        extract_args=_extract_url,
-        description="读取网页内容",
-    ),
-    Capability(
-        name="save_webpage",
-        patterns=["存档网页", "保存网页", "archive"],
-        handler="tool",
-        tool_name="save_page",
-        plugin_id="webpage-archiver",
-        extract_args=_extract_url,
-        description="存档网页",
-    ),
-
-    # ── 图库 ──
-    Capability(
-        name="search_images",
-        patterns=["找图", "搜图", "图片", "相册", "gallery"],
-        handler="tool",
-        tool_name="gallery_search",
-        plugin_id="hanako-gallery",
-        extract_args=lambda text: {"keyword": text.replace("找图", "").replace("搜图", "").replace("图片", "").strip()},
-        description="搜索图片",
-    ),
-
-    # ── RSS ──
-    Capability(
-        name="check_feeds",
-        patterns=["看看订阅", "rss", "有什么新闻", "订阅更新", "feeds"],
-        handler="tool",
-        tool_name="items",
-        plugin_id="hanako-rss",
-        extract_args=lambda text: {"action": "list", "mode": "unread", "limit": 5},
-        description="查看未读订阅",
-    ),
-
-    # ── B 站 ──
-    Capability(
-        name="search_bilibili",
-        patterns=["搜b站", "搜bilibili", "b站搜索", "搜视频"],
-        handler="tool",
-        tool_name="bilibili_video_intake",
-        plugin_id="hanako-bilibili-intake",
-        extract_args=lambda text: {"mode": "search", "searchKeyword": re.sub(r"搜(b站|bilibili|视频)", "", text).strip(), "searchLimit": 5},
-        description="搜索 B 站视频",
-    ),
-
-    # ── 待办 ──
-    Capability(
-        name="list_todos",
-        patterns=["待办", "有什么任务", "todo", "任务清单"],
-        handler="tool",
-        tool_name="list_undone_tasks_by_time_query",
-        plugin_id="todo-list",
-        extract_args=lambda text: {"timeRange": "today"},
-        description="查看今日待办",
-    ),
-
-    # ── 时间统计 ──
-    Capability(
-        name="time_stats",
-        patterns=["时间统计", "今天用了什么", "屏幕时间", "time tracker"],
-        handler="tool",
-        tool_name="tracker_today",
-        plugin_id="hana-time-tracker",
-        extract_args=lambda text: {},
-        description="今日时间统计",
-    ),
-
     # ── 记忆 ──
     Capability(
         name="export_memory",
@@ -325,6 +227,68 @@ class CapabilityRouter:
                         )
         return None
 
+    # ── 随机播放（Bug B 本地直达） ──────────────────────────
+
+    # 随机意图触发词（与 CAPABILITIES 里 play_music.patterns 保持一致）
+    _RANDOM_TRIGGERS = (
+        "随机放", "随机播", "随机播放", "随便放", "随便播",
+        "来一首", "来首歌", "来一曲",
+    )
+    # 去除后用于判断"是否还有具体点歌内容"的填充词（歌名/歌手/描述除外）
+    _MUSIC_FILLER = (
+        "随机", "随便", "放", "播", "播放", "来一首", "来首歌", "来一曲",
+        "一首", "首歌", "一曲", "首", "个", "歌", "曲", "音乐", "歌曲",
+        "帮我", "给我", "想听", "听听", "一下", "吧", "呀", "啊", "呗", "呢", "的",
+    )
+
+    def _has_specific_music_request(self, text: str) -> bool:
+        """判断"随机放X"类文本里是否夹带了具体点歌内容。
+
+        去掉随机触发词 + 常见填充词后仍剩非空内容 → 用户其实想点某首歌/某个歌手
+        （如"来一首周杰伦的晴天"剩"周杰伦晴天"）→ 返回 True，让位给 LLM。
+        纯随机意图（"随机放首歌"/"帮我随便放首歌听听"）去除后为空 → False，本地直达。
+        """
+        if not text:
+            return False
+        remaining = str(text)
+        for token in self._RANDOM_TRIGGERS + self._MUSIC_FILLER:
+            remaining = remaining.replace(token, "")
+        remaining = re.sub(r"[\s，。！？!?、·~～,.]+", "", remaining)
+        return bool(remaining.strip())
+
+    def _pick_random_music(self) -> Optional[tuple[str, str]]:
+        """从 hanako-audio-player 音乐库随机选一首真实可播的在线音乐。
+
+        Returns:
+            (name, url)；音乐库不可用/无可播曲目返回 None。
+        只选 http(s) URL——widget media 相对路径（/api/plugins/...）是 TTS 产物，
+        直接传给本地 play 工具会被当成不存在的本地路径，产生"空播/错播"。
+        """
+        playlist_path = (
+            Path.home() / ".hanako" / "plugin-data" / "hanako-audio-player" / "playlist.json"
+        )
+        if not playlist_path.exists():
+            logger.warning("play_music: 音乐库不存在 %s", playlist_path)
+            return None
+        try:
+            data = json.loads(playlist_path.read_text("utf-8"))
+        except Exception as e:
+            logger.warning("play_music: 读取音乐库失败: %s", e)
+            return None
+        if not isinstance(data, list):
+            return None
+        candidates = [
+            item for item in data
+            if isinstance(item, dict)
+            and str(item.get("url", "")).startswith(("http://", "https://"))
+            and str(item.get("name", "")).strip()
+        ]
+        if not candidates:
+            logger.warning("play_music: 音乐库没有可播的在线曲目（共 %d 条）", len(data))
+            return None
+        chosen = random.choice(candidates)
+        return str(chosen.get("name", "")).strip(), str(chosen.get("url", "")).strip()
+
     def _handle_tool(self, cap: Capability, text: str) -> RouteResult:
         """处理工具类能力"""
         if not self._tool_registry or not self._tool_executor:
@@ -367,6 +331,49 @@ class CapabilityRouter:
 
     def _handle_internal(self, cap: Capability, text: str) -> RouteResult:
         """处理内部能力"""
+        # play_music 不依赖感知系统，必须在 perception 守卫之前处理——
+        # 否则未注入 perception 时永远返回"感知系统未就绪"（Bug B 回归风险）。
+        if cap.name == "play_music":
+            # 收窄版随机播放：检测文本里是否还有"具体点歌"内容（歌名/歌手/描述）。
+            # 有 → 返回 None 让位给 LLM（不拦截"来一首周杰伦的晴天"这类显式点歌）。
+            if self._has_specific_music_request(text):
+                logger.info("play_music 检测到具体点歌内容，让位 LLM: %s", text[:50])
+                return None
+            picked = self._pick_random_music()
+            if not picked:
+                return RouteResult(
+                    capability=cap.name,
+                    text="音乐库还没有可播放的歌曲，先去音频播放器里加几首吧～",
+                    emotion="sad",
+                    anim="idle",
+                )
+            name, url = picked
+            tool = self._tool_registry.get_tool("play") if self._tool_registry else None
+            if tool is None and self._tool_registry is not None:
+                tool = self._tool_registry.get_tool("hanako-audio-player.play")
+            if tool is None or self._tool_executor is None:
+                return RouteResult(
+                    capability=cap.name,
+                    text=f"好呀，随机播放：{name}（播放工具暂不可用）",
+                    emotion="happy",
+                    anim="extra",
+                )
+            try:
+                result_text = self._tool_executor.execute(
+                    tool, {"source": url, "title": name}
+                ) or ""
+                text_reply = f"好呀，随机播放一首：{name}\n{result_text}" if result_text else f"好呀，随机播放一首：{name}"
+            except Exception as e:
+                logger.warning("play_music 执行失败: %s", e)
+                text_reply = f"随机播放失败了：{e}"
+            return RouteResult(
+                capability=cap.name,
+                text=text_reply[:200],
+                emotion="happy",
+                anim="extra",
+                tool_result=text_reply,
+            )
+
         if not self._perception:
             return RouteResult(
                 capability=cap.name,

@@ -74,6 +74,22 @@ class ToolRegistry:
 
     def discover(self):
         """扫描所有插件目录，提取工具定义"""
+        # P6: 插件工具全局开关（默认关闭，plugins/ 为空时保留接口但不扫）
+        # 防抖：同一 disabled 日志 60s 内只打一次，避免 30s 轮询刷屏
+        try:
+            import time as _time
+            from config import load_config
+            cfg = load_config()
+            pt_cfg = cfg.get("plugin_tools", {}) or {}
+            if not pt_cfg.get("enabled", False):
+                now = _time.time()
+                if now - getattr(self, "_disabled_logged_at", 0.0) >= 60.0:
+                    logger.info("Plugin tools disabled by config (plugin_tools.enabled=false)")
+                    self._disabled_logged_at = now
+                return
+        except Exception as e:
+            logger.warning("Plugin tools config check failed: %s", e)
+            return
         # 扫描 Hanako 全局插件 + oc-pet 本地插件
         plugin_dirs = []
         if HANAKO_PLUGINS.exists():
@@ -140,12 +156,30 @@ class ToolRegistry:
                         continue
 
                     source = t.get("source", "")
-                    if not source:
-                        continue
-
-                    tool_path = plugin_dir / source
-                    tool_def = self._parse_tool_file(tool_path, plugin_id)
-                    if tool_def:
+                    name = t.get("name", "")
+                    if source:
+                        tool_path = plugin_dir / source
+                        tool_def = self._parse_tool_file(tool_path, plugin_id)
+                        if tool_def:
+                            # 避免重名覆盖
+                            if tool_def.name in self._tools:
+                                tool_def.name = f"{plugin_id}.{tool_def.name}"
+                            self._tools[tool_def.name] = tool_def
+                    elif name:
+                        # P: 无 source 字段的声明式工具（如 tavily-usage-monitor 的
+                        # name 声明式）——按 name 映射 tools/ 同名文件。
+                        tool_path = self._resolve_tool_source(plugin_dir, name)
+                        tool_def = self._parse_tool_file(tool_path, plugin_id) if tool_path else None
+                        if tool_def is None:
+                            # 找不到本地脚本 → 注册空参数工具（name/description 用
+                            # manifest 里的，工具至少可见可调；source_path="" 标注无本地脚本）。
+                            tool_def = ToolDef(
+                                name=name,
+                                description=t.get("description", "") or "",
+                                parameters={"type": "object", "properties": {}},
+                                plugin_id=plugin_id,
+                                source_path="",
+                            )
                         # 避免重名覆盖
                         if tool_def.name in self._tools:
                             tool_def.name = f"{plugin_id}.{tool_def.name}"
@@ -153,6 +187,56 @@ class ToolRegistry:
 
             except Exception as e:
                 logger.warning("Failed to parse plugin %s: %s", plugin_dir.name, e)
+
+    def _resolve_tool_source(self, plugin_dir: Path, name: str) -> Optional[Path]:
+        """无 source 字段时，按工具名在 tools/ 下定位同名脚本文件。
+
+        匹配规则（大小写不敏感，按优先级）：
+        1. 直接名：tavily_search → tools/tavily_search.js
+        2. kebab-case：tavily_search → tools/tavily-search.js
+        3. token 子序列：工具名 token 序列包含文件 stem token 序列（保持顺序）——
+           check_tavily_usage → [check, tavily, usage] ⊇ [check, usage]
+           → tools/check-usage.js；tavily_usage_history → [tavily, usage, history]
+           ⊇ [usage, history] → tools/usage-history.js
+        找不到返回 None（调用方回退注册空参数工具）。
+        """
+        tools_dir = plugin_dir / "tools"
+        if not tools_dir.is_dir():
+            return None
+
+        # 1/2. 直接名 + kebab-case（.js 优先，其次 .mjs/.ts）
+        base = str(name).strip()
+        for suffix in (".js", ".mjs", ".ts", ""):
+            for candidate in (f"{base}{suffix}", f"{base.replace('_', '-')}{suffix}"):
+                p = tools_dir / candidate
+                if p.is_file():
+                    return p
+
+        # 3. token 子序列匹配（取 token 最长、最精确的候选）
+        name_tokens = [t for t in re.split(r'[^a-zA-Z0-9]+', base.lower()) if t]
+        if not name_tokens:
+            return None
+        best: Optional[Path] = None
+        best_len = -1
+        for f in sorted(tools_dir.iterdir()):
+            if not f.is_file() or f.suffix not in (".js", ".mjs", ".ts"):
+                continue
+            stem_tokens = [t for t in re.split(r'[^a-zA-Z0-9]+', f.stem.lower()) if t]
+            if not stem_tokens:
+                continue
+            if self._is_subsequence(stem_tokens, name_tokens) and len(stem_tokens) > best_len:
+                best = f
+                best_len = len(stem_tokens)
+        return best
+
+    @staticmethod
+    def _is_subsequence(needle: list[str], haystack: list[str]) -> bool:
+        """判断 needle 是否为 haystack 的子序列（保持顺序，可跳元素）。
+
+        例：["check", "usage"] 是 ["check", "tavily", "usage"] 的子序列 → True
+        """
+        it = iter(haystack)
+        return all(any(n == h for h in it) for n in needle)
 
     def _parse_tool_file(self, path: Path, plugin_id: str) -> Optional[ToolDef]:
         """从 JS 工具文件提取 name/description/parameters"""
@@ -186,7 +270,13 @@ class ToolRegistry:
             return None
 
     def _extract_json_block(self, content: str, var_name: str) -> Optional[dict]:
-        """从 JS 源码中提取 JSON 对象赋值"""
+        """从 JS 源码中提取 JSON 对象赋值
+
+        注意：JS 工具文件普遍用单引号字符串（const parameters = { type: 'object', ... }），
+        原实现只补 key 引号、不转字符串引号，导致 json.loads 失败 → 参数回退为空对象
+        （本地注册表看不到 play 的 source/title 等参数，LLM 无从正确传参）。本方法
+        增加单引号→双引号转换 + key 限定 ASCII（Python 3 的 \\w 会匹配中文，历史坑）。
+        """
         # 匹配: const parameters = { ... };
         pattern = rf"(?:export\s+(?:const|let|var)|const|let|var)\s+{var_name}\s*=\s*(\{{[\s\S]*?\}})\s*;"
         match = re.search(pattern, content)
@@ -198,8 +288,18 @@ class ToolRegistry:
             raw = re.sub(r'//.*?\n', '\n', raw)  # 去单行注释
             raw = re.sub(r'/\*[\s\S]*?\*/', '', raw)  # 去多行注释
             raw = re.sub(r',\s*([\]}])', r'\1', raw)  # 去尾逗号
-            # JS 对象 key 没引号 → 加引号
-            raw = re.sub(r'(\s)(\w+)(\s*:)', r'\1"\2"\3', raw)
+            # JS 对象 key 没引号 → 加引号。key 限定 [a-zA-Z_][a-zA-Z0-9_]*，
+            # 避免 \\w 误匹配中文（如 "默认 20" 里的中文）——历史坑。
+            raw = re.sub(r'([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)(\s*:)', r'\1"\2"\3', raw)
+            try:
+                # 安全路径优先：值已是双引号/纯数字的 JS（多数工具文件），直接可解析。
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                pass
+            # 兜底：JS 单引号字符串 → JSON 双引号字符串（部分工具文件用单引号）。
+            # 注意：仅当安全路径失败才做——双引号字符串里嵌单引号（如
+            # search-stickers 的 "如 '加班,累'"，转换会破坏嵌套引号）。
+            raw = re.sub(r"'((?:[^'\\]|\\.)*)'", r'"\1"', raw)
             return json.loads(raw)
         except (json.JSONDecodeError, Exception):
             return None

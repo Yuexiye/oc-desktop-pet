@@ -101,7 +101,7 @@ class ConversationEngine:
             tool_executor=self._tool_executor,
         )
 
-        # P7: 统一工具调度层——静态能力优先(15个)，其次本地插件工具(显式/关键词直达)，
+        # P7: 统一工具调度层——显式插件优先，其次静态能力、关键词直达，
         # 未命中兜底 LLM/Hanako 服务端。插件支持 30s 热刷新（新增/删除即生效，无需重启）。
         from .unified_tool_router import UnifiedToolRouter
         self._unified_router = UnifiedToolRouter(
@@ -587,7 +587,7 @@ class ConversationEngine:
             return
 
         # 快速路径：统一工具调度（仅用户消息，主动/idle 消息跳过）
-        # P7: 静态能力(15个) 优先 → 插件工具(显式/关键词) → 兜底 LLM/Hanako 服务端
+        # P7: 显式插件优先 → 静态能力 → 关键词 → 兜底 LLM/Hanako 服务端
         is_user_msg = msg.get("source", "user") == "user"
         if is_user_msg:
             route_result = self._unified_router.route(
@@ -599,8 +599,9 @@ class ConversationEngine:
             route_result = None
         if route_result:
             anim = route_result.anim or "idle"
-            logger.info("Unified routed: %s -> %s", route_result.capability, route_result.text[:50])
-            self.on_reply(route_result.text, route_result.emotion, anim, route_result.audio_path)
+            display_text = self._friendly_tool_text(route_result)
+            logger.info("Unified routed: %s -> %s", route_result.capability, display_text[:50])
+            self.on_reply(display_text, route_result.emotion, anim, route_result.audio_path)
             return
 
         # 1. LLM 回复（可能返回 tool_calls）
@@ -690,6 +691,84 @@ class ConversationEngine:
             # 线程池已关闭（引擎停止中），直接丢弃本次合成
             logger.debug("TTS 线程池已关闭，跳过合成: gen=%d", gen)
 
+    def _friendly_tool_text(self, route_result) -> str:
+        """把工具路由结果转成可读文案，避免原始 JSON 直接上气泡。
+
+        R3 结果友好化：工具执行结果（tool_result，常为 JSON 字符串）不再原样塞进
+        气泡——JSON 对象/数组提取关键字段拼自然语言；非 JSON 截断 80 字优雅摘要。
+        规则：
+        - 无 tool_result → text 已是可读文案（内部能力如日报/会话信息），原样展示
+        - tool_result 是 JSON 对象 → _summarize_dict_result 提取 name/id/action/状态等
+        - tool_result 是 JSON 数组 → "共 N 项结果…"（N 为元素数）
+        - 其他 → 截断 80 字 + "…"（超长时）
+        """
+        raw = (route_result.tool_result or "").strip()
+        if not raw:
+            # 内部能力/静态能力：text 就是最终可读文案（日报/会话信息等），不截断
+            return route_result.text or "执行完成"
+
+        data = None
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            data = None
+
+        if isinstance(data, dict):
+            summary = self._summarize_dict_result(data, route_result.capability)
+            if summary:
+                return summary[:120]
+        elif isinstance(data, list):
+            if data:
+                return f"共 {len(data)} 项结果，已为你整理好～"
+            return "暂无结果"
+
+        # 非 JSON：优雅截断
+        if len(raw) <= 80:
+            return raw
+        return raw[:80] + "…"
+
+    def _summarize_dict_result(self, data: dict, capability: str) -> str:
+        """从工具返回的 JSON 对象中提取关键字段，拼一句自然语言摘要。
+
+        字段优先级：计数(count/total) → 名称(name/title) → 状态(success/status/state)
+        → 动作(action/type)。全部缺失时截断原始 JSON。
+        """
+        parts: list[str] = []
+
+        count = data.get("count")
+        if count is None:
+            count = data.get("total")
+        if isinstance(count, (int, float)) and not isinstance(count, bool):
+            parts.append(f"共 {int(count)} 项")
+
+        name = data.get("name") or data.get("title") or data.get("tool_name") or data.get("query")
+        if name:
+            parts.append(str(name)[:40])
+
+        ok = data.get("success")
+        if ok is True:
+            parts.append("执行成功")
+        elif ok is False:
+            parts.append("执行失败")
+
+        status = data.get("status") or data.get("state") or data.get("result")
+        if status and not isinstance(status, (dict, list)):
+            parts.append(f"状态：{str(status)[:40]}")
+
+        action = data.get("action") or data.get("type")
+        if action and not isinstance(action, (dict, list)):
+            parts.append(f"动作：{str(action)[:40]}")
+
+        if parts:
+            return "，".join(parts)
+
+        # 完全无法提取 → 截断原始 JSON
+        try:
+            raw = json.dumps(data, ensure_ascii=False)
+        except (TypeError, ValueError):
+            raw = str(data)
+        return raw[:80] + "…"
+
     def _parse_action_directive(self, reply: str):
         """从回复中解析 JSON 动作指令。
 
@@ -758,11 +837,14 @@ class ConversationEngine:
                             logger.debug("voice 解析失败，使用默认音色: %s", _ve)
                             voice = ""
                     # 合成提示：本地 CosyVoice 一句要几十秒到两分钟（GPU 推理），
-                    # 期间不提示的话，用户会误以为“没有语音”
-                    try:
-                        self.on_status("\U0001f50a 语音生成中…")
-                    except Exception:
-                        pass
+                    # 期间不提示的话，用户会误以为“没有语音”。
+                    # 但是 on_status 信号跨线程 emit 可能顺序反转：先接到复位
+                    # （hide_bubble），后接到“语音生成中”（_show_bubble），
+                    # 导致气泡挂在界面上一去不回。文字先行（P1-6）已显示回复文本，
+                    # 用户不需要“语音生成中”气泡——TTS 完成后直接播音频即可。
+                    # 2026-08-22 修复：去掉合成前的 on_status 调用。
+                    # 若需本地 CosyVoice 耗时提示，改用 on_progress。
+                    # self.on_status("\U0001f50a 语音生成中…")
                     audio_path = tts.synthesize(
                         reply, character_id=character, instruct=instruct, voice=voice,
                     ) or ""

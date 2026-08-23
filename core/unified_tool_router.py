@@ -1,15 +1,28 @@
 """统一工具调度层 — 本地能力 / 本地插件工具 / Hanako 服务端工具 三类来源统一快速路由
 
 背景：oc-pet 桌宠现有三层能力
-1. 本地能力  core/capability_registry.py：CAPABILITIES 静态列表（15 个：放歌/日报/截图/搜索…）
+1. 本地能力  core/capability_registry.py：CAPABILITIES 静态列表（确定性动作，如 暂停/日报/截图/随机播放）
 2. 本地插件工具 core/tool_registry.py：Hanako 全局插件 + oc-pet 本地插件（如 linjian-peek 手机控制 8 工具）
 3. Hanako 服务端工具：WS 模式（M4）下工具由服务端执行，桌宠不传 tools
 
 本层把它们统一到一个快速路由，路由顺序（快→慢）：
-1. 静态能力优先：先试 CapabilityRouter（15 个内置能力，如"放首歌"→play_music）
-2. 显式指定：文本含"用X"/"调用X"/"使用X"/"X工具" → 精确匹配插件工具名
-3. 关键词命中：工具名/描述关键词匹配用户文本 → 直达插件工具
+1. 显式指定：文本含"用X"/"调用X"/"使用X"/"X工具" → 精确匹配插件工具名（意图最明确，优先）
+2. 静态能力：先试 CapabilityRouter（内置确定性能力，如"暂停一下"→pause_music）
+3. 关键词命中（白名单模式）：只对**确定性安全工具**做关键词匹配 → 直达插件工具。
+   白名单 _KEYWORD_ROUTE_WHITELIST：hanako-audio-player 的 audio_bus 控制类 +
+   linjian-peek 手机控制工具 + oc-pet 本地插件工具。
+   其余 Hanako 插件工具（tavily 搜索 / webpage 存档 / 图库 / RSS / B站 / 待办 /
+   时间统计 / 表情包等）**不参与关键词匹配**——由 Hanako 端 LLM 按工具名+描述+
+   参数 schema 语义自动选工具（oc-pet 侧写 pattern 是"抢活"，R3 已收敛）。
 4. 兜底：返回 None（交给 LLM 工具调用 / Hanako 服务端）
+
+注意：播放类自然语言（"播首歌"/"播放周杰伦的晴天"/"搜一下XXX"）不再被静态能力/
+关键词路由拦截——这类表达直接走第 4 步交给 LLM 自动选工具，像 Hana 原界面一样自然。
+仅"随机放/来一首"（Bug B 本地直达）与 audio_bus 固定动作（暂停/下一首/清空等）
+仍由本地快速路由兜住。
+
+疑问句不路由：文本含"你能…吗/可以…吗/会…吗/能不能/可不可以/知道…吗"等疑问句式时，
+关键词路由直接返回 None——能力询问交给 LLM 回答，不再误触本地工具（如 list_stickers）。
 
 Hanako WS 模式（M4）协议不变：本地统一路由命中 → 直接返回 RouteResult 文案；
 未命中 → 走 LLM / 服务端工具。
@@ -42,7 +55,12 @@ logger = logging.getLogger(__name__)
 #   ([\w-]+)                   候选 token（工具名，允许连字符/下划线）
 #   (工具|插件|来做|去|执行)?   后缀（可选）
 _EXPLICIT_RE = re.compile(
-    r'(?:用|调用|使用|让|请|帮我)?\s*([\w-]+)\s*(?:工具|插件|来做|去|执行)?'
+    r'(?:用|调用|使用|让|请|帮我)?\s*([a-zA-Z0-9_-]+)\s*(?:工具|插件|来做|去|执行)?'
+)
+
+# P7: 成对格式“用<插件名>的<工具名>功能”/“用<插件名>-<工具名>”
+_EXPLICIT_PAIR_RE = re.compile(
+    r'(?:用|调用|使用|让|请|帮我)?\s*([a-zA-Z0-9_.-]+)\s*(?:的|[-/])\s*([a-zA-Z0-9_-]+)\s*(?:功能|工具|插件)?'
 )
 
 # 英文工具名 token → 中文同义词（name 拆分兜底，让"screen"能命中"屏幕"）
@@ -69,13 +87,13 @@ _EN_TO_ZH = {
     "send": "发送",
 }
 
-# 描述里常见中文名词：从 ToolDef.description 提取关键词（权重低，防误伤）
+# 描述里常见中文名词：从 ToolDef.description 提取关键词（权重低，防误伤）。
+# R3 白名单化后只对确定性工具（audio_bus + linjian-peek 手机控制）建索引，
+# 通用词收敛到这两类工具相关词即可；搜索/订阅/待办/网页等词已移除（那些工具的
+# 描述不再参与关键词匹配，交给 Hanako LLM）。
 _COMMON_ZH_WORDS = [
-    "手机", "状态", "截图", "屏幕", "控制", "通知", "闹钟", "应用",
-    "桌面", "主页", "电量", "信息", "返回", "打开", "启动", "查看",
-    "读取", "发送", "设备", "服务", "权限", "图片", "文字", "前台",
-    "当前", "最近", "订阅", "待办", "任务", "搜索", "音乐", "网页",
-    "天气", "邮件", "闹钟", "章节", "项目", "阅读", "播放", "暂停",
+    "手机", "屏幕", "状态", "通知", "闹钟", "电量", "应用",
+    "桌面", "主页", "打开", "启动", "播放", "音频", "音乐", "队列",
 ]
 
 # 手工关键词映射：工具名 → 额外关键词（插件少，先手工维护 + name 拆分兜底）
@@ -88,16 +106,44 @@ _TOOL_KEYWORD_MAP: dict[str, list[str]] = {
     "phone_notification": ["通知", "消息", "通知栏", "notification"],
     "phone_alarm": ["闹钟", "设置闹钟", "alarm"],
     "phone_status": ["手机状态", "状态", "信息", "在线", "连接", "status"],
+    # audio_bus：固定 action 控制（pause/resume/next/state/clear 等）——静态能力
+    # 未覆盖的说法（如"切换下一曲"）由关键词路由兜底直达。
+    "audio_bus": ["暂停", "继续播放", "下一首", "切歌", "清空播放列表", "播放状态", "音乐状态", "audio", "bus"],
 }
+
+# ── R3 关键词路由白名单 ──────────────────────────────────────
+# 只对白名单内的**确定性安全工具**构建关键词索引；非白名单 Hanako 插件工具
+# 不参与关键词匹配，直接让位 Hanako LLM 按语义选工具。
+# 1) 工具名白名单：hanako-audio-player 的 audio_bus 控制类（固定 action 本地直达）。
+# 2) 插件白名单：linjian-peek（oc-pet 本地插件，手机控制 8 工具）。
+#    未来新增 oc-pet 本地插件工具时在此追加 plugin_id。
+_KEYWORD_ROUTE_TOOL_WHITELIST: set[str] = {
+    "audio_bus",
+}
+_KEYWORD_ROUTE_PLUGIN_WHITELIST: set[str] = {
+    "linjian-peek",
+}
+
+# 疑问句触发结构（关键词路由直接返回 None，交给 LLM 回答能力询问）：
+#   "你能…吗" / "可以…吗" / "会…吗" / "能不能…" / "可不可以…" / "知道…吗" / "会不会…"
+_QUESTION_RE = re.compile(
+    r"(你能|你可以|你会|你能不能|你可不可以|能不能|可不可以|会不会|知不知道|知道不知道|"
+    r"知道|可以|会|能)"
+    r".{0,8}?"
+    r"(吗|么|嘛|呢|？|\?)"
+)
 
 
 class UnifiedToolRouter:
     """统一工具调度层：三类工具来源快速路由。
 
     路由顺序（快→慢）：
-    1. 静态能力优先：先试 static_router（CapabilityRouter，15 个内置能力）
-    2. 显式指定：文本含"用X"/"调用X"/"使用X"/"X工具" → 精确匹配插件工具名
-    3. 关键词命中：工具名/描述关键词匹配用户文本 → 直达插件工具
+    1. 显式指定：文本含"用X"/"调用X"/"使用X"/"X工具" → 精确匹配插件工具名（优先）
+    2. 静态能力：先试 static_router（CapabilityRouter，内置确定性能力）
+    3. 关键词命中（白名单模式）：只对白名单内确定性安全工具（audio_bus +
+       linjian-peek 手机控制 + oc-pet 本地插件）做关键词匹配 → 直达插件工具；
+       疑问句（你能…吗/可以…吗/能不能…等）不路由；非白名单 Hanako 插件工具
+       不参与关键词匹配，让位 Hanako LLM。
     4. 兜底：返回 None（交给 LLM 工具调用 / Hanako 服务端）
     """
 
@@ -112,12 +158,12 @@ class UnifiedToolRouter:
 
     def route(self, text: str, tool_registry=None, static_router=None,
               execute: bool = True) -> Optional[RouteResult]:
-        """统一路由：静态能力 → 插件工具（显式/关键词）→ None（兜底 LLM）
+        """统一路由：插件工具（显式/白名单关键词）→ 静态能力 → None（兜底 LLM）
 
         Args:
             text: 用户文本（文字或语音转写后的文本）
             tool_registry: ToolRegistry（本地插件工具）
-            static_router: CapabilityRouter（15 个静态能力，优先）
+            static_router: CapabilityRouter（内置确定性能力，显式插件之后）
             execute: 命中插件工具后是否立即执行（False → 返回"工具执行中"标记）
 
         Returns:
@@ -127,7 +173,18 @@ class UnifiedToolRouter:
             return None
         text = text.strip()
 
-        # 1. 静态能力优先（15 个内置能力，如 放歌/日报/截图/搜索）
+        # 1. 插件工具：显式指定优先（“用X/Y”意图最明确）。
+        #    必须在静态能力之前——否则“用hanako-audio-player的play”可能被某个
+        #    宽 pattern 的静态能力抢先截胡（历史教训：play_music 的 'play' 曾拦截
+        #    显式调用导致“找不到工具 play”）。
+        reg = tool_registry or self._tool_registry
+        if reg is not None:
+            hit = self._match_explicit(text, reg)
+            if hit is not None:
+                logger.info("统一路由 → 显式指定: %s (plugin=%s)", hit[0], hit[1])
+                return self._build_tool_result(hit, reg, execute, "explicit")
+
+        # 2. 静态能力（内置确定性能力：暂停/下一首/日报/截图/搜索等）
         if static_router is not None:
             try:
                 result = static_router.route(text)
@@ -137,21 +194,13 @@ class UnifiedToolRouter:
             except Exception as e:
                 logger.warning("统一路由：静态能力异常: %s", e)
 
-        reg = tool_registry or self._tool_registry
-        if reg is None:
-            return None
-
-        # 2. 插件工具：显式指定（"用X"/"调用X"/"使用X"/"X工具"）
-        hit = self._match_explicit(text, reg)
-        if hit is not None:
-            logger.info("统一路由 → 显式指定: %s (plugin=%s)", hit[0], hit[1])
-            return self._build_tool_result(hit, reg, execute, "explicit")
-
-        # 3. 插件工具：关键词命中（工具名/描述关键词）
-        hit = self._match_keyword(text, reg)
-        if hit is not None:
-            logger.info("统一路由 → 关键词命中: %s (plugin=%s)", hit[0], hit[1])
-            return self._build_tool_result(hit, reg, execute, "keyword")
+        # 3. 插件工具：关键词命中（白名单模式——只匹配确定性安全工具，
+        #    非白名单 Hanako 插件工具让位 Hanako LLM；疑问句不路由）
+        if reg is not None:
+            hit = self._match_keyword(text, reg)
+            if hit is not None:
+                logger.info("统一路由 → 关键词命中: %s (plugin=%s)", hit[0], hit[1])
+                return self._build_tool_result(hit, reg, execute, "keyword")
 
         # 4. 兜底：交给 LLM 工具调用 / Hanako 服务端
         return None
@@ -161,8 +210,27 @@ class UnifiedToolRouter:
     def _match_explicit(self, text: str, tool_registry) -> Optional[Tuple[str, str]]:
         """解析显式指定：返回 (tool_name, plugin_id) 或 None
 
-        正则提取候选 token → 与工具名精确匹配（忽略大小写、去下划线/连字符）。
+        优先尝试成对格式“用<插件名>的<工具名>功能”，再回退单 token。
+        归一化后与工具名精确匹配（忽略大小写、去下划线/连字符）。
         """
+        tools = getattr(tool_registry, "_tools", {}) or {}
+
+        # P7: 成对格式——“用hanako-audio-player的play” → (plugin, tool)
+        mp = _EXPLICIT_PAIR_RE.search(text)
+        if mp and mp.group(1) and mp.group(2):
+            plugin_tok = mp.group(1)
+            tool_tok = mp.group(2)
+            t_norm = self._normalize_name(tool_tok)
+            p_norm = self._normalize_name(plugin_tok)
+            for tool in tools.values():
+                if t_norm and self._normalize_name(tool.name) == t_norm:
+                    # 工具名命中；若给了插件名则校验归属（不匹配则跳过）
+                    if p_norm and tool.plugin_id and self._normalize_name(tool.plugin_id) != p_norm:
+                        continue
+                    return tool.name, tool.plugin_id
+            # 成对模式给了明确工具名但没找到 → 不降级（避免误匹配其他工具）
+            return None
+
         token = self._parse_explicit_token(text)
         if not token:
             return None
@@ -170,7 +238,6 @@ class UnifiedToolRouter:
         if not norm:
             return None
 
-        tools = getattr(tool_registry, "_tools", {}) or {}
         # 精确匹配工具名（归一化后：phone_peek_screen == phone-peek-screen）
         for tool in tools.values():
             if self._normalize_name(tool.name) == norm:
@@ -209,12 +276,19 @@ class UnifiedToolRouter:
     # ── 三级：关键词命中 ────────────────────────────────────
 
     def _match_keyword(self, text: str, tool_registry) -> Optional[Tuple[str, str]]:
-        """关键词路由：工具名/描述关键词匹配用户文本。
+        """关键词路由（白名单模式）：白名单内工具名/描述关键词匹配用户文本。
 
-        打分：工具名整体(5) > 工具名 token+同义词(3) = 手工映射(3) > 描述词(1)。
-        取最高分工具；同分取关键词命中数更多者。
+        - 疑问句（你能…吗/可以…吗/会不会…/能不能…等）直接返回 None——
+          能力询问交给 LLM 回答，不再误触本地工具（如 list_stickers）。
+        - 打分：工具名整体(5) > 工具名 token+同义词(3) = 手工映射(3) > 描述词(1)。
+          取最高分工具；同分取关键词命中数更多者。
+        - 索引只含白名单工具（_build_keyword_index 过滤），非白名单 Hanako 插件
+          工具不参与匹配，让位 Hanako LLM。
         """
         text_lower = text.lower()
+        if self._is_question_text(text_lower):
+            logger.debug("关键词路由跳过疑问句: %s", text[:30])
+            return None
         index = self._keyword_index
         if not index:
             return None
@@ -253,6 +327,34 @@ class UnifiedToolRouter:
                 r'(?<![a-z0-9])' + re.escape(kw) + r'(?![a-z0-9])', text_lower
             ) is not None
         return kw in text_lower
+
+    def _is_question_text(self, text_lower: str) -> bool:
+        """疑问句检测：能力询问/是非问句不参与关键词路由，交给 LLM 回答。
+
+        命中以下任一 → True：
+        - "吗/么/嘛/呢/？/?" 结尾（"你能暂停音乐吗"/"你会什么"）
+        - 独立疑问标记"能不能/可不可以/会不会/知不知道/知道不知道"（无需 吗 结尾）
+        - "你能…吗/可以…吗/会…吗/知道…吗"结构（…之间 ≤8 字）
+        """
+        if not text_lower:
+            return False
+        if text_lower.endswith(("吗", "么", "嘛", "呢", "？", "?")):
+            return True
+        if re.search(r"(能不能|可不可以|会不会|知不知道|知道不知道)", text_lower):
+            return True
+        return _QUESTION_RE.search(text_lower) is not None
+
+    @staticmethod
+    def _is_keyword_whitelisted(tool) -> bool:
+        """判断工具是否允许参与关键词路由（白名单内确定性安全工具）。
+
+        白名单：hanako-audio-player 的 audio_bus 控制类（工具名）+ linjian-peek
+        手机控制工具（插件 ID，oc-pet 本地插件）。其余 Hanako 插件工具不建索引，
+        让位 Hanako LLM 语义选工具。
+        """
+        name = getattr(tool, "name", "") or ""
+        plugin_id = getattr(tool, "plugin_id", "") or ""
+        return name in _KEYWORD_ROUTE_TOOL_WHITELIST or plugin_id in _KEYWORD_ROUTE_PLUGIN_WHITELIST
 
     # ── 执行与结果构造 ──────────────────────────────────────
 
@@ -340,10 +442,18 @@ class UnifiedToolRouter:
     # ── 索引构建 ────────────────────────────────────────────
 
     def _build_keyword_index(self, tool_registry) -> None:
-        """为每个 ToolDef 从 name + description 构建关键词表（模块级缓存 + 每次 discover 后刷新）。"""
+        """为每个**白名单内** ToolDef 从 name + description 构建关键词表（模块级缓存 + 每次 discover 后刷新）。
+
+        R3 白名单模式：非白名单 Hanako 插件工具不参与关键词匹配（让位 Hanako LLM），
+        不写入索引。
+        """
         index: dict[str, dict[str, int]] = {}
         tools = getattr(tool_registry, "_tools", {}) or {}
+        skipped = 0
         for name, tool in tools.items():
+            if not self._is_keyword_whitelisted(tool):
+                skipped += 1
+                continue
             kws: dict[str, int] = {}
 
             # 1. 工具名整体（归一化，去掉分隔符）
@@ -375,7 +485,8 @@ class UnifiedToolRouter:
             index[name] = kws
         self._keyword_index = index
         self._last_refresh = time.monotonic()
-        logger.debug("统一路由关键词索引: %d 个工具", len(index))
+        logger.debug("统一路由关键词索引: %d 个工具（跳过 %d 个非白名单 Hanako 工具）",
+                     len(index), skipped)
 
     @staticmethod
     def _normalize_name(name: str) -> str:
