@@ -570,7 +570,8 @@ class ConversationEngine:
 
         # P1：若消息在入队后被新消息打断（代际过期），直接跳过
         if self._is_stale(gen):
-            logger.debug("跳过过期消息: gen=%d 当前=%d", gen, self._generation)
+            logger.info("跳过过期消息: gen=%d 当前=%d（用户已发新消息，旧消息作废）",
+                        gen, self._generation)
             return
 
         logger.info("处理消息 [%s]: %s", character, text[:50])
@@ -648,7 +649,8 @@ class ConversationEngine:
 
         # P1：LLM 调用后检查——若已打断（代际过期），不再继续 TTS/回调
         if self._is_stale(gen):
-            logger.debug("LLM 后已打断，丢弃结果: gen=%d", gen)
+            logger.info("LLM 后已打断，丢弃结果: gen=%d 当前=%d（旧回复不再上气泡）",
+                        gen, self._generation)
             return
 
         # 2. 动画映射

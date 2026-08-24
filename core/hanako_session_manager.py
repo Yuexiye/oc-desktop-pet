@@ -151,6 +151,9 @@ class TurnAccumulator:
     # 活跃时间戳：每次收到本 turn 的事件时刷新（工具链/tool 结果后继续流式回复时，
     # 用"最近活动"判断 turn 是否还活着，而不是死等固定的 reply_timeout 墙）。
     last_event_ts: float = field(default_factory=time.monotonic)
+    # BugFix #1：turn 创建时刻。用于识别"一条事件都没收到"的静默 turn——
+    # last_event_ts 初始值 == created_at，收到带 seq/streamId 的事件后会被刷新。
+    created_at: float = field(default_factory=time.monotonic)
 
     @property
     def done(self) -> bool:
@@ -260,6 +263,7 @@ class HanakoSessionManager:
         reply_timeout: float = 180.0,
         mirror_external_replies: bool = True,
         activity_timeout: float = 60.0,
+        silent_turn_grace: float = 20.0,
     ):
         self.ws_client = ws_client
         self.base_url = (base_url or ws_client.base_url).rstrip("/")
@@ -272,6 +276,12 @@ class HanakoSessionManager:
         # 慢工具）>180s"被固定超时墙误杀，导致最终回复没回灌桌宠（Bug A）。
         # send_and_wait 的超时墙同样按活跃窗口顺延。默认 60s；下限 0.5s 仅防病态配置。
         self.activity_timeout = max(0.5, float(activity_timeout))
+        # BugFix #1：静默 turn 快速恢复宽限（秒）。send 后 turn 在宽限期内一条
+        # WS 事件都没收到（连 ack/stream 都没绑上）时，视为"turn 身份与 WS 事件
+        # 不匹配"（服务端在别的 session 身份上流式回推，本地永远等不到 turn_end）。
+        # 主动从会话历史恢复最终回复，把 send_and_wait 死等 reply_timeout(180s)
+        # 造成的"桌宠思考中... 卡 3 分钟、无回复无 TTS"缩到 ~20s。
+        self.silent_turn_grace = max(1.0, float(silent_turn_grace))
         self._http = requests.Session()
 
         self._lock = threading.RLock()
@@ -492,8 +502,13 @@ class HanakoSessionManager:
         # 恢复最终回复（云端有文本，只是 WS 没送达），恢复失败才判失败。
         deadline = time.monotonic() + max(1.0, float(timeout))
         while True:
+            now = time.monotonic()
+            remaining = deadline - now
+            # BugFix #1：以 ~1s 轮询粒度等待（而非一次性等满 deadline），
+            # 让"静默 turn 快速恢复"能在 silent_turn_grace 到期后立刻触发，
+            # 而不是等满 reply_timeout(180s) 才进超时处理。
             try:
-                return future.result(timeout=max(0.1, deadline - time.monotonic()))
+                return future.result(timeout=max(0.1, min(1.0, remaining)))
             except FutureTimeoutError:
                 with self._lock:
                     turn = next(
@@ -504,18 +519,43 @@ class HanakoSessionManager:
                     return future.result(timeout=1.0)
                 now = time.monotonic()
                 last = getattr(turn, "last_event_ts", 0.0)
-                if last and (now - last) < self.activity_timeout:
+                created = getattr(turn, "created_at", last)
+                # 是否收到过本 turn 的事件（accept_event 只有带 seq+streamId 的事件
+                # 才会刷新 last_event_ts；纯 user echo 不刷新，仍视为"静默"）。
+                received_any_event = last > created
+                if received_any_event and (now - last) < self.activity_timeout:
                     deadline = now + self.activity_timeout
                     continue
-                # 超时前先尝试从历史恢复最终回复（工具结果/最终文本在云端历史里）
-                try:
-                    self._recover_from_history(turn)
-                except Exception:
-                    pass
-                if turn.done:
+                # BugFix #1：静默 turn 快速恢复——send 后宽限期内一条事件都没收到，
+                # 极可能是 turn 身份与 WS 事件不匹配：服务端在另一个 session 身份上
+                # 流式回推，本地永远等不到 turn_end。云端其实已生成回复（Hanako 主
+                # 窗口可见），主动从历史恢复；历史暂无回复则继续等 WS/正常超时，
+                # 绝不提前打断仍可能"正在处理"的 turn。
+                if (not getattr(turn, "_silent_recovery_tried", False)
+                        and not received_any_event
+                        and (now - created) >= self.silent_turn_grace):
+                    turn._silent_recovery_tried = True
+                    logger.warning(
+                        "[SM] silent turn: %.0fs 无 WS 事件，尝试从会话历史恢复回复 "
+                        "(session=%s) — 桌宠不再死等 reply_timeout",
+                        now - created, getattr(turn.session, "session_id", "?"),
+                    )
+                    try:
+                        self._recover_from_history(turn, finish_on_missing=False)
+                    except Exception:
+                        pass
+                    if turn.done:
+                        return future.result(timeout=1.0)
+                # deadline 墙已到：先尝试从历史恢复最终回复，失败才判死
+                if remaining <= 0:
+                    try:
+                        self._recover_from_history(turn)
+                    except Exception:
+                        pass
+                    if turn.done:
+                        return future.result(timeout=1.0)
+                    self._finish_with_error(turn, f"Hanako reply timed out after {timeout:g}s")
                     return future.result(timeout=1.0)
-                self._finish_with_error(turn, f"Hanako reply timed out after {timeout:g}s")
-                return future.result(timeout=1.0)
 
     def abort(self, session: SessionRef, reason: str = "user_abort") -> bool:
         with self._lock:
@@ -751,7 +791,15 @@ class HanakoSessionManager:
             with self._lock:
                 self._abort_pending.pop(session_id, None)
 
-    def _recover_from_history(self, turn: TurnAccumulator) -> None:
+    def _recover_from_history(self, turn: TurnAccumulator, *, finish_on_missing: bool = True) -> None:
+        """从会话历史恢复最终回复（Bug A / BugFix #1 共用）。
+
+        Args:
+            finish_on_missing: 历史里找不到最终回复时是否判死 turn。
+              - True（正常超时路径）：找不到 → _finish_with_error（180s 已到，判死合理）
+              - False（静默恢复路径）：找不到 → 直接返回，turn 保持 pending，
+                继续等 WS 事件或走正常超时（服务端可能仍在生成，绝不提前打断）。
+        """
         if turn.done:
             return
         try:
@@ -794,6 +842,10 @@ class HanakoSessionManager:
                     None,
                 )
             if assistant is None:
+                if not finish_on_missing:
+                    # BugFix #1 静默恢复：历史尚无最终回复（服务端可能仍在处理/
+                    # 流式），不打断 turn，继续等 WS 事件或走正常超时。
+                    return
                 self._finish_with_error(turn, "Stream ended before reply history was available")
                 return
             if not turn.text_parts:
