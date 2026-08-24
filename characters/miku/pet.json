@@ -1,0 +1,72 @@
+{
+  "id": "miku",
+  "name": "初音未来",
+  "description": "虚拟歌姬初音未来（模型：玄宝酱绘制 / 怂怂koe建模，免费非商用）",
+  "style": "live2d",
+  "format": "live2d",
+  "live2d": {
+    "scale": 1.0,
+    "scale_x": 1.22,
+    "offset": [
+      0,
+      -0.15
+    ]
+  },
+  "animations": {
+    "idle": {
+      "row": 0,
+      "frames": 6,
+      "fps": 3,
+      "weight": 0
+    },
+    "happy": {
+      "weight": 3
+    },
+    "waving": {
+      "weight": 3
+    },
+    "thinking": {
+      "weight": 0
+    },
+    "surprised": {
+      "weight": 2
+    },
+    "angry": {
+      "weight": 1
+    },
+    "sad": {
+      "weight": 1
+    },
+    "touch": {
+      "weight": 0
+    }
+  },
+  "emotions": {
+    "happy": {
+      "anim": "happy",
+      "expression": "脸红"
+    },
+    "surprised": {
+      "anim": "surprised",
+      "expression": "圈圈"
+    },
+    "thinking": {
+      "anim": "thinking",
+      "expression": "前倾"
+    },
+    "sad": {
+      "anim": "sad"
+    },
+    "angry": {
+      "anim": "angry"
+    },
+    "neutral": {
+      "anim": "idle"
+    },
+    "touched": {
+      "anim": "touch",
+      "expression": "脸红"
+    }
+  },
+  "scale": 1.0
+}
