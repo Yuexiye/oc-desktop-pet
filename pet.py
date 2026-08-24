@@ -2129,6 +2129,12 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
                     and not getattr(self, '_is_dragging', False)
                 if calm:
                     self._renderer.set_emotion(body_emo)
+                elif body_emo == "neutral":
+                    # P2-9: 非 calm 状态下回 neutral，至少清表情（不播 motion，不打断动作）
+                    try:
+                        self._renderer.set_emotion_expression_only("neutral")
+                    except Exception:
+                        pass
                 self._last_body_emotion = body_emo
         # 6. 养成 tick（每秒一次）+ 自动保存（自带 60s 节流）
         #    所有访问都靠 hasattr 守卫，没注入养成模块时跳过

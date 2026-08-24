@@ -1854,6 +1854,10 @@ class Live2DRenderer(AvatarRenderer):
                 self._model.ResetExpressions()
         except Exception:
             pass
+        # P2-9: 同步重置表情簿记，避免后续 _apply_expression 基于旧状态误判
+        self._expression_active = False
+        self._last_expression = ""
+        self._expression_suppress_until = 0.0
         # 双重 StopAllMotions：某些 wrapper 实现需要两次才彻底清
         try:
             if hasattr(self._model, "StopAllMotions"):
@@ -2111,7 +2115,8 @@ class Live2DRenderer(AvatarRenderer):
         expr = self._match_expression(emotion)
         try:
             if expr is None:
-                if self._expression_active:
+                # P2-9: 无论 _expression_active 真假，只要曾设过表情就重置
+                if self._expression_active or self._last_expression:
                     self._model.ResetExpressions()
                 self._expression_active = False
                 self._last_expression = ""

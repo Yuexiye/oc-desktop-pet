@@ -196,20 +196,27 @@ class BubbleMixin:
         # P1 修复：turn_end 走 push_event 直通 idle，若 _current_anim 已是 idle 会跳过
         # 下方 _set_anim_seq，导致前倾/脸红等贴图表情残留。state==idle 统一走
         # renderer._force_idle()（ResetExpressions + FORCE 优先级强制回 idle）。
+        # P2-9 修复：回复态显式同步 neutral 到渲染器，防止表情脱钩。
         try:
             if state == "idle":
                 renderer = getattr(self, "_renderer", None)
                 if renderer is not None and hasattr(renderer, "_force_idle"):
                     renderer._force_idle()
                 self._current_anim = "idle"
-            elif anim_name != self._current_anim:
-                safe_anims = ['idle', 'walk', 'extra']
-                if anim_name not in safe_anims:
-                    anim_name = 'idle'
-                if emotion in ('surprised', 'angry'):
-                    anim_name = 'idle'
-                self._current_anim = anim_name
-                self._set_anim_seq(anim_name, emotion=emotion, style=get_transition_style(emotion))
+            else:
+                # P2-9: emotion 为 neutral 时，即使 anim==_current_anim 也要显式清渲染器表情
+                if emotion in ("", "neutral"):
+                    renderer = getattr(self, "_renderer", None)
+                    if renderer is not None and hasattr(renderer, "set_emotion_expression_only"):
+                        renderer.set_emotion_expression_only("neutral")
+                elif anim_name != self._current_anim:
+                    safe_anims = ['idle', 'walk', 'extra']
+                    if anim_name not in safe_anims:
+                        anim_name = 'idle'
+                    if emotion in ('surprised', 'angry'):
+                        anim_name = 'idle'
+                    self._current_anim = anim_name
+                    self._set_anim_seq(anim_name, emotion=emotion, style=get_transition_style(emotion))
         except Exception:
             pass
 
