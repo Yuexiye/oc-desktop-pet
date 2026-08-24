@@ -154,6 +154,11 @@ class TurnAccumulator:
     # BugFix #1：turn 创建时刻。用于识别"一条事件都没收到"的静默 turn——
     # last_event_ts 初始值 == created_at，收到带 seq/streamId 的事件后会被刷新。
     created_at: float = field(default_factory=time.monotonic)
+    # BugFix #2：是否收到过本 turn 的流式事件（accept_event 命中）。显式布尔，
+    # 不依赖 time.monotonic() 严格递增——本机粒度 ~16ms，同一 tick 内刷新
+    # last_event_ts 后可能与 created_at 相等，导致"收到事件的 turn"被误判静默、
+    # 静默恢复误触发（历史有旧回复时提前用旧文本完成/截断流式回复）。
+    received_any_event: bool = False
 
     @property
     def done(self) -> bool:
@@ -167,6 +172,7 @@ class TurnAccumulator:
         previous = self.last_seq_by_stream.get(stream_id, 0)
         if seq <= previous:
             return False
+        self.received_any_event = True
         self.last_seq_by_stream[stream_id] = seq
         self.last_seq = max(self.last_seq, seq)
         self.last_event_ts = time.monotonic()
@@ -520,9 +526,9 @@ class HanakoSessionManager:
                 now = time.monotonic()
                 last = getattr(turn, "last_event_ts", 0.0)
                 created = getattr(turn, "created_at", last)
-                # 是否收到过本 turn 的事件（accept_event 只有带 seq+streamId 的事件
-                # 才会刷新 last_event_ts；纯 user echo 不刷新，仍视为"静默"）。
-                received_any_event = last > created
+                # 是否收到过本 turn 的事件：显式布尔（accept_event 命中置位），
+                # 不依赖时间戳严格递增（BugFix #2：monotonic 粒度下可能相等）。
+                received_any_event = bool(getattr(turn, "received_any_event", False))
                 if received_any_event and (now - last) < self.activity_timeout:
                     deadline = now + self.activity_timeout
                     continue
@@ -631,6 +637,17 @@ class HanakoSessionManager:
         if turn is None:
             return
         if turn.done:
+            return
+
+        # BugFix #3：_find_turn 会按 session_id/session_path 兜底匹配，同 session
+        # 其他消息的事件（如用户在 Hanako 主窗口同时发消息）会被路由到本 turn。
+        # 若事件携带 clientMessageId 且与本 turn 不匹配 → 是别的消息，直接拒绝：
+        # 不绑定 stream、不刷新 last_seq，避免污染本 turn 文本 / 掩盖静默。
+        # （与 _handle_user_echo 的 clientMessageId 校验同语义，这里覆盖全部事件类型。）
+        _event_client_id = event.get("clientMessageId")
+        if not _event_client_id and isinstance(event.get("message"), dict):
+            _event_client_id = event.get("message", {}).get("clientMessageId")
+        if _event_client_id and turn.client_message_id and _event_client_id != turn.client_message_id:
             return
 
         turn.bind_stream(event.get("streamId"))
@@ -857,6 +874,14 @@ class HanakoSessionManager:
             turn.state = TurnState.COMPLETED
             self._complete_turn(turn)
         except Exception as exc:
+            if not finish_on_missing:
+                # BugFix #1（QA #1）：静默恢复路径的 get_history 瞬时异常（REST 抖动）
+                # 不得提前判死 turn，更不得 abort 服务端——turn 保持存活，继续等
+                # WS 事件或走正常超时（服务端可能仍在生成）。
+                logger.warning(
+                    "[SM] silent recovery get_history 异常（忽略，继续等 WS 事件/超时）: %s", exc
+                )
+                return
             self._finish_with_error(turn, f"Stream recovery failed: {exc}")
 
     def _create_external_turn(self, event: dict[str, Any]) -> TurnAccumulator | None:

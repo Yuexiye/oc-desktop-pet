@@ -23,6 +23,7 @@ from core.hanako_session_manager import (
     HanakoSessionManager,
     HistoryPage,
     SessionRef,
+    TurnAccumulator,
 )
 
 
@@ -181,3 +182,107 @@ def test_normal_events_prevent_silent_recovery():
     assert result.error is None
     assert "晚上好呀" in result.text
     assert not getattr(turn, "_silent_recovery_tried", False), "正常事件流不应触发静默恢复"
+
+
+# ── 4. BugFix #2：显式 received_any_event（不依赖 monotonic 严格递增）──────
+
+
+def test_accept_event_sets_received_any_event_flag():
+    """accept_event 命中本 turn 事件 → received_any_event 置位（显式布尔）。"""
+    session = SessionRef("sess-1", "/agents/aimis/sessions/sess-1", "aimis")
+    turn = TurnAccumulator(session=session, client_message_id="ocpet_x", origin="oc_pet")
+    assert turn.received_any_event is False
+    # 模拟 monotonic 同 tick：时间戳没有严格增大（旧判断 last>created 会误判静默）
+    turn.last_event_ts = turn.created_at
+    assert turn.accept_event({"seq": 1, "streamId": "s1"}) is True
+    assert turn.received_any_event is True, "收到事件必须置位显式布尔，不依赖时间戳"
+
+
+def test_same_tick_event_not_treated_as_silent():
+    """同 tick 收到事件（last_event_ts==created_at）→ 按流式文本完成，
+    绝不被历史旧回复提前完成/截断（Fix 2 回归点）。"""
+    sm = _make_sm(grace=0.05)
+    sm.get_history = _history_with_reply  # 若误判静默会用旧回复提前完成（回归点）
+    session = SessionRef("sess-1", "/agents/aimis/sessions/sess-1", "aimis")
+
+    future = sm.send_message(session, "你好", display_text="你好")
+    turn = sm._pending_by_session[session.session_id]
+    # 模拟同 tick：收到事件后 last_event_ts 与 created_at 相等
+    turn.received_any_event = True
+    turn.last_event_ts = turn.created_at
+    # 正常流式继续（text_delta → turn_end）
+    for event in (
+        {"type": "text_delta", "sessionId": session.session_id,
+         "sessionPath": session.session_path, "streamId": "s1", "seq": 1, "delta": "实时回复"},
+        {"type": "turn_end", "sessionId": session.session_id,
+         "sessionPath": session.session_path, "streamId": "s1", "seq": 2},
+    ):
+        sm._handle_event(event)
+
+    result = future.result(timeout=5.0)
+    assert result.error is None
+    assert "实时回复" in result.text
+    assert "晚上好呀" not in result.text, "同 tick 收到事件的 turn 不得被历史旧回复截断"
+
+
+# ── 5. BugFix #1：静默恢复期间 get_history 异常不判死 turn ─────────────────
+
+
+def test_silent_recovery_ignores_get_history_exception():
+    """静默恢复路径 get_history 瞬时异常（REST 抖动）→ 不提前判死/不 abort，
+    turn 保持存活，继续等至 deadline 墙。"""
+    sm = _make_sm(grace=0.05, reply_timeout=180.0)
+
+    def boom(session, limit=30):
+        raise RuntimeError("REST 抖动")
+
+    sm.get_history = boom
+    session = SessionRef("sess-1", "/agents/aimis/sessions/sess-1", "aimis")
+    t0 = time.monotonic()
+    result = sm.send_and_wait(session, "你好", display_text="你好", timeout=0.3)
+    elapsed = time.monotonic() - t0
+
+    # 不应在静默宽限(0.05s)处因 get_history 异常提前判死；应走 deadline 墙(≥1s)
+    assert elapsed >= 0.5, "get_history 瞬时异常不得在静默宽限就判死 turn"
+    assert result.error is not None
+    assert "Stream recovery failed" in result.error
+
+
+# ── 6. BugFix #3：同 session 其他消息事件不污染本 turn ─────────────────────
+
+
+def test_foreign_message_events_rejected_for_pending_turn():
+    """用户在 Hanako 主窗口同时发消息（同 session、不同 clientMessageId）→
+    其事件不得绑定 stream / 刷新 last_seq / 积累文本污染本 turn。"""
+    sm = _make_sm(grace=0.05)
+    sm.get_history = _history_without_reply
+    session = SessionRef("sess-1", "/agents/aimis/sessions/sess-1", "aimis")
+
+    future = sm.send_message(session, "你好", display_text="你好")
+    turn = sm._pending_by_session[session.session_id]
+
+    # 外国消息事件：clientMessageId 不匹配 → 必须被拒绝
+    sm._handle_event({
+        "type": "text_delta", "sessionId": session.session_id,
+        "sessionPath": session.session_path, "streamId": "foreign-stream",
+        "seq": 1, "delta": "这是别人的回复", "clientMessageId": "other_client",
+    })
+    assert turn.stream_id is None, "外国事件不得绑定 stream"
+    assert turn.text_parts == [], "外国事件不得积累文本"
+    assert not turn.received_any_event, "外国事件不得标记本 turn 为活跃"
+    assert turn.last_seq == 0, "外国事件不得推进 last_seq"
+
+    # 本 turn 自己的事件仍正常完成
+    for event in (
+        {"type": "text_delta", "sessionId": session.session_id,
+         "sessionPath": session.session_path, "streamId": "own-stream",
+         "seq": 1, "delta": "本 turn 回复"},
+        {"type": "turn_end", "sessionId": session.session_id,
+         "sessionPath": session.session_path, "streamId": "own-stream", "seq": 2},
+    ):
+        sm._handle_event(event)
+
+    result = future.result(timeout=5.0)
+    assert result.error is None
+    assert "本 turn 回复" in result.text
+    assert "别人的回复" not in result.text
