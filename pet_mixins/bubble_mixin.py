@@ -138,7 +138,15 @@ class BubbleMixin:
         # G：celebrating 分支（在 safe_anims 收窄之前 return；开关关闭则降级旧 happy）。
         # 关键约束：只走 AvatarRenderer 统一接口（_status_mapper.render_for），
         # 绝不 import/触碰渲染器内部实现，不新增渲染线程。
+        # P2 节流：避免短时间内多次 tool_end 并发触发 celebrating
         if state == "celebrating":
+            now = time.time()
+            last_celeb = getattr(self, "_last_celebrating_at", 0.0)
+            if now - last_celeb < 5.0:  # 5s 内只触发一次 celebrating
+                logger.debug("celebrating 节流：距离上次 %.1fs < 5s，跳过", now - last_celeb)
+                return
+            self._last_celebrating_at = now
+            
             celeb_cfg = self.config.get("celebrating", {}) or {}
             if celeb_cfg.get("enabled", True):
                 try:
