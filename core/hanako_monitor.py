@@ -99,7 +99,9 @@ MONITOR_EVENT_TYPES = {
     "thinking_start",
     "thinking_delta",
     "text_delta",
+    "mood_start",   # P0：补齐边界，用于 mood 内省块累积
     "mood_text",
+    "mood_end",     # P0：补齐边界
     "vision_progress",
     "file_write_prepare",
     "tool_start",
@@ -186,7 +188,11 @@ def map_event_to_mood(event: dict) -> tuple:
         emotion = "thinking"
     elif event_type in ("text_delta", "mood_text"):
         message = "回复中"
-        emotion = "neutral"
+        if event_type == "mood_text":
+            # P0 修复：从 mood_text.delta 解析真实情绪词
+            emotion = _mood_keyword_score(str(event.get("delta") or event.get("data") or ""))
+        else:
+            emotion = "neutral"
     elif event_type == "vision_progress":
         message = "观察中"
         emotion = "neutral"
@@ -227,6 +233,66 @@ EMOTION_KEYWORDS = {
     "cute": ["喵", "呐", "呢", "哦～", "哦~", "嘛", "啾", "贴贴", "蹭蹭", "摸摸"],
     "missing": ["走了？", "去哪了", "还在吗", "人呢", "消失", "离开"],
 }
+
+# ── mood_text → 情绪映射（MOOD 意识流内省块） ─────────────────
+# Hanako 在 <mood>...</mood> 内以 "Vibe: 好奇 / Will: … / Sparks: …" 的
+# 结构化文本输出内省状态，Vibe 字段即情绪基调。把这些真实情绪词映射到
+# EXPRESSION_MAP 的 emotion key，驱动 Live2D 表情（而不仅靠 [emotion:xxx] 标签）。
+MOOD_WORD_TO_EMOTION = {
+    "happy": ["开心", "高兴", "愉快", "快乐", "兴奋", "愉悦", "轻松", "雀跃", "喜悦", "欢快", "温暖", "甜蜜", "欣慰", "自豪", "好", "haha", "lol", "excited", "joyful", "glad", "delighted", "happy"],
+    "surprised": ["好奇", "疑惑", "惊讶", "吃惊", "震惊", "意外", "诧异", "惊叹", "真的假的", "不会吧", "哇", "诶", "curious", "surprised", "shocked", "amazed", "wow"],
+    "angry": ["生气", "愤怒", "恼火", "不满", "烦躁", "恼", "气", "炸毛", "不耐烦", "讨厌", "可恶", "不爽", "angry", "annoyed", "frustrated", "mad"],
+    "sad": ["难过", "伤心", "低落", "委屈", "沮丧", "失落", "哀伤", "悲伤", "郁闷", "想哭", "惆怅", "心疼", "sad", "down", "upset", "melancholy", "heartbroken"],
+    "thinking": ["平静", "思考", "认真", "沉稳", "冷静", "沉思", "琢磨", "专注", "梳理", "权衡", "端详", "calm", "focused", "thinking", "pondering", "deliberate"],
+    "working": ["干劲", "投入", "忙碌", "高效", "行动", "推进", "执行", "解决", "工作", "working", "busy", "productive"],
+    "cute": ["温柔", "宠溺", "卖萌", "撒娇", "软", "亲昵", "可爱", "黏人", "甜甜的", "cute", "gentle", "affectionate", "playful"],
+    "missing": ["想念", "惦记", "担心", "牵挂", "不安", "等你", "想念你", "missing", "worried", "anxious"],
+}
+MOOD_EMOTION_PRIORITY = ["angry", "sad", "surprised", "happy", "thinking", "working", "cute", "missing"]
+
+
+def _mood_keyword_score(candidate: str) -> str:
+    """对 mood 文本做情绪词计分，返回得分最高的 emotion key。"""
+    if not candidate:
+        return "neutral"
+    lowered = candidate.lower()
+    scores = {k: 0 for k in MOOD_WORD_TO_EMOTION}
+    for emotion, words in MOOD_WORD_TO_EMOTION.items():
+        for word in words:
+            if word in lowered or word in candidate:
+                scores[emotion] += 1
+    best = "neutral"
+    best_score = 0
+    for emotion in MOOD_EMOTION_PRIORITY:
+        if scores[emotion] > best_score:
+            best_score = scores[emotion]
+            best = emotion
+    return best
+
+
+def mood_text_to_emotion(text: str) -> str:
+    """把 <mood> 内省块累积文本映射为 emotion key。
+
+    优先解析 "Vibe:" 字段（情绪基调）；无 Vibe 或未命中时对整段文本计分；
+    都未命中返回 "neutral"。结果直接喂 EXPRESSION_MAP 选择 Live2D 表情序列。
+    """
+    if not text or not isinstance(text, str):
+        return "neutral"
+    vibe = ""
+    for line in text.splitlines():
+        m = re.match(r"^\s*Vibe\s*[:：]\s*(.+?)\s*$", line)
+        if m:
+            vibe = m.group(1)
+            break
+    if not vibe:
+        m = re.search(r"Vibe\s*[:：]\s*([^\n<]+)", text)
+        if m:
+            vibe = m.group(1).strip()
+    if vibe:
+        emotion = _mood_keyword_score(vibe)
+        if emotion != "neutral":
+            return emotion
+    return _mood_keyword_score(text)
 
 STALE_TIMEOUT = 30
 # E-watchdog: 最后一次事件后超过此秒数且未收到 turn_end，强制回 idle
@@ -269,6 +335,9 @@ class HanakoMonitor:
         self._last_response_ts = 0  # response.json 的最后 ts（用于检测更新）
         self._last_audio_path = ""  # 最后播放的音频路径
         self._pending_notification_count = 0
+        # P0：mood_text 内省块累积（mood_start..mood_end 之间），
+        # 用于把真实情绪词映射到 emotion key，驱动 Live2D 表情。
+        self._mood_acc = ""
 
 
     def tick(self):
@@ -548,6 +617,23 @@ class HanakoMonitor:
         # 会话过滤：只观测本桌宠对应助手的活动
         if not self._event_belongs_to_agent(event):
             return
+        event_type = event.get("type", "")
+        
+        # P0 修复：mood_start/mood_text/mood_end —— 累积 <mood> 内省块文本，
+        # 解析真实情绪词（开心/好奇/生气…）映射到 emotion key 驱动 Live2D 表情。
+        # 之前 mood_text 只命中 EVENT_TO_MOOD 的 talking/neutral，delta 被丢弃。
+        if event_type == "mood_start":
+            self._mood_acc = ""
+            return
+        if event_type == "mood_text":
+            self._mood_acc += str(event.get("delta") or event.get("data") or "")
+            self._apply_mood_emotion()
+            return
+        if event_type == "mood_end":
+            self._apply_mood_emotion()
+            self._mood_acc = ""
+            return
+        
         result = map_event_to_mood(event)
         if result:
             mood, message, emotion = result
@@ -559,6 +645,7 @@ class HanakoMonitor:
                 self._current_emotion = "neutral"
                 self._current_state_name = "idle"
                 self._current_anim = "idle"
+                self._mood_acc = ""  # P0：清掉未收尾的 mood 内省块累积
                 if self._on_state_change:
                     self._on_state_change("idle", "", emotion="neutral", state="idle")
                 return
@@ -578,3 +665,18 @@ class HanakoMonitor:
             mapped = EXPRESSION_MAP.get(emotion, ("idle", None, None))
             anim = mapped[0] if isinstance(mapped, tuple) else mapped
             self._set_if_changed(anim, message, emotion=emotion, state=mood)
+    
+    def _apply_mood_emotion(self) -> None:
+        """把累积的 <mood> 内省块文本映射成 emotion 并推送到渲染层。
+
+        只推送识别出明确情绪词的状态（如 开心→happy、好奇→surprised），
+        neutral 不动表情，避免覆盖 thinking/working 等既有状态；
+        不受 push_event 的 1s 节流限制（mood 情绪变化是明确的转台信号）。
+        """
+        emotion = mood_text_to_emotion(self._mood_acc)
+        if emotion == "neutral" or emotion == self._current_emotion:
+            return
+        mapped = EXPRESSION_MAP.get(emotion, ("idle", None, None))
+        anim = mapped[0] if isinstance(mapped, tuple) else mapped
+        self._set_if_changed(anim, "", emotion=emotion, state="speaking")
+        self._last_event_push_at = 0.0  # 重置节流，不掩盖随后到达的 text_delta

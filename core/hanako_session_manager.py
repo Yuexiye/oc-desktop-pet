@@ -278,6 +278,9 @@ class HanakoSessionManager:
         self._pending_by_session: dict[str, TurnAccumulator] = {}
         self._pending_by_client: dict[str, TurnAccumulator] = {}
         self._pending_by_stream: dict[str, TurnAccumulator] = {}
+        # P0：超时判死但 abort 发送失败（如 WS 断线）的 session 登记表，
+        # 断线重连 READY 后补发 abort，避免服务端 turn 空转占住 session_busy。
+        self._abort_pending: dict[str, tuple[str, str | None]] = {}  # session_id -> (session_path, stream_id)
         self._sessions_by_id: dict[str, SessionRef] = {}
         self._sessions_by_path: dict[str, SessionRef] = {}
 
@@ -525,6 +528,32 @@ class HanakoSessionManager:
         )
         return True
 
+    def _abort_server_turn(self, turn: TurnAccumulator, reason: str = "client_timeout") -> None:
+        """Best-effort 通知服务端取消该 turn（P0 修复）。
+
+        客户端判死（超时/放弃）时主动 abort：不等待服务端 abort_result，
+        本地立即完成 turn；服务端收到 abort 后应取消当前工具/LLM 执行并释放
+        session_busy，避免后台空转（最长 20min）且锁死后续消息。
+        """
+        if turn is None or turn.done:
+            return
+        session = turn.session
+        try:
+            self.ws_client.abort_stream(
+                StreamCursor(session.session_id, session.session_path, turn.stream_id, turn.last_seq),
+                reason=reason,
+            )
+        except HanakoWSClientError:
+            logger.debug(
+                "[SM] best-effort abort send failed, will retry on reconnect "
+                "| session=%s stream=%s", session.session_id, turn.stream_id, exc_info=True,
+            )
+            with self._lock:
+                self._abort_pending[session.session_id] = (session.session_path, turn.stream_id)
+            return
+        with self._lock:
+            self._abort_pending.pop(session.session_id, None)
+
     def resolve_confirmation(
         self,
         confirm_id: str,
@@ -703,6 +732,24 @@ class HanakoSessionManager:
                 )
             except HanakoWSClientError:
                 break
+        
+        # P0：补发超时判死但当时未能送达的 abort（WS 曾不可用）
+        with self._lock:
+            pending_aborts = list(self._abort_pending.items())
+        for session_id, (session_path, stream_id) in pending_aborts:
+            with self._lock:
+                current = self._pending_by_session.get(session_id)
+                if current is not None and not current.done:
+                    continue  # 该 session 已有新 turn，不能再 abort
+            try:
+                self.ws_client.abort_stream(
+                    StreamCursor(session_id, session_path, stream_id, 0),
+                    reason="client_timeout",
+                )
+            except HanakoWSClientError:
+                continue
+            with self._lock:
+                self._abort_pending.pop(session_id, None)
 
     def _recover_from_history(self, turn: TurnAccumulator) -> None:
         if turn.done:
@@ -862,6 +909,9 @@ class HanakoSessionManager:
     def _finish_with_error(self, turn: TurnAccumulator, message: str) -> None:
         if turn.done:
             return
+        # P0 修复：客户端判死（超时/放弃）时主动 abort 服务端，避免服务端
+        # 继续执行工具/LLM（最长 20min）且 session_busy 锁死后续消息。
+        self._abort_server_turn(turn, reason="client_timeout")
         # 诊断：记录 turn 在失败时刻的状态（文本/工具事件数），便于区分
         # "WS 没送达最终回复" 与 "服务端根本没生成"（Bug A 排查）。
         logger.warning(
