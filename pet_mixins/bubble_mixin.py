@@ -185,8 +185,16 @@ class BubbleMixin:
 
         # 2. 动画(P3: 传递 emotion,支持帧区间)
         # 收窄：surprised/angry 不切瞪眼帧，避免高频瞪眼（只保留气泡情绪）
+        # P1 修复：turn_end 走 push_event 直通 idle，若 _current_anim 已是 idle 会跳过
+        # 下方 _set_anim_seq，导致前倾/脸红等贴图表情残留。state==idle 统一走
+        # renderer._force_idle()（ResetExpressions + FORCE 优先级强制回 idle）。
         try:
-            if anim_name != self._current_anim:
+            if state == "idle":
+                renderer = getattr(self, "_renderer", None)
+                if renderer is not None and hasattr(renderer, "_force_idle"):
+                    renderer._force_idle()
+                self._current_anim = "idle"
+            elif anim_name != self._current_anim:
                 safe_anims = ['idle', 'walk', 'extra']
                 if anim_name not in safe_anims:
                     anim_name = 'idle'

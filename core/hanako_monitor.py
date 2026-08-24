@@ -392,8 +392,9 @@ class HanakoMonitor:
             if now - self._last_response_time < 3.0:
                 derived_state = "speaking"
 
-        # 5. 超时空闲
-        if self._last_update > 0 and (now - self._last_update) > STALE_TIMEOUT:
+        # 5. E-watchdog：最后事件超过 WATCHDOG_TIMEOUT 秒且未收到 turn_end → 强制回 idle。
+        #    _last_update 由 push_event() 心跳维护（WS 事件模式）；文件轮询模式为 0 不触发。
+        if self._last_update > 0 and (now - self._last_update) > WATCHDOG_TIMEOUT:
             self._set_if_changed("idle", "", emotion="neutral", state="idle")
             derived_state = "idle"
 
@@ -617,6 +618,9 @@ class HanakoMonitor:
         # 会话过滤：只观测本桌宠对应助手的活动
         if not self._event_belongs_to_agent(event):
             return
+        # E-watchdog 心跳：本桌宠每次事件都刷新最后活动时间戳，
+        # 供 tick() 的 WATCHDOG_TIMEOUT 兜底检测。
+        self._last_update = time.time()
         event_type = event.get("type", "")
         
         # P0 修复：mood_start/mood_text/mood_end —— 累积 <mood> 内省块文本，
