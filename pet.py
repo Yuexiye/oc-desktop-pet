@@ -295,6 +295,11 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
 
         # ── 感知控制器(P2: 时间 + 情绪状态机 + 日程)──
         self._perception = PerceptionController(self._current_char)
+        # BugFix #5-D：Hanako 任务巡检命中 → 主动汇报（复用 proactive 触发链路）
+        try:
+            self._perception.set_inspection_callback(self._on_proactive_trigger)
+        except Exception as e:
+            logger.debug("Inspection callback wiring failed: %s", e)
         # 屏幕内容→情绪回调
         self._perception.screen.on_emotion = self._on_screen_emotion
         self._perception.screen.on_screen_proactive = self._on_screen_proactive
@@ -2288,9 +2293,12 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
                 display = name.replace('_', ' ').replace('-', ' ').title()
                 # ⚠️ PySide6 addAction(text, callable) 的 callable 在不同绑定
                 # 版本下有时传 triggered(bool checked)、有时不传。用 *args 兼容。
+                # BugFix #5-A：菜单手动播放必须用 FORCE 优先级——`_start_motion_at`
+                # 默认 NORMAL，Live2D 同优先级不打断正在播的 motion，连点第二个动作
+                # 会被静默拒绝（用户看到"第二个动作被忽略"）。
                 self._motion_submenu.addAction(
                     f"▶️ {display}",
-                    lambda *args, i=idx, r=renderer: r._start_motion_at(i),
+                    lambda *args, i=idx, r=renderer: self._start_menu_motion(r, i),
                 )
             self._motion_submenu.addSeparator()
 
@@ -2311,6 +2319,38 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         # 重置表情
         self._motion_submenu.addAction("🔄 重置表情", self._reset_motion_expression)
 
+    def _start_menu_motion(self, renderer, idx: int) -> None:
+        """右键菜单手动播放动作：用 FORCE 优先级强制打断当前动作。
+
+        BugFix #5-A 根因：`_start_motion_at` 默认 NORMAL 优先级，Live2D 同
+        优先级不打断正在播的 motion → 菜单连点两个不同动作时第二个被静默拒绝。
+        手动播放是用户明确意图，必须 FORCE 强制切换（每个播 3s 后由
+        GESTURE_TIMEOUT 回 idle）。自动随机动作路径（IDLE/NORMAL）不受影响。
+        """
+        try:
+            prio = renderer._live2d.MotionPriority.FORCE
+        except Exception:
+            prio = None  # 无 Live2D 环境（headless 单测等）→ 走默认 NORMAL
+        try:
+            start = renderer._start_motion_at
+            # 兼容旧式/非 Live2D 渲染器：_start_motion_at 不接受 priority 时不传
+            # （冒烟测试 FakeRenderer 等只实现 _start_motion_at(idx)）。
+            accepts_priority = False
+            try:
+                import inspect
+                params = inspect.signature(start).parameters
+                accepts_priority = "priority" in params or any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+                )
+            except Exception:
+                accepts_priority = False
+            if accepts_priority:
+                start(idx, priority=prio)
+            else:
+                start(idx)
+        except Exception as e:
+            logger.warning("菜单动作播放失败: %s", e)
+
     def _reset_motion_expression(self):
         """重置模型表情到默认，并回到 idle 动作。"""
         renderer = getattr(self, '_renderer', None)
@@ -2320,11 +2360,11 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         if not model:
             return
         try:
-            model.ResetExpressions()
-            renderer._expression_active = False
-            renderer._last_expression = ""
-            renderer._expression_suppress_until = 0.0
-            renderer._start_idle()
+            # BugFix #5-B 根因：旧实现先 ResetExpressions() 清表情（成功），再
+            # `_start_idle()`（IDLE 优先级）——IDLE 打不过正在播的非 idle 手势，
+            # 动作没切回 idle，表现为"重置表情无反应"。改走 `_force_idle()`
+            # （ResetExpressions + StopAllMotions + FORCE 优先级强制回 idle）。
+            renderer._force_idle()
         except Exception as e:
             logger.warning("重置表情失败: %s", e)
 

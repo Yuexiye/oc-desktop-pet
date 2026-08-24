@@ -153,7 +153,10 @@ class BubbleMixin:
                     self._update_status_indicator("celebrating")
                 except Exception:
                     pass
-                self._do_celebrating()
+                # BugFix #5-E：长任务完成带摘要汇报（tool_end details/summary
+                # 有实质摘要时显示摘要气泡+TTS；否则维持原庆祝动画）
+                summary = self._get_celebration_summary()
+                self._do_celebrating(summary=summary)
                 return
             # 开关关闭 → 恢复旧 happy 行为（mood=happy, anim=waving）
             state = "happy"
@@ -253,10 +256,28 @@ class BubbleMixin:
             self._idle_stage = None
             self._last_interaction = time.time()
 
+    def _get_celebration_summary(self) -> str:
+        """从 HanakoMonitor 取最近一次 tool_end 摘要（无实质摘要返回空串）。
+
+        BugFix #5-E：tool_end 携带 details/summary 且长度可观时，celebrating
+        显示「<摘要>」气泡 + TTS（复用现有庆祝链路的 bubble/TTS 管道），
+        否则维持原"完成啦"庆祝动画。
+        """
+        try:
+            monitor = getattr(self, "_hanako_monitor", None)
+            if monitor is not None and hasattr(monitor, "get_last_tool_end_summary"):
+                return monitor.get_last_tool_end_summary()
+        except Exception as e:
+            logger.debug("读取 tool_end 摘要失败: %s", e)
+        return ""
+
     # ── G：celebrating（庆祝态）主线程实现 ──
 
-    def _do_celebrating(self):
+    def _do_celebrating(self, summary: str = ""):
         """G celebrating：撒花动作 + 3s 情绪表情 + 气泡 + 完工音 + 3s 后回 idle。
+
+        BugFix #5-E：summary 非空时气泡/TTS 显示摘要（长任务完成汇报），
+        否则维持原「完成啦」庆祝动画。
 
         硬约束：只通过 AvatarRenderer 统一接口（PetStatusMapper.render_for）驱动，
         不 import/触碰渲染器内部实现（Live2D C 层/渲染线程），不新增渲染线程。
@@ -288,9 +309,10 @@ class BubbleMixin:
             self._set_surface_emotion("happy", duration_ms=3000, source="celebrating")
         except Exception:
             pass
-        # 3. 气泡（完工反馈）
+        # 3. 气泡（完工反馈；BugFix #5-E：有摘要显示摘要）
         try:
-            self._show_bubble("完成啦！", emotion="happy", priority=1)
+            bubble_text = (summary or "").strip() or "完成啦！"
+            self._show_bubble(bubble_text, emotion="happy", priority=1)
         except Exception:
             pass
         # 4. TTS 完工音：走现有 tts provider 管道，非阻塞（后台合成 → 信号回主线程）
@@ -298,7 +320,11 @@ class BubbleMixin:
             celeb_cfg = self.config.get("celebrating", {}) or {}
             tts_cfg = self.config.get("tts", {}) or {}
             if celeb_cfg.get("tts_enabled", True) and tts_cfg.get("enabled", True):
-                threading.Thread(target=self._synth_celebration_tts, daemon=True).start()
+                threading.Thread(
+                    target=self._synth_celebration_tts,
+                    args=((summary or "").strip() or "完成啦！",),
+                    daemon=True,
+                ).start()
         except Exception:
             pass
         # 5. 3s 后回 idle（复用 _pet_revert_timer，现有防御已覆盖 Live2D 手势超时）
@@ -308,8 +334,10 @@ class BubbleMixin:
         except Exception:
             pass
 
-    def _synth_celebration_tts(self):
-        """后台线程：合成完工音 → 信号回主线程播放（绝不直接碰 Qt/渲染）。
+    def _synth_celebration_tts(self, text: str = "完成啦！"):
+        """后台线程：合成完工音/摘要 → 信号回主线程播放（绝不直接碰 Qt/渲染）。
+
+        BugFix #5-E：text 可传入摘要文本（长任务完成汇报）；缺省维持"完成啦！"。
 
         合成不在主线程执行（cosyvoice 等 provider 的重型链路会冻住事件循环）；
         播放经 tts_celebration_signal（Qt Signal）自动转主线程。
@@ -332,7 +360,7 @@ class BubbleMixin:
                 except Exception:
                     _voice = ""
             audio = provider.synthesize(
-                "完成啦！", character_id=getattr(self, "_current_char", ""), voice=_voice,
+                text or "完成啦！", character_id=getattr(self, "_current_char", ""), voice=_voice,
             )
             if audio and os.path.exists(audio):
                 self.tts_celebration_signal.emit(audio)

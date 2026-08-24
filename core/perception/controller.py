@@ -31,6 +31,7 @@ from pathlib import Path
 from .time import TimePerception
 from .emotion import EmotionStateMachine
 from .schedule import SchedulePerception
+from .inspection import InspectionPerception
 from .flags import PetPermissions
 from .screen import ScreenPerception
 from .screen_types import ScreenEvent, ActivityEvent
@@ -62,7 +63,12 @@ class PerceptionController:
         self._character_id = character_id
         self._time = TimePerception()
         self._emotion = EmotionStateMachine()
-        self._schedule = SchedulePerception()
+        # BugFix #5-C：SchedulePerception 绑定 agent_id，读
+        # ~/.hanako/agents/<agent_id>/desk/cron-jobs.json（原 automation*.json 不存在）
+        self._schedule = SchedulePerception(agent_id=character_id)
+        # BugFix #5-D：Hanako 任务巡检（每 5 分钟观察者轮询）
+        self._inspection = InspectionPerception(self._schedule)
+        self._inspection_callback = None  # 巡检命中回调（pet.py 注入 _on_proactive_trigger）
         self._screen = ScreenPerception()
         self._proactive: ProactiveScheduler | None = None
         self._scene_memory = None  # C 场景记忆（收盘聚类透传；由 pet.py 注入）
@@ -105,6 +111,15 @@ class PerceptionController:
     @property
     def schedule(self) -> SchedulePerception:
         return self._schedule
+
+    @property
+    def inspection(self) -> InspectionPerception:
+        """Hanako 任务巡检（BugFix #5-D）。"""
+        return self._inspection
+
+    def set_inspection_callback(self, callback) -> None:
+        """注入巡检命中回调（命中文案 → 主动汇报链路）。"""
+        self._inspection_callback = callback
 
     @property
     def screen(self) -> ScreenPerception:
@@ -348,7 +363,7 @@ class PerceptionController:
     # ── 统一 tick（每 30 秒）──
 
     def tick(self):
-        """每 30 秒调用，驱动情绪衰减 + 主动对话检查 + 日程刷新 + M2 环境扫描"""
+        """每 30 秒调用，驱动情绪衰减 + 主动对话检查 + 日程刷新 + M2 环境扫描 + 任务巡检"""
         self._emotion.tick()
         if self._proactive:
             self._proactive.tick()
@@ -357,12 +372,32 @@ class PerceptionController:
             self._schedule.refresh()
             self._last_schedule_refresh = now
 
+        # ── BugFix #5-D: Hanako 任务巡检（内部 5 分钟节流）──
+        self._tick_inspection()
+
         # ── M2: 定期刷新环境扫描快照 ──
         if self._env_scanner and self._env_scanner_enabled:
             try:
                 self._scan_environment()
             except Exception as e:
                 logger.debug("M2 env scan tick failed: %s", e)
+
+    def _tick_inspection(self):
+        """D: 巡检命中 → 回调主动汇报（复用 proactive 触发链路）。"""
+        if self._inspection is None:
+            return
+        try:
+            triggers = self._inspection.tick()
+        except Exception as e:
+            logger.debug("Inspection tick failed: %s", e)
+            return
+        if not triggers or self._inspection_callback is None:
+            return
+        for text in triggers:
+            try:
+                self._inspection_callback(text)
+            except Exception as e:
+                logger.debug("Inspection callback failed: %s", e)
 
     def _scan_environment(self):
         """M2: 扫描当前环境并更新上下文
@@ -416,6 +451,10 @@ class PerceptionController:
         schedule_ctx = self._schedule.format_for_prompt()
         if schedule_ctx:
             parts.append(schedule_ctx)
+        # ── BugFix #5-D: 巡检命中注入 prompt（无命中返回空串）──
+        inspection_ctx = self._inspection.format_for_prompt()
+        if inspection_ctx:
+            parts.append(inspection_ctx)
         screen_ctx = self._screen.get_context()
         if screen_ctx:
             parts.append(screen_ctx)

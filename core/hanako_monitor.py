@@ -27,6 +27,12 @@ TODO_FILE = Path.home() / ".hanako/plugin-data/todo/todos.json"
 BUBBLE_MAX_CHARS = 72
 BUBBLE_MIN_SENTENCE_LEN = 8
 
+# ── BugFix #5-E：celebrating 带摘要汇报阈值 ───────────────
+# 摘要清洗后至少这么长才算"有实质摘要"（否则维持原庆祝动画）
+TOOL_END_SUMMARY_MIN_CHARS = 8
+# 工具链耗时超过该秒数视为"长任务"（无摘要文本时也主动汇报）
+LONG_TOOL_MIN_SECONDS = 30.0
+
 
 def clean_bubble_text(text: str) -> str:
     """清理气泡文本：去代码块、markdown、HTML 标签、元信息。
@@ -354,6 +360,54 @@ class HanakoMonitor:
         # P2-8：tool_end 独立节流——success→celebrating 会触发撒花+完工音，
         # WS 重放/镜像/工具链连续成功会产生高频 tool_end，10s 窗口内只推一次。
         self._tool_end_last_push = 0.0
+        # BugFix #5-E：缓存最近一次成功 tool_end 事件（celebrating 带摘要汇报用）
+        self._last_tool_end_event: dict = {}
+
+    # ── BugFix #5-E：tool_end 摘要提取 ─────────────────────
+
+    def get_last_tool_end_summary(self, max_chars: int = 72) -> str:
+        """最近一次成功 tool_end 的摘要文本（无实质摘要返回空串）。
+
+        数据来源：tool_end 事件的 details（dict.text/content 或 str）或 summary
+        字段；清洗（clean_bubble_text）+ 精简（compact_bubble_text）后返回。
+        清洗后长度 < TOOL_END_SUMMARY_MIN_CHARS 视为无实质摘要；此时若工具链
+        耗时 >= LONG_TOOL_MIN_SECONDS（长任务），回退"长任务完成啦"占位，
+        否则返回空串（调用方维持原庆祝动画）。
+        """
+        event = self._last_tool_end_event or {}
+        raw = ""
+        details = event.get("details")
+        if isinstance(details, dict):
+            raw = str(details.get("text") or details.get("content") or "")
+        elif isinstance(details, str):
+            raw = details
+        if not raw:
+            raw = str(event.get("summary") or "")
+        raw = (raw or "").strip()
+        if raw:
+            cleaned = clean_bubble_text(raw)
+            if len(cleaned) >= TOOL_END_SUMMARY_MIN_CHARS:
+                return compact_bubble_text(cleaned)[:max_chars]
+        duration = self._tool_end_duration_seconds(event)
+        if duration is not None and duration >= LONG_TOOL_MIN_SECONDS:
+            return "长任务完成啦"
+        return ""
+
+    @staticmethod
+    def _tool_end_duration_seconds(event: dict) -> float | None:
+        """从 tool_end 事件提取耗时（秒）；字段缺失/非法返回 None。"""
+        if not event:
+            return None
+        for key in ("duration", "elapsedMs", "elapsed_ms", "costMs", "elapsed", "duration_ms"):
+            v = event.get(key)
+            if v is None:
+                continue
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                continue
+            return v / 1000.0 if key in ("elapsedMs", "elapsed_ms", "costMs", "duration_ms") else v
+        return None
 
 
     def tick(self):
@@ -638,6 +692,9 @@ class HanakoMonitor:
         # 供 tick() 的 WATCHDOG_TIMEOUT 兜底检测。
         self._last_update = time.time()
         event_type = event.get("type", "")
+        # BugFix #5-E：缓存最近一次成功 tool_end 事件（celebrating 带摘要汇报用）
+        if event_type == "tool_end" and event.get("success", True) is not False:
+            self._last_tool_end_event = dict(event)
         
         # P0 修复：mood_start/mood_text/mood_end —— 累积 <mood> 内省块文本，
         # 解析真实情绪词（开心/好奇/生气…）映射到 emotion key 驱动 Live2D 表情。
