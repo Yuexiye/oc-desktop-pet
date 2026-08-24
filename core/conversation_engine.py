@@ -875,17 +875,41 @@ class ConversationEngine:
             return reply, None
         import re as _re
         import json as _json
-        try:
-            # 贪婪匹配到闭合标签前的最后一个 }，正确处理 params 内嵌的 }
-            matches = list(_re.finditer(r"\[action:\s*(\{.*\})\s*\]", reply, flags=_re.DOTALL))
-        except Exception:
-            return reply, None
-        if not matches:
-            return reply, None
-        intent: dict | None = None
+
+        # 逐个扫描 [action:{...}]：按大括号配平定位闭合 }，再要求其后紧跟 ]。
+        # 不用正则贪婪（``\{.*\}`` 配 DOTALL 会在一条回复含多个标签时把所有
+        # 标签吞成一个非法 JSON，导致 intent=None、动态参数被静默丢弃并退化 emotion
+        # 路径）。配平扫描可正确处理嵌套 params 与多标签（取最后一个合法标签）。
+        intent = None
         cleaned = reply
-        for m in matches:
-            raw = m.group(1)
+        i = 0
+        n = len(reply)
+        while True:
+            start = reply.find("[action:", i)
+            if start == -1:
+                break
+            b = reply.find("{", start)
+            if b == -1:
+                break
+            depth = 0
+            closed = -1
+            j = b
+            while j < n:
+                c = reply[j]
+                if c == "{":
+                    depth += 1
+                elif c == "}":
+                    depth -= 1
+                    if depth == 0:
+                        closed = j
+                        break
+                j += 1
+            # 未配平，或闭合 } 后不是 ] → 视为残缺标签，跳过继续向后找
+            if closed == -1 or closed + 1 >= n or reply[closed + 1] != "]":
+                i = start + 1
+                continue
+            full = reply[start:closed + 2]
+            raw = reply[b:closed + 1]
             try:
                 obj = _json.loads(raw)
             except Exception:
@@ -893,7 +917,8 @@ class ConversationEngine:
             if isinstance(obj, dict) and (obj.get("gesture") or obj.get("params")):
                 intent = obj
             # 无论 JSON 是否合法，都剥掉该标签
-            cleaned = cleaned.replace(m.group(0), " ")
+            cleaned = cleaned.replace(full, " ")
+            i = closed + 2
         cleaned = _re.sub(r"\s{2,}", " ", cleaned).strip()
         if intent is None:
             return cleaned, None

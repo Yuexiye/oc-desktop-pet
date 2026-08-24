@@ -62,5 +62,31 @@ class TestProactiveGenerationActionIntent(unittest.TestCase):
         self.assertIn("早点休息呀", cleaned)
 
 
+class TestParseActionIntentRobustness(unittest.TestCase):
+    def test_nested_params_single_tag(self):
+        from core.conversation_engine import ConversationEngine
+
+        reply = '认真呀 [action:{"gesture":"peek","intensity":0.6,"params":{"ParamAngleX":12,"ParamMouthOpenY":0.4}}]'
+        text, intent = ConversationEngine.parse_action_intent(None, reply)
+        self.assertIsNotNone(intent)
+        self.assertEqual(intent["params"]["ParamAngleX"], 12)
+        self.assertNotIn("[action:", text)
+
+    def test_multiple_tags_do_not_collapse(self):
+        """QA 隐患：一条回复多个 [action:] 标签时，贪婪正则会把全部吞成非法 JSON。
+        配平扫描应逐个解析，取最后一个合法标签，且不静默丢弃。"""
+        from core.conversation_engine import ConversationEngine
+
+        reply = (
+            '先探头 [action:{"gesture":"peek","intensity":0.6,"params":{"ParamAngleX":12}}]'
+            ' 再挥手 [action:{"gesture":"wave","intensity":0.8,"params":{"ParamAngleZ":10}}]'
+        )
+        text, intent = ConversationEngine.parse_action_intent(None, reply)
+        self.assertIsNotNone(intent, "多标签不应被吞成 None")
+        self.assertEqual(intent["gesture"], "wave")
+        self.assertEqual(intent["params"]["ParamAngleZ"], 10)
+        self.assertNotIn("[action:", text)
+
+
 if __name__ == "__main__":
     unittest.main()
