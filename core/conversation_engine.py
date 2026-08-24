@@ -606,14 +606,34 @@ class ConversationEngine:
             return
 
         # 1. LLM 回复（可能返回 tool_calls）
+        # BugFix #4：LLM/Hanako 可能耗时数十秒（工具链 / tool-silent 恢复前 /
+        # 慢模型 inference），用户只看到静止的"思考中..."气泡。这里起一个心跳
+        # 线程：每 6 秒推送一次"还在想..."续期气泡，避免 27s 静默无反馈。
+        _progress_stop = threading.Event()
+
+        def _progress_heartbeat():
+            while not _progress_stop.wait(6.0):
+                try:
+                    self.on_progress("还在想...")
+                except Exception:
+                    pass
+
+        _heartbeat = threading.Thread(
+            target=_progress_heartbeat, daemon=True, name="llm-progress-heartbeat"
+        )
+        _heartbeat.start()
         try:
-            perception_ctx = self._perception.build_context()
-            reply, emotion = self._adapter.chat(
-                message=text, inject_memory=True,
-                extra_context=perception_ctx,
-                tools=self._tools if self._tools else None,
-                source=source,
-            )
+            try:
+                perception_ctx = self._perception.build_context()
+                reply, emotion = self._adapter.chat(
+                    message=text, inject_memory=True,
+                    extra_context=perception_ctx,
+                    tools=self._tools if self._tools else None,
+                    source=source,
+                )
+            finally:
+                # chat 返回（或异常）即停心跳，避免 "还在想..." 覆盖后续回复气泡
+                _progress_stop.set()
 
             # 处理 tool_calls
             if isinstance(reply, dict) and reply.get("tool_calls"):

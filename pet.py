@@ -419,6 +419,9 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self._wire_voice_resolver()
         self._engine.on_reply = self._on_engine_reply
         self._engine.on_status = self._on_engine_status
+        # BugFix #4：LLM 慢（工具链/tool-silent/慢模型）时心跳推送"还在想..."，
+        # 复用 status 通道在主线程显示 thinking 气泡，避免 27s 静默无反馈。
+        self._engine.on_progress = self._on_engine_status
         self._engine.on_tts_ready = lambda: logger.info("Engine TTS ready")
         # M4: 桥接 on_tool_progress -> Qt Signal
         self._engine.on_tool_progress = lambda tool_name, phase, display_text, success: \

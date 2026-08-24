@@ -65,47 +65,6 @@ class SettingsDialog(QDialog):
         page_hint.setStyleSheet("color: rgb(%s); font-size: 11px; margin-bottom: 2px;" % rgb(self._ui_theme, "text_muted"))
         basic_layout.addWidget(page_hint)
 
-        # 角色包选择（桌宠角色唯一入口；agents 增删/启停已并入角色包体系）
-        if pet_manager:
-            pkg_group = QGroupBox("桌宠角色")
-            pkg_layout_g = QVBoxLayout(pkg_group)
-            pkg_hint = QLabel("切换当前桌宠使用的角色包。改动保存后立即生效。")
-            pkg_hint.setWordWrap(True)
-            pkg_hint.setStyleSheet("color: rgb(%s); font-size: 11px;" % rgb(self._ui_theme, "text_muted"))
-            pkg_layout_g.addWidget(pkg_hint)
-
-            pkg_select_layout = QHBoxLayout()
-            pkg_select_layout.addWidget(QLabel("角色包:"))
-
-            self._pkg_select = QComboBox()
-            self._pkg_select.addItem("默认", "default")
-            # 加载已安装的角色包
-            try:
-                from core.character_package import CharacterPackageManager
-                pkg_mgr = CharacterPackageManager()
-                installed = pkg_mgr.list_installed_packages()
-                for pkg in installed:
-                    self._pkg_select.addItem(pkg.name or "未知", pkg.agent_id)
-            except Exception:
-                pass
-
-            # 设置当前选中：以"实际启用中的桌宠"为准（agents[].enabled 是 pet_manager
-            # 启动时唯一读取的字段）。
-            # 任务 #3 修复：原来只读 config["character_package"]——角色包管理 tab 的
-            # _switch_pet 写的是 agents[].enabled + character，导致下拉框永远显示
-            # "默认"，且下拉框保存的 character_package 启动时无人读取（死字段）。
-            # 多个桌宠同时启用时显示"默认"（多宠模式不强制单一角色），绝不回退到
-            # 可能过期的 character_package——否则多宠用户点保存会被悄悄收敛成单宠。
-            current_pkg = self._current_active_agent_id() or "default"
-            idx = self._pkg_select.findData(current_pkg)
-            if idx >= 0:
-                self._pkg_select.setCurrentIndex(idx)
-
-            pkg_select_layout.addWidget(self._pkg_select, 1)
-            pkg_layout_g.addLayout(pkg_select_layout)
-
-            basic_layout.addWidget(pkg_group)
-
         # 行为模式
         beh_group = QGroupBox("行为模式")
         beh_layout = QFormLayout(beh_group)
@@ -983,8 +942,6 @@ class SettingsDialog(QDialog):
         # 统一应用切换：agents[].enabled + character + character_package
         self._apply_package_selection(agent_id)
         save_config(self._config)
-        # 同步基础 tab 的角色包下拉框，避免切过去仍显示"默认"（任务 #3）
-        self._sync_pkg_select(agent_id)
         self._pkg_status_label.setText(f"已切换到: {agent_id}")
         QMessageBox.information(self, "切换成功", f"桌宠已切换为 '{agent_id}'，重启后生效")
 
@@ -1002,7 +959,11 @@ class SettingsDialog(QDialog):
         return None
 
     def _sync_pkg_select(self, agent_id):
-        """把基础 tab 的角色包下拉框同步到指定 agent_id（找不到则不动）。"""
+        """把基础 tab 的角色包下拉框同步到指定 agent_id（找不到则不动）。
+
+        BugFix #4：基础 tab 的角色包下拉框已删除，本方法保留为兼容空操作
+        （M5 角色包管理 tab 切换时不再需要同步下拉框）。
+        """
         if not hasattr(self, "_pkg_select"):
             return
         idx = self._pkg_select.findData(agent_id)
@@ -1017,6 +978,9 @@ class SettingsDialog(QDialog):
           - 基础 tab 下拉框 _save 写 config["character_package"]（启动无人读取，死字段）
         统一后：agents[].enabled 是唯一启动真相源，character/character_package
         同步为展示字段，两处切换走同一套逻辑。
+
+        BugFix #4：基础 tab 的"角色包"下拉框已删除（用户意图：只保留角色包管理
+        tab 的切换入口），本函数现在只由 M5「切换选中桌宠」调用。
         """
         if not agent_id or agent_id == "default":
             return
@@ -1412,22 +1376,6 @@ class SettingsDialog(QDialog):
         # API .env
         self._save_env()
 
-        # 角色包选择（任务 #3 修复）：下拉框切换必须真正落到启动读取的
-        # agents[].enabled + character（pet_manager.launch_all 只认这两个），
-        # character_package 仅作展示同步——原来只写 character_package 是死字段，
-        # 重启后桌宠不变。
-        if hasattr(self, '_pkg_select'):
-            pkg_data = self._pkg_select.currentData()
-            if pkg_data:
-                if pkg_data == "default":
-                    # "默认" = 不强制切换：保留现有启用桌宠；若当前没有任何启用
-                    # 桌宠，则只记录展示字段。
-                    if not self._current_active_agent_id():
-                        c["character_package"] = "default"
-                else:
-                    self._apply_package_selection(pkg_data)
-                    c["character_package"] = pkg_data
-        
         # 渲染格式切换
         if hasattr(self, 'render_format_select'):
             fmt_data = self.render_format_select.currentData()

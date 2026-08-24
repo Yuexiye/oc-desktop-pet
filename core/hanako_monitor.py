@@ -34,6 +34,17 @@ def clean_bubble_text(text: str) -> str:
     """
     if not text:
         return ""
+    # BugFix #4：整段剥离 <mood>...</mood> 内省块（Vibe/Reflections/Will/Sparks
+    # 字段是给服务端/记忆用的元数据，不是给用户的回复）。必须在 HTML 标签剥离
+    # 之前做——否则 <mood> 标签被剥掉后只剩 Vibe 文本，后面的前缀剥离会漏。
+    text = re.sub(r'<mood>.*?</mood>', ' ', text, flags=re.IGNORECASE | re.DOTALL)
+    # BugFix #4：剥离结构化的 mood 前缀块（无 <mood> 包裹的纯文本形式）。
+    # LLM 输出或历史恢复常以 "Vibe: ..." / "Reflections: ..." / "Will: ..." /
+    # "Sparks: ..." 开头（一行或多行），全部剥到该段末尾，不上气泡。
+    text = re.sub(
+        r'(?im)^\s*(?:Vibe|Reflections|Will|Sparks)\s*[:：][^\n]*(?:\n|$)',
+        ' ', text,
+    )
     # 去代码块
     text = re.sub(r'```[\s\S]*?```', ' ', text)
     # 去行内代码

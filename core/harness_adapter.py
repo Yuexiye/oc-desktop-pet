@@ -207,7 +207,18 @@ class HanakoPetAdapter:
         messages.append({"role": "user", "content": user_content})
 
         try:
+            import time as _t
+            _t0 = _t.monotonic()
             resp = self._call_api(messages, tools=tools)
+            _elapsed = _t.monotonic() - _t0
+            # BugFix #4：显式记录慢 LLM 调用（>8s），便于区分"模型 inference 慢"
+            # 与"prompt/build_context 拖慢"（用户体感"思考中卡 27s"的根因排查）。
+            if _elapsed > 8.0:
+                logger.warning(
+                    "LLM 调用偏慢: %.1fs | model=%s | prompt_tokens≈%d | source=%s",
+                    _elapsed, self._model,
+                    sum(len(m.get("content") or "") for m in messages), source,
+                )
 
             # 检查是否是 tool_calls 响应
             if isinstance(resp, dict) and resp.get("tool_calls"):
@@ -495,7 +506,8 @@ class HanakoPetAdapter:
         """从文本解析 [emotion:xxx]，返回 (cleaned_text, emotion)
 
         全文匹配所有 [emotion:xxx]，取最后一个出现的 emotion。
-        额外剥离：agent 思考/MOOD 块（[ Vibe: ... ] 等），避免气泡显示内部思考。
+        额外剥离：agent 思考/MOOD 块（[ Vibe: ... ] / 纯文本 "Vibe:" 等），
+        避免气泡显示内部思考。
         """
         if not text:
             return "", "neutral"
@@ -503,6 +515,10 @@ class HanakoPetAdapter:
         em_matches = re.findall(r"\[\s*emotion\s*:\s*(\w+)\s*\]", text, flags=re.IGNORECASE)
         emotion = em_matches[-1].lower() if em_matches else "neutral"
         cleaned = re.sub(r"\s*\[\s*emotion\s*:\s*\w+\s*\]\s*", " ", text, flags=re.IGNORECASE)
+        # BugFix #4：整段剥离 <mood>...</mood> 内省块（Vibe/Reflections/Will/
+        # Sparks 字段是给服务端/记忆用的元数据，不是给用户的回复）——必须在
+        # HTML 剥离之前做，否则 <mood> 标签被剥掉后只剩 Vibe 文本。
+        cleaned = re.sub(r"<mood>.*?</mood>", " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
         # 剥离 agent 思考/MOOD 块：以 [ Vibe:/Sparks:/Reflections:/Will: 开头的成块内容。
         # 先剥闭合块（到 ] 为止，可跨行），再剥未闭合残余（到文本末尾）。
         # 注意不能依赖 MULTILINE 的 $ 作边界（会在块内第一行行尾提前停下）。
@@ -514,6 +530,13 @@ class HanakoPetAdapter:
             r"^\[\s*(?:Vibe|Sparks|Reflections|Will)\b[\s\S]*$",
             "", cleaned, flags=re.IGNORECASE | re.MULTILINE | re.DOTALL
         ).strip()
+        # BugFix #4：剥离纯文本（无方括号）形式的 mood 前缀块——LLM 输出或
+        # 历史恢复常以 "Vibe: ..." / "Reflections: ..." / "Will: ..." /
+        # "Sparks: ..." 开头（一行或多行），全部剥到该段末尾，不上气泡。
+        cleaned = re.sub(
+            r"(?im)^\s*(?:Vibe|Sparks|Reflections|Will)\s*[:：][^\n]*(?:\n|$)",
+            "", cleaned,
+        )
         # 剥离表情包 XML 段：<parameter name=...>值</parameter> 整段剥掉
         cleaned = re.sub(r"<parameter[^>]*>.*?</parameter>", "", cleaned, flags=re.S)
         # 剥离其余残留标签（<brioqingbao_express> 等）

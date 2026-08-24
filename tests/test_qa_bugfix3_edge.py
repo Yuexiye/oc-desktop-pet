@@ -7,10 +7,13 @@
     `not received_final_text` 永久为假 → turn 拖到 deadline 墙才恢复。
     修复：① 标志只在 turn_end 置位；② 恢复条件改 `not turn.done`；
           ③ _recover_from_history 以历史权威文本整体替换 text_parts。
-  - Problem B：设置面板「角色包」切换重启不生效。
+  - Problem B：设置面板「角色包」切换重启不生效（commit 091263c 修复）。
     根因：基础 tab 下拉框只写 character_package（启动无人读取的死字段）。
     修复：统一以 agents[].enabled 为启动真相源，_apply_package_selection /
           _current_active_agent_id / _sync_pkg_select 三函数统一。
+    BugFix #4（本任务）：用户意图是**删除**基础 tab 的角色包下拉框，只保留
+    角色包管理 tab（M5）的「切换选中桌宠」；因此本文件不再断言 _pkg_select
+    存在，改为断言其不存在 + _save 不写 character_package。
 
 本文件独立验证（非重跑工程师测试），针对 team-lead 指定边界：
   a) 多 tool 事件密集 + 空 text_delta → tool-silent 恢复触发，且 text_parts
@@ -297,7 +300,7 @@ def test_turn_end_without_text_completes_empty_without_recovery():
 
 
 class _StubPetManager:
-    """仅用于让 SettingsDialog 构建"桌宠角色"分组（构造时只判真值）。"""
+    """仅用于让 SettingsDialog 构建（pet_manager 传入后不应再触发下拉框）。"""
 
     def __init__(self):
         self.agents = []
@@ -344,14 +347,14 @@ def test_apply_package_selection_then_startup_read_effective():
 
 
 def test_old_config_without_agents_list_is_compatible():
-    """旧配置只有 character_package、没有 agents[] → 下拉框显示"默认"（不回退
-    死字段），_apply_package_selection 会新建 agents[] 条目并置 enabled，保证
-    重启生效（旧实现只写 character_package 无人读取）。"""
+    """旧配置只有 character_package、没有 agents[] → _apply_package_selection
+    会新建 agents[] 条目并置 enabled，保证重启生效（旧实现只写 character_package
+    无人读取）。BugFix #4 后基础 tab 无下拉框，不再断言下拉框显示。"""
     config = {"character_package": "shizuku", "character": "shizuku"}
     dialog = _build_dialog(config)
 
     assert dialog._current_active_agent_id() is None, "无 agents[] 时应视为无启用桌宠"
-    assert dialog._pkg_select.currentData() == "default", "无 agents[] 时下拉框应显示默认"
+    assert not hasattr(dialog, "_pkg_select"), "BugFix #4：基础 tab 不应有角色包下拉框"
 
     dialog._apply_package_selection("shizuku")
     by_id = {a["id"]: a for a in config.get("agents", [])}
@@ -364,14 +367,15 @@ def test_old_config_without_agents_list_is_compatible():
 
 
 def test_save_with_default_in_multi_pet_mode_does_not_converge_to_single():
-    """多宠模式（≥2 个启用）下拉框显示"默认"，保存后 agents[].enabled 不变
-    （绝不悄悄收敛成单宠）；_current_active_agent_id 返回 None。"""
+    """多宠模式（≥2 个启用）保存后 agents[].enabled 不变（绝不悄悄收敛成单宠）；
+    _current_active_agent_id 返回 None。BugFix #4 后无下拉框，不写死 character_package。"""
     config = _base_config()
+    config.pop("character_package", None)  # 输入不带死字段，断言 _save 不会新增
     config["agents"][1]["enabled"] = True  # miku + yuexinmiao 同时启用
     dialog = _build_dialog(config)
 
     assert dialog._current_active_agent_id() is None, "多宠模式应返回 None"
-    assert dialog._pkg_select.currentData() == "default", "多宠模式下拉框应显示默认"
+    assert not hasattr(dialog, "_pkg_select"), "BugFix #4：基础 tab 不应有角色包下拉框"
 
     saved = {}
     import ui.settings_dialog as sd
@@ -384,6 +388,6 @@ def test_save_with_default_in_multi_pet_mode_does_not_converge_to_single():
     by_id = {a["id"]: a for a in saved.get("agents", [])}
     assert by_id["miku"]["enabled"] is True, "多宠模式保存不得收敛成单宠"
     assert by_id["yuexinmiao"]["enabled"] is True
-    assert saved.get("character_package") == "default" or "character_package" not in saved, (
-        "保存默认不强制切换，展示字段不写死过期值"
+    assert "character_package" not in saved, (
+        "BugFix #4：基础 tab 保存不再写 character_package 死字段"
     )
