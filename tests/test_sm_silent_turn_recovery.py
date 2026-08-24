@@ -488,8 +488,10 @@ def test_tool_silent_recovery_retries_until_reply_available():
     assert not getattr(turn, "_silent_recovery_tried", False), "仅 tool 事件不应走原静默分支"
 
 
-def test_final_text_event_flag_set_only_by_text_delta_and_turn_end():
-    """received_final_text_event 只由 text_delta/turn_end 置位，tool 事件不置位。"""
+def test_final_text_event_flag_set_only_by_turn_end():
+    """received_final_text_event 只在 turn_end 置位；text_delta 是**增量**事件
+    （可能为空/部分），置位会误判"已拿到最终文本"、永久屏蔽 tool-silent 恢复
+    （任务 #3 修正：多 tool 事件 + 空 text_delta 场景实测复现卡死）。"""
     sm = _make_sm(grace=5.0)
     session = SessionRef("sess-1", "/agents/aimis/sessions/sess-1", "aimis")
 
@@ -507,13 +509,90 @@ def test_final_text_event_flag_set_only_by_text_delta_and_turn_end():
         "type": "text_delta", "sessionId": session.session_id,
         "sessionPath": session.session_path, "streamId": "s1", "seq": 2, "delta": "hi",
     })
-    assert turn.received_final_text_event is True, "text_delta 应置最终文本标志"
+    assert turn.received_final_text_event is False, (
+        "text_delta 是增量事件，不得置最终文本标志（否则空 delta 会永久卡死恢复）"
+    )
 
     sm._handle_event({
         "type": "turn_end", "sessionId": session.session_id,
         "sessionPath": session.session_path, "streamId": "s1", "seq": 3,
     })
+    assert turn.received_final_text_event is True, "turn_end 是权威终态信号，应置位"
     result = future.result(timeout=5.0)
     assert result.error is None
     assert result.text == "hi"
+
+
+def test_multi_dense_tool_events_with_empty_text_delta_recovers():
+    """任务 #3 核心回归：3 个 tool 事件密集到达 + 中间夹空 text_delta（无
+    turn_end）→ 旧代码 received_final_text_event 被空 delta 误置位，tool-silent
+    分支被永久屏蔽，turn 拖到 deadline 墙（~2-3min）才恢复，用户看到"工具气泡有、
+    最终回复气泡/TTS 没有"。修复后：静默 grace 一过立即从历史恢复，且空 delta
+    不再污染 text_parts（否则恢复后仍无正文）。"""
+    sm = _make_sm(grace=0.05, reply_timeout=180.0)
+    sm.get_history = _history_with_reply
+    session = SessionRef("sess-1", "/agents/aimis/sessions/sess-1", "aimis")
+
+    holder: dict = {}
+    def run():
+        holder["result"] = sm.send_and_wait(session, "你好", display_text="你好", timeout=180.0)
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    turn = _wait_for_turn(sm, session)
+
+    # 模拟真实日志事件流：3 个 tool_start 密集到达，中间夹一个空 text_delta
+    for event in (
+        {"type": "tool_start", "sessionId": session.session_id,
+         "sessionPath": session.session_path, "streamId": "tool-stream",
+         "seq": 1, "name": "biaoqingbao_search_stickers"},
+        {"type": "tool_start", "sessionId": session.session_id,
+         "sessionPath": session.session_path, "streamId": "tool-stream",
+         "seq": 2, "name": "search_memory"},
+        {"type": "text_delta", "sessionId": session.session_id,
+         "sessionPath": session.session_path, "streamId": "tool-stream",
+         "seq": 3, "delta": ""},
+        {"type": "tool_start", "sessionId": session.session_id,
+         "sessionPath": session.session_path, "streamId": "tool-stream",
+         "seq": 4, "name": "biaoqingbao_express"},
+    ):
+        sm._handle_event(event)
+        time.sleep(0.01)
+    t.join(timeout=8.0)
+
+    assert not t.is_alive(), "多 tool 事件 + 空 text_delta 也应从历史恢复并返回"
+    result = holder["result"]
+    assert result.error is None
+    assert "晚上好呀" in result.text, f"空 delta 不得污染最终文本: {result.text!r}"
+    assert turn.received_final_text_event is False, "空 text_delta 不得置最终文本标志"
+    assert turn.received_any_event is True
+    assert float(getattr(turn, "_last_tool_silent_recovery_ts", 0.0)) > 0.0, (
+        "应已触发 tool-silent 恢复"
+    )
+
+
+def test_partial_text_delta_then_stream_death_still_recovers():
+    """任务 #3 边界：text_delta 携带部分文本后流中断（无 turn_end）→ 旧代码
+    received_final_text_event=True 永久屏蔽恢复。修复后：静默超过 grace 即从历史
+    恢复权威最终文本（历史有完整回复时不展示残缺部分）。"""
+    sm = _make_sm(grace=0.05, reply_timeout=180.0)
+    sm.get_history = _history_with_reply
+    session = SessionRef("sess-1", "/agents/aimis/sessions/sess-1", "aimis")
+
+    holder: dict = {}
+    def run():
+        holder["result"] = sm.send_and_wait(session, "你好", display_text="你好", timeout=180.0)
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    turn = _wait_for_turn(sm, session)
+
+    sm._handle_event({
+        "type": "text_delta", "sessionId": session.session_id,
+        "sessionPath": session.session_path, "streamId": "s1", "seq": 1, "delta": "晚",
+    })
+    t.join(timeout=6.0)
+
+    assert not t.is_alive(), "部分 text_delta 后流中断也应从历史恢复"
+    result = holder["result"]
+    assert result.error is None
+    assert "晚上好呀" in result.text, f"应恢复历史完整回复，实际={result.text!r}"
 

@@ -89,8 +89,14 @@ class SettingsDialog(QDialog):
             except Exception:
                 pass
 
-            # 设置当前选中
-            current_pkg = self._config.get("character_package", "default")
+            # 设置当前选中：以"实际启用中的桌宠"为准（agents[].enabled 是 pet_manager
+            # 启动时唯一读取的字段）。
+            # 任务 #3 修复：原来只读 config["character_package"]——角色包管理 tab 的
+            # _switch_pet 写的是 agents[].enabled + character，导致下拉框永远显示
+            # "默认"，且下拉框保存的 character_package 启动时无人读取（死字段）。
+            # 多个桌宠同时启用时显示"默认"（多宠模式不强制单一角色），绝不回退到
+            # 可能过期的 character_package——否则多宠用户点保存会被悄悄收敛成单宠。
+            current_pkg = self._current_active_agent_id() or "default"
             idx = self._pkg_select.findData(current_pkg)
             if idx >= 0:
                 self._pkg_select.setCurrentIndex(idx)
@@ -967,15 +973,53 @@ class SettingsDialog(QDialog):
         row = self._pkg_list.currentRow()
         if row < 0:
             return
-        
+
         item = self._pkg_list.item(row)
         agent_id = item.data(Qt.UserRole)
         if not agent_id:
             item_text = item.text()
             agent_id = item_text.split(" ")[0]
-        
-        # 保存到配置并持久化：pet_manager 启动时读取 agents 列表，
-        # 因此需要把选中的角色设为启用、其余角色禁用（并保留原有配置）。
+
+        # 统一应用切换：agents[].enabled + character + character_package
+        self._apply_package_selection(agent_id)
+        save_config(self._config)
+        # 同步基础 tab 的角色包下拉框，避免切过去仍显示"默认"（任务 #3）
+        self._sync_pkg_select(agent_id)
+        self._pkg_status_label.setText(f"已切换到: {agent_id}")
+        QMessageBox.information(self, "切换成功", f"桌宠已切换为 '{agent_id}'，重启后生效")
+
+    def _current_active_agent_id(self):
+        """返回当前启用中的桌宠 agent_id（agents[].enabled=True 的项）。
+
+        多个同时启用时返回 None（多宠模式，下拉框显示"默认"不强制单一角色）。
+        """
+        try:
+            enabled = [a.get("id") for a in self._config.get("agents", []) if a.get("enabled")]
+        except Exception:
+            return None
+        if len(enabled) == 1:
+            return enabled[0]
+        return None
+
+    def _sync_pkg_select(self, agent_id):
+        """把基础 tab 的角色包下拉框同步到指定 agent_id（找不到则不动）。"""
+        if not hasattr(self, "_pkg_select"):
+            return
+        idx = self._pkg_select.findData(agent_id)
+        if idx >= 0:
+            self._pkg_select.setCurrentIndex(idx)
+
+    def _apply_package_selection(self, agent_id):
+        """统一应用"切换桌宠"语义（不落盘，由调用方决定保存时机）。
+
+        任务 #3 修复：设置面板原来有两套互不相通的机制——
+          - 角色包管理 tab _switch_pet 写 config["character"] + agents[].enabled（启动生效）
+          - 基础 tab 下拉框 _save 写 config["character_package"]（启动无人读取，死字段）
+        统一后：agents[].enabled 是唯一启动真相源，character/character_package
+        同步为展示字段，两处切换走同一套逻辑。
+        """
+        if not agent_id or agent_id == "default":
+            return
         agents = self._config.setdefault("agents", [])
         found = False
         for a in agents:
@@ -987,7 +1031,8 @@ class SettingsDialog(QDialog):
         if not found:
             is_builtin = False
             try:
-                if self._pkg_mgr and (self._pkg_mgr.characters_dir / agent_id).exists():
+                pkg_mgr = getattr(self, "_pkg_mgr", None)
+                if pkg_mgr is not None and (pkg_mgr.characters_dir / agent_id).exists():
                     is_builtin = True
             except Exception:
                 pass
@@ -999,9 +1044,7 @@ class SettingsDialog(QDialog):
                 "builtin": is_builtin,
             })
         self._config["character"] = agent_id
-        save_config(self._config)
-        self._pkg_status_label.setText(f"已切换到: {agent_id}")
-        QMessageBox.information(self, "切换成功", f"桌宠已切换为 '{agent_id}'，重启后生效")
+        self._config["character_package"] = agent_id
 
     # ── Provider Catalog ──
 
@@ -1369,11 +1412,21 @@ class SettingsDialog(QDialog):
         # API .env
         self._save_env()
 
-        # 角色包选择
+        # 角色包选择（任务 #3 修复）：下拉框切换必须真正落到启动读取的
+        # agents[].enabled + character（pet_manager.launch_all 只认这两个），
+        # character_package 仅作展示同步——原来只写 character_package 是死字段，
+        # 重启后桌宠不变。
         if hasattr(self, '_pkg_select'):
             pkg_data = self._pkg_select.currentData()
             if pkg_data:
-                c["character_package"] = pkg_data
+                if pkg_data == "default":
+                    # "默认" = 不强制切换：保留现有启用桌宠；若当前没有任何启用
+                    # 桌宠，则只记录展示字段。
+                    if not self._current_active_agent_id():
+                        c["character_package"] = "default"
+                else:
+                    self._apply_package_selection(pkg_data)
+                    c["character_package"] = pkg_data
         
         # 渲染格式切换
         if hasattr(self, 'render_format_select'):

@@ -538,23 +538,25 @@ class HanakoSessionManager:
                 # 是否收到过本 turn 的事件：显式布尔（accept_event 命中置位），
                 # 不依赖时间戳严格递增（BugFix #2：monotonic 粒度下可能相等）。
                 received_any_event = bool(getattr(turn, "received_any_event", False))
-                # BugFix #4（任务 #2）：是否收到过最终文本事件（text_delta/turn_end）。
-                received_final_text = bool(getattr(turn, "received_final_text_event", False))
-                # BugFix #4（任务 #2）：turn 收到过事件（如 tool_start/tool_end 的
-                # 进度推送），但**从未收到最终文本事件**——典型场景是 turn 身份与 WS
-                # 事件不匹配：工具进度事件能到达（hanako_monitor 独立推送分支），而
-                # 本 turn 的流式 text_delta/turn_end 永远不会来。工具链静默超过
-                # silent_turn_grace 秒后主动从会话历史恢复；历史暂无回复则继续等
-                # （finish_on_missing=False，绝不提前判死），并每隔 grace 秒重试，
-                # 直到 deadline 墙兜底。修复"工具气泡有、最终回复气泡/TTS 没有"。
-                if (received_any_event and not received_final_text and not turn.done
+                # BugFix #4（任务 #2）+ 任务 #3 修正：turn 收到过事件（tool_start/
+                # text_delta 等），但**从未被终态事件完成**（turn_end/error/abort
+                # 未到）——典型场景是 turn 身份与 WS 事件不匹配：工具进度事件能到达
+                # （hanako_monitor 独立推送分支），而本 turn 的 turn_end 永远不会来；
+                # 或 text_delta 到达后流中断（含空 delta），received_final_text_event
+                # 误置位把旧条件 `not received_final_text` 永久卡死。修复：只依据
+                # `not turn.done`（turn_end/error/abort 都会置 done，即"已拿到最终
+                # 文本"的权威信号），工具链/流静默超过 silent_turn_grace 秒后主动
+                # 从会话历史恢复；历史暂无回复则继续等（finish_on_missing=False，
+                # 绝不提前判死），并每隔 grace 秒重试，直到 deadline 墙兜底。
+                # 修复"工具气泡有、最终回复气泡/TTS 没有"（多 tool 事件密集场景）。
+                if (received_any_event and not turn.done
                         and (now - last) >= self.silent_turn_grace):
                     last_tool_recovery = float(getattr(turn, "_last_tool_silent_recovery_ts", 0.0))
                     if (now - last_tool_recovery) >= self.silent_turn_grace:
                         turn._last_tool_silent_recovery_ts = now
                         logger.warning(
-                            "[SM] tool-silent turn: %.0fs 仅收到 tool/thinking 事件、"
-                            "无最终文本事件，尝试从会话历史恢复 (session=%s)",
+                            "[SM] tool-silent turn: %.0fs 仅收到活跃事件、"
+                            "无终态完成，尝试从会话历史恢复 (session=%s)",
                             now - last, getattr(turn.session, "session_id", "?"),
                         )
                         try:
@@ -691,9 +693,16 @@ class HanakoSessionManager:
             with self._lock:
                 self._pending_by_stream[turn.stream_id] = turn
 
-        # BugFix #4（任务 #2）：text_delta/turn_end 是"携带最终回复文本"的事件。
-        # tool_*/thinking_* 只算活跃不算终态——见 TurnAccumulator.received_final_text_event。
-        if event_type in {"text_delta", "turn_end"}:
+        # BugFix #4（任务 #2）+ 任务 #3 修正：received_final_text_event 只在
+        # turn_end 置位。text_delta 是**增量**事件——服务端可能先推空 delta 再推
+        # 正文，也可能推了部分 delta 后流中断（turn_end 永远不到）。若 text_delta
+        # 就置位，会把"已拿到最终文本"误判为 True，永久屏蔽 tool-silent 恢复分支，
+        # 导致 turn 拖到 deadline 墙（~2-3min）才恢复，用户看到"工具气泡有、最终
+        # 回复气泡/TTS 没有"（多 tool 事件密集 + 空 text_delta 场景实测复现）。
+        # turn_end 才是唯一权威的"最终文本已送达"信号，且 turn_end 会走
+        # _complete_turn（turn.done=True）——tool-silent 分支的 `not turn.done`
+        # 已天然排除已完成 turn。
+        if event_type == "turn_end":
             turn.received_final_text_event = True
 
         if event_type == "session_user_message":
@@ -904,10 +913,13 @@ class HanakoSessionManager:
                     return
                 self._finish_with_error(turn, "Stream ended before reply history was available")
                 return
-            if not turn.text_parts:
-                turn.text_parts.append(str(assistant.get("content") or ""))
-            if not turn.thinking_parts:
-                turn.thinking_parts.append(str(assistant.get("thinking") or ""))
+            # 任务 #3：恢复路径以历史权威文本为准——流式 text_parts 可能被空 delta
+            # 污染（[""]）或只有中断的残缺文本（如"晚"），都直接替换为历史完整
+            # 回复，避免用户看到空壳/残句（修复"工具气泡有、最终回复气泡/TTS 没
+            # 有"）。thinking 同理只填非空（思考内容不展示，保持原语义）。
+            turn.text_parts[:] = [str(assistant.get("content") or "")]
+            if not any(str(part).strip() for part in turn.thinking_parts):
+                turn.thinking_parts[:] = [str(assistant.get("thinking") or "")]
             if not turn.content_blocks:
                 turn.content_blocks.extend(history.content_blocks)
             turn.state = TurnState.COMPLETED
