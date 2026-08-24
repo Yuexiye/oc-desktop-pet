@@ -840,17 +840,20 @@ class ScreenPerception:
                 return
 
     # ── 屏幕感知主动评论模板 ──
+    # 注：模板经 .format(detail=...) 渲染，正文里的 JSON 大括号必须写成 {{ }} 转义，
+    # 否则 .format 会把 {gesture:...} 当成字段名抛 KeyError。
+    # 动作意图用结构化 [action:{...}]（动态模型参数），取代旧的固定 [emotion:xxx] 标签。
     _PROACTIVE_TEMPLATES = [
         # 自由评论型
-        "你是一个桌宠，你看到用户的屏幕内容如下：\n{detail}\n\n根据你看到的内容，自由发挥说一句话（10-30字）。不要用固定格式，像真正看到屏幕的人一样自然反应。可以吐槽、关心、好奇、或者评论。可以问问题。加 [emotion:xxx]。",
+        "你是一个桌宠，你看到用户的屏幕内容如下：\n{detail}\n\n根据你看到的内容，自由发挥说一句话（10-30字）。不要用固定格式，像真正看到屏幕的人一样自然反应。可以吐槽、关心、好奇、或者评论。可以问问题。结尾用 [action:{{\"gesture\":\"<动作名>\",\"intensity\":<0到1>,\"params\":{{<可选Live2D参数>}}}}] 表达你看到这幕时的动作/表情倾向：例如好奇探头 [action:{{\"gesture\":\"peek\",\"intensity\":0.6,\"params\":{{\"ParamAngleX\":12}}}}]，看到好玩的兴奋 [action:{{\"gesture\":\"excited\",\"intensity\":0.7,\"params\":{{\"ParamAngleZ\":8}}}}]。普通闲聊可省略标签，只说正文。",
         # 好奇提问型
-        "你是一个桌宠，你偷看了一眼用户的屏幕：\n{detail}\n\n你很好奇，用好奇的语气问用户一个问题（10-30字）。自然一点，不要像机器。加 [emotion:xxx]。",
+        "你是一个桌宠，你偷看了一眼用户的屏幕：\n{detail}\n\n你很好奇，用好奇的语气问用户一个问题（10-30字）。自然一点，不要像机器。结尾用 [action:{{\"gesture\":\"<动作名>\",\"intensity\":<0到1>,\"params\":{{<可选Live2D参数>}}}}] 表达你看到这幕时的动作/表情倾向：例如歪头好奇 [action:{{\"gesture\":\"curious\",\"intensity\":0.6,\"params\":{{\"ParamAngleX\":-10}}}}]。普通闲聊可省略标签，只说正文。",
         # 鼓励型
-        "你是一个桌宠，你看到用户正在：\n{detail}\n\n用鼓励或支持的语气说一句话（10-30字）。真诚一点，不要太假。加 [emotion:xxx]。",
+        "你是一个桌宠，你看到用户正在：\n{detail}\n\n用鼓励或支持的语气说一句话（10-30字）。真诚一点，不要太假。结尾用 [action:{{\"gesture\":\"<动作名>\",\"intensity\":<0到1>,\"params\":{{<可选Live2D参数>}}}}] 表达你给鼓励时的动作/表情：例如握拳打气 [action:{{\"gesture\":\"cheer\",\"intensity\":0.7,\"params\":{{\"ParamMouthOpenY\":0.5}}}}]。普通闲聊可省略标签，只说正文。",
         # 吐槽型
-        "你是一个桌宠，你看到用户的屏幕：\n{detail}\n\n用吐槽或调侃的语气说一句话（10-30字）。幽默一点。加 [emotion:xxx]。",
+        "你是一个桌宠，你看到用户的屏幕：\n{detail}\n\n用吐槽或调侃的语气说一句话（10-30字）。幽默一点。结尾用 [action:{{\"gesture\":\"<动作名>\",\"intensity\":<0到1>,\"params\":{{<可选Live2D参数>}}}}] 表达你吐槽时的动作/表情：例如翻白眼 [action:{{\"gesture\":\"tsukkomi\",\"intensity\":0.6,\"params\":{{\"ParamEyeBallX\":-15}}}}]。普通闲聊可省略标签，只说正文。",
         # 关心型
-        "你是一个桌宠，你注意到用户：\n{detail}\n\n用关心的语气说一句话（10-30字）。比如提醒休息、或者担心用户太累。加 [emotion:xxx]。",
+        "你是一个桌宠，你注意到用户：\n{detail}\n\n用关心的语气说一句话（10-30字）。比如提醒休息、或者担心用户太累。结尾用 [action:{{\"gesture\":\"<动作名>\",\"intensity\":<0到1>,\"params\":{{<可选Live2D参数>}}}}] 表达你关心时的动作/表情：例如凑近查看 [action:{{\"gesture\":\"concern\",\"intensity\":0.5,\"params\":{{\"ParamAngleX\":8}}}}]。普通闲聊可省略标签，只说正文。",
     ]
 
     def _check_screen_proactive(self, description: str, detail: str = ""):

@@ -62,6 +62,12 @@ def build_proactive_prompt(context: dict) -> str:
     if fallback:
         lines.append(f"参考方向（可自由发挥，不要照抄）：{fallback}")
     lines.append("要求：一句话，不超过 20 字，口语化，贴合场景，不要重复最近说过的话。")
+    lines.append(
+        "若想配合一个动作/表情，可在句末用 [action:{\"gesture\":\"<动作名>\","
+        "\"intensity\":<0到1>,\"params\":{<可选Live2D参数>}}] 表达，例如好奇探头 "
+        "[action:{\"gesture\":\"peek\",\"intensity\":0.6,\"params\":{\"ParamAngleX\":12}}]；"
+        "普通搭话可省略该标签，只说正文。"
+    )
     return "\n".join(lines)
 
 
@@ -94,6 +100,9 @@ def clean_generated(text: str) -> str:
     text = re.sub(r"^\[proactive\]\s*", "", text, flags=re.IGNORECASE)
     text = re.sub(r"^\s*\[\s*emotion\s*:\s*\w+\s*\]\s*", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s*\[\s*emotion\s*:\s*\w+\s*\]\s*$", "", text, flags=re.IGNORECASE)
+    # 剥离结构化动作意图 [action:{...}]（动态参数标签不该上气泡；由渲染器消费）
+    text = re.sub(r"\[action:\s*\{.*?\}\s*\]", "", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"\s{2,}", " ", text).strip()
     text = text.strip()
     if not text:
         return ""
