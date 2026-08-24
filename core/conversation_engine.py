@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import collections
+import inspect
 import json
 import logging
 import os
@@ -23,6 +24,28 @@ from .harness_adapter import HanakoPetAdapter
 from .perception import PerceptionController
 
 logger = logging.getLogger(__name__)
+
+
+def _call_reply_cb(cb, reply, emotion, anim, audio_path, action_intent=None):
+    """兼容 4 参（历史契约）与 5 参（含 action_intent）的 on_reply 回调。
+
+    BugFix #6-C 给 on_reply 增加了第 5 个参数 action_intent；为保持向后兼容，
+    旧回调（仅接受 4 个位置参数）仍应正常工作，不应因多传一个参数而静默失败
+    （后台线程的 on_reply 调用被 try/except 包裹，多参 TypeError 会被吞掉，
+    导致回复永不触发）。无法 introspect 的回调（如 Qt Signal.emit）按 5 参调用。
+    """
+    if not callable(cb):
+        return
+    try:
+        params = list(inspect.signature(cb).parameters.values())
+        has_var = any(p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD) for p in params)
+        accepts_extra = len(params) >= 5 or has_var
+    except (ValueError, TypeError):
+        accepts_extra = True
+    if accepts_extra:
+        cb(reply, emotion, anim, audio_path, action_intent)
+    else:
+        cb(reply, emotion, anim, audio_path)
 
 
 def map_emotion_to_anim(emotion: str) -> str:
@@ -120,7 +143,7 @@ class ConversationEngine:
             logger.warning("MemorySnapshotManager not available: %s", e)
 
         # 回调（由 pet 设置）
-        self.on_reply: callable = lambda reply, emotion, anim, audio_path: None
+        self.on_reply: callable = lambda reply, emotion, anim, audio_path, action_intent=None: None
         self.on_status: callable = lambda msg: None  # 状态提示
         self.on_progress: callable = lambda msg: None  # 长任务进度提示
         self.on_tts_ready: callable = lambda: None  # TTS 加载完成
@@ -143,7 +166,7 @@ class ConversationEngine:
         
         class _CallbackDispatcher(QObject):
             """线程安全回调派发器"""
-            reply_signal = Signal(str, str, str, str)
+            reply_signal = Signal(str, str, str, str, object)
             status_signal = Signal(str)
             progress_signal = Signal(str)
             tts_ready_signal = Signal()
@@ -162,11 +185,11 @@ class ConversationEngine:
         return self._tts_ready
     
     # P0-1: 真实回调方法（在主线程执行）
-    def _real_on_reply(self, reply: str, emotion: str, anim: str, audio_path: str):
+    def _real_on_reply(self, reply: str, emotion: str, anim: str, audio_path: str, action_intent=None):
         """真实 on_reply 回调（主线程）"""
         try:
             if hasattr(self, '_original_on_reply') and callable(self._original_on_reply):
-                self._original_on_reply(reply, emotion, anim, audio_path)
+                _call_reply_cb(self._original_on_reply, reply, emotion, anim, audio_path, action_intent)
         except Exception as e:
             logger.error("on_reply callback error: %s", e)
     
@@ -213,7 +236,7 @@ class ConversationEngine:
         
         class _CallbackDispatcher(QObject):
             """线程安全回调派发器"""
-            reply_signal = Signal(str, str, str, str)
+            reply_signal = Signal(str, str, str, str, object)
             status_signal = Signal(str)
             progress_signal = Signal(str)
             tts_ready_signal = Signal()
@@ -584,7 +607,7 @@ class ConversationEngine:
             emotion = "happy"
             logger.info("内置使用说明 [emotion:%s]: %s", emotion, help_text)
             # 直接回调，不调用 LLM
-            self.on_reply(help_text, emotion, anim, "")
+            _call_reply_cb(self.on_reply, help_text, emotion, anim, "", None)
             return
 
         # 快速路径：统一工具调度（仅用户消息，主动/idle 消息跳过）
@@ -602,7 +625,7 @@ class ConversationEngine:
             anim = route_result.anim or "idle"
             display_text = self._friendly_tool_text(route_result)
             logger.info("Unified routed: %s -> %s", route_result.capability, display_text[:50])
-            self.on_reply(display_text, route_result.emotion, anim, route_result.audio_path)
+            _call_reply_cb(self.on_reply, display_text, route_result.emotion, anim, route_result.audio_path, None)
             return
 
         # 1. LLM 回复（可能返回 tool_calls）
@@ -673,6 +696,16 @@ class ConversationEngine:
                         gen, self._generation)
             return
 
+        # M6: 解析 [action:{...}] 结构化动作意图（任意动作；向后兼容 [emotion:xxx]）
+        action_intent = None
+        try:
+            _ai_text, _ai_intent = self.parse_action_intent(reply)
+            if _ai_intent is not None:
+                reply = _ai_text
+                action_intent = _ai_intent
+        except Exception:
+            pass
+
         # 2. 动画映射
         anim = map_emotion_to_anim(emotion)
 
@@ -693,7 +726,7 @@ class ConversationEngine:
         #  先显示文字（audio_path=""），TTS 完成后同文本再回调只会续期
         #  气泡时长并播放音频，不重复闪烁。）
         try:
-            self.on_reply(reply, emotion, anim, "")
+            _call_reply_cb(self.on_reply, reply, emotion, anim, "", action_intent)
         except Exception:
             pass
 
@@ -825,6 +858,47 @@ class ConversationEngine:
         "login", "wedding", "touch", "pat", "stroke", "cute", "idle",
     })
 
+    def parse_action_intent(self, reply: str) -> tuple:
+        """解析 [action:{...}] 结构化动作意图。
+
+        格式示例：
+        ``[action:{"gesture":"wave","intensity":0.8,"params":{"ParamAngleX":15,"ParamMouthOpenY":0.6}}]``
+
+        - 命中 → 返回 (去标记后的正文, intent_dict)，intent_dict ∈
+          ``{"gesture": str, "intensity": float, "params": dict}``。
+        - 无指令 / 标签非法 JSON → 返回 (正文, None)。
+
+        与 [emotion:xxx] 解析互不干扰（后者由 adapter.parse_emotion 处理）。
+        解析失败只剥掉标签、绝不抛异常（容错同 _read_file）。
+        """
+        if not reply or "[action:" not in reply:
+            return reply, None
+        import re as _re
+        import json as _json
+        try:
+            # 贪婪匹配到闭合标签前的最后一个 }，正确处理 params 内嵌的 }
+            matches = list(_re.finditer(r"\[action:\s*(\{.*\})\s*\]", reply, flags=_re.DOTALL))
+        except Exception:
+            return reply, None
+        if not matches:
+            return reply, None
+        intent: dict | None = None
+        cleaned = reply
+        for m in matches:
+            raw = m.group(1)
+            try:
+                obj = _json.loads(raw)
+            except Exception:
+                obj = None
+            if isinstance(obj, dict) and (obj.get("gesture") or obj.get("params")):
+                intent = obj
+            # 无论 JSON 是否合法，都剥掉该标签
+            cleaned = cleaned.replace(m.group(0), " ")
+        cleaned = _re.sub(r"\s{2,}", " ", cleaned).strip()
+        if intent is None:
+            return cleaned, None
+        return cleaned, intent
+
     def _synth_and_reply(self, reply, emotion, anim, character, instruct, source, gen):
         """在 TTS 线程池中执行：合成 + 回调（on_reply 仍带 audio_path，口型链路不变）。"""
         # synth 前检查：已打断则不浪费算力
@@ -898,7 +972,7 @@ class ConversationEngine:
         if self._is_stale(gen):
             logger.debug("TTS 后已打断，仅保留文字气泡（丢弃音频）: gen=%d", gen)
             try:
-                self.on_reply(reply, emotion, anim, "")  # 空 audio_path → 只显示气泡不播音频
+                _call_reply_cb(self.on_reply, reply, emotion, anim, "", None)  # 空 audio_path → 只显示气泡不播音频
             except Exception as _e:
                 logger.warning("打断后 on_reply 回调失败: %s", _e)
             return
@@ -908,7 +982,7 @@ class ConversationEngine:
         # 且测试断言正常消息只回调一次（replies == ["hi"]）。
         if audio_path:
             try:
-                self.on_reply(reply, emotion, anim, audio_path)
+                _call_reply_cb(self.on_reply, reply, emotion, anim, audio_path, None)
             except Exception as _e:
                 logger.warning("on_reply 回调失败: %s", _e)
 
@@ -1096,7 +1170,7 @@ class ConversationEngine:
             logger.debug("镜像回复让位（本地有 pending 用户消息）")
             return
         text, emotion = self._adapter.parse_emotion(getattr(result, "text", "") or "")
-        self.on_reply(text or "…", emotion, map_emotion_to_anim(emotion), "")
+        _call_reply_cb(self.on_reply, text or "…", emotion, map_emotion_to_anim(emotion), "", None)
 
     def _handle_session_tool_progress(self, progress: "object") -> None:
         """接收 SessionManager 的 ToolProgress 事件，转发给 UI

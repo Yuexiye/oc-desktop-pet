@@ -84,7 +84,7 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
     """透明桌面宠物窗口"""
 
     # 跨线程信号：后台线程 -> 主线程
-    engine_reply_signal = Signal(str, str, str, str)  # reply, emotion, anim, audio_path
+    engine_reply_signal = Signal(str, str, str, str, object)  # reply, emotion, anim, audio_path, action_intent
     engine_status_signal = Signal(str)  # status message
     voice_status_signal = Signal(str)  # voice input status
     # 跨线程截停 TTS：ASR 后台线程不得直调 _tts_player（QMediaPlayer 是 COM 组件，
@@ -2732,23 +2732,23 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         else:
             self._emotion_expiry_timer.stop()
 
-    def _on_engine_reply(self, reply: str, emotion: str, anim: str, audio_path: str):
+    def _on_engine_reply(self, reply: str, emotion: str, anim: str, audio_path: str, action_intent=None):
         """对话引擎回复回调 - 从后台线程调用，通过信号转到主线程"""
         # 从 Python threading.Thread 调 QTimer.singleShot 不可靠
         # 用 Signal 发射，Qt 会自动跨线程投递到主线程
-        self.engine_reply_signal.emit(reply, emotion, anim, audio_path)
+        self.engine_reply_signal.emit(reply, emotion, anim, audio_path, action_intent)
 
-    def _do_engine_reply(self, reply: str, emotion: str, anim: str, audio_path: str):
+    def _do_engine_reply(self, reply: str, emotion: str, anim: str, audio_path: str, action_intent=None):
         """在主线程中处理引擎回复"""
         try:
-            self._do_engine_reply_inner(reply, emotion, anim, audio_path)
+            self._do_engine_reply_inner(reply, emotion, anim, audio_path, action_intent=action_intent)
         except Exception:
             logger.exception("_do_engine_reply crashed")
             # 确保至少恢复基本状态
             self._is_thinking = False
             self._pending_chat = False
 
-    def _do_engine_reply_inner(self, reply: str, emotion: str, anim: str, audio_path: str):
+    def _do_engine_reply_inner(self, reply: str, emotion: str, anim: str, audio_path: str, action_intent=None):
         """在主线程中处理引擎回复（内部实现）"""
         # 取消超时计时器
         if hasattr(self, '_think_timeout'):
@@ -2791,12 +2791,19 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
 
         # 动画（收窄：surprised/angry 不切瞪眼帧，避免对话时高频瞪眼）
         try:
-            body_anim = anim
-            if emotion in ('surprised', 'angry'):
-                body_anim = 'idle'
-            self._set_anim_seq(body_anim, emotion=emotion, style=get_transition_style(emotion))
-            # P2-10 修复：回复路径强制清渲染器表情，不依赖 play_anim 的 if emotion 守卫
             r = getattr(self, "_renderer", None)
+            if action_intent is not None and r is not None and hasattr(r, "apply_action_intent"):
+                # 结构化动作意图（[action:{...}]）：由渲染器平滑驱动表情/动作，
+                # 复用 Live2D 每帧指数平滑或精灵图帧序列，避免瞬间跳变。
+                r.apply_action_intent(action_intent)
+            else:
+                # 回退：emotion 标签路径（[emotion:xxx]）→ 身体动画
+                body_anim = anim
+                if emotion in ('surprised', 'angry'):
+                    body_anim = 'idle'
+                self._set_anim_seq(body_anim, emotion=emotion, style=get_transition_style(emotion))
+            # 面部表情独立于身体动作：始终同步对话情绪（P2-10 修复，不依赖
+            # play_anim 的 if emotion 守卫，强制清渲染器表情）
             if r is not None and hasattr(r, "set_emotion_expression_only"):
                 r.set_emotion_expression_only(emotion or "neutral")
         except Exception:

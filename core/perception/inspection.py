@@ -1,45 +1,57 @@
-"""Hanako 任务巡检 — 作为观察者每 5 分钟轮询 cron / deferred 数据并主动汇报。
+"""Hanako 任务巡检 — 订阅 Hanako 已产出结果并主动汇报（观察者每 5 分钟轮询）。
 
-BugFix #5-D 需求：主动感知除了屏幕/窗口，新增 Hanako 任务巡检，每 5 分钟
-检查一次（对齐 Hanako cron 设计，作为观察者轮询）。四种命中：
+BugFix #6-D 需求：把巡检从"自判 cron nextRunAt 临近/过期"改为"订阅 Hanako
+已经产出的结果"。重复的自判逻辑（用户明确不要）已删除，改为监控三处 Hanako
+产出：
 
-  1. 任务临近：某 enabled cron job 的 nextRunAt 在未来 10 分钟内（且
-     lastRunAt 未更新到 >= nextRunAt，即还没跑）→ 主动说「快到 <label> 时间了」
-  2. 该跑没跑：nextRunAt 已过但 lastRunAt < nextRunAt（没执行）→ 主动提醒
-  3. 连续失败：consecutiveErrors > 0 → 主动说「<label> 连续失败 N 次」
-  4. pending 任务：deferred-tasks 有 status=pending → 主动汇报
-     「有 N 个延迟任务待处理」
+  1. cron 运行结果：~/.hanako/agents/<agent_id>/desk/cron-runs/*.jsonl
+     每追加一行（一个 JSON 对象，含 status: success/failed）→
+     通知「【任务】<label>跑完了 ✅ / 跑失败了 ❌」（label 取自同目录 cron-jobs.json）。
+  2. 延迟任务：~/.hanako/.ephemeral/deferred-tasks.json
+     新增 status=pending 条目 → 通知「有 N 个延迟任务待处理」。
+  3. （可选）通知约定：~/.hanako/.ephemeral/notifications.json
+     存在则读取新条目播报；文件不存在则安全跳过。
 
-去重：同一触发 key 在 REPORT_REPEAT_SECONDS（默认 30 分钟）内只汇报一次，
-避免每 5 分钟对同一个"该跑没跑"任务反复轰炸。测试可注入 now 控制时间。
+不做 near/overdue 自判；只播有用信息，气泡文案精简。
+复用现有主动汇报链路（controller._tick_inspection → callback → _on_proactive_trigger）。
+节流：同一 key 在 REPORT_REPEAT_SECONDS（默认 30 分钟）内只通知一次。
+所有文件缺失/损坏均容错（不抛异常）。
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
+from pathlib import Path
 
-from .schedule import SchedulePerception, _parse_iso
+from . import schedule as _schedule_mod
+from .schedule import SchedulePerception
 
 logger = logging.getLogger(__name__)
 
 # 巡检节流：每 5 分钟检查一次（对齐 Hanako cron 设计的观察者轮询粒度）
 INSPECTION_INTERVAL_SECONDS = 300.0
 
-# 任务临近窗口：nextRunAt 在未来 10 分钟内
-NEAR_MINUTES = 10.0
-
-# 同一触发 key 的重复汇报冷却（30 分钟；期间不再重复提醒）
+# 同一触发 key 的重复通知冷却（30 分钟；期间不再重复提醒）
 REPORT_REPEAT_SECONDS = 1800.0
 
 
 class InspectionPerception:
-    """Hanako 任务巡检 — 每 5 分钟检查 cron/deferred 并产出触发文案。"""
+    """Hanako 任务巡检 — 订阅 cron 运行结果 / 延迟任务 / 通知约定并产出触发文案。"""
 
-    def __init__(self, schedule: SchedulePerception | None = None):
+    def __init__(self, schedule: SchedulePerception | None = None, agent_id: str = ""):
         self._schedule = schedule or SchedulePerception()
+        # agent_id 优先显式传入，否则从 schedule 继承（SchedulePerception._agent_id）
+        self._agent_id = (agent_id or getattr(self._schedule, "_agent_id", "") or "").strip()
         self._last_tick_at: float = 0.0
-        self._reported: dict[str, float] = {}  # key -> 上次汇报时间
-        self._last_findings: list[str] = []    # 最近一次巡检命中（供 prompt 注入）
+        self._reported: dict[str, float] = {}       # 节流：key -> 上次通知时间
+        self._last_findings: list[str] = []          # 最近一次命中（供 prompt 注入）
+        # cron-runs 文件游标：每文件已读取行数（只处理新增行，避免重复播报）
+        self._run_cursors: dict[str, int] = {}
+        # 已播报的 deferred pending 任务 key（只在「新增」时播报）
+        self._seen_deferred: set[str] = set()
+        # 已播报的 notifications 条目 id（只在「新增」时播报）
+        self._seen_notify: set[str] = set()
 
     # ── 对外入口 ──────────────────────────────────────────
 
@@ -57,17 +69,25 @@ class InspectionPerception:
             return []
         self._last_tick_at = now
 
+        # 刷新 cron-jobs.json（仅供 label 查表；缺失/损坏容错）
         try:
             self._schedule.refresh()
         except Exception as e:
             logger.debug("Inspection schedule refresh failed: %s", e)
 
-        findings: list[str] = []
+        findings: list[tuple[str, str]] = []
         try:
-            findings.extend(self._check_cron_jobs(now))
-            findings.extend(self._check_pending_deferred(now))
+            findings.extend(self._check_cron_runs(now))
         except Exception as e:
-            logger.debug("Inspection check failed: %s", e)
+            logger.debug("Inspection cron-runs check failed: %s", e)
+        try:
+            findings.extend(self._check_deferred(now))
+        except Exception as e:
+            logger.debug("Inspection deferred check failed: %s", e)
+        try:
+            findings.extend(self._check_notifications(now))
+        except Exception as e:
+            logger.debug("Inspection notifications check failed: %s", e)
 
         # 只保留通过去重的命中
         triggers = [t for t in findings if self._allow_report(t[0], now)]
@@ -91,59 +111,160 @@ class InspectionPerception:
         self._last_tick_at = 0.0
         self._reported.clear()
         self._last_findings = []
+        self._run_cursors.clear()
+        self._seen_deferred.clear()
+        self._seen_notify.clear()
 
-    # ── 命中判定 ──────────────────────────────────────────
+    # ── 命中检测 ──────────────────────────────────────────
 
-    def _check_cron_jobs(self, now: float) -> list[tuple[str, str]]:
-        """cron 三种命中：任务临近 / 该跑没跑 / 连续失败。
+    def _check_cron_runs(self, now: float) -> list[tuple[str, str]]:
+        """监控 cron-runs/*.jsonl 新增行；status=success/failed → 通知完成/失败。
 
         Returns:
             [(dedup_key, 触发文案), ...]
         """
+        if not self._agent_id:
+            return []
+        runs_dir = _schedule_mod.HANAKO_HOME / "agents" / self._agent_id / "desk" / "cron-runs"
+        if not runs_dir.is_dir():
+            return []
+        # 构建 job id -> label 查表（来自同目录 cron-jobs.json）
+        job_map = self._build_job_label_map()
         hits: list[tuple[str, str]] = []
-        for job in self._schedule.get_cron_jobs():
-            # 巡检只盯 enabled 任务（disabled 不会执行，不报临近/失败）
-            if not job.get("enabled", True):
+        for jsonl in sorted(runs_dir.glob("*.jsonl")):
+            key = str(jsonl)
+            cursor = self._run_cursors.get(key, 0)
+            try:
+                lines = jsonl.read_text("utf-8").splitlines()
+            except Exception as e:
+                logger.debug("读取 %s 失败: %s", jsonl, e)
                 continue
-            job_id = job.get("id") or job.get("label", "unknown")
-            label = job.get("label", "未知任务")
-            next_ts = _parse_iso(job.get("next_run_at"))
-            last_ts = _parse_iso(job.get("last_run_at"))
-            errors = int(job.get("consecutive_errors") or 0)
-
-            # 3. 连续失败（独立于是否临近，先报）
-            if errors > 0:
-                hits.append((f"error:{job_id}:{errors}",
-                             f"{label} 连续失败 {errors} 次"))
-
-            if next_ts is None:
+            new_lines = lines[cursor:]
+            if not new_lines:
                 continue
-            # lastRunAt >= nextRunAt 说明该轮已执行过，不再提醒
-            if last_ts is not None and last_ts >= next_ts:
-                continue
-            if next_ts > now:
-                # 1. 任务临近：未来 NEAR_MINUTES 分钟内
-                if next_ts - now <= NEAR_MINUTES * 60.0:
-                    hits.append((f"near:{job_id}",
-                                 f"快到 {label} 时间了"))
-            else:
-                # 2. 该跑没跑：nextRunAt 已过但没执行
-                hits.append((f"overdue:{job_id}",
-                             f"{label} 该执行了，好像还没跑"))
+            self._run_cursors[key] = len(lines)
+            for raw in new_lines:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    obj = json.loads(raw)
+                except Exception:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                status = str(obj.get("status") or "").lower()
+                if status not in ("success", "failed"):
+                    continue
+                label = self._resolve_label(obj, job_map)
+                if status == "success":
+                    text = f"【任务】{label}跑完了 ✅"
+                    dedup = f"cron:{self._job_id_of(obj)}:success"
+                else:
+                    text = f"【任务】{label}跑失败了 ❌"
+                    dedup = f"cron:{self._job_id_of(obj)}:failed"
+                hits.append((dedup, text))
         return hits
 
-    def _check_pending_deferred(self, now: float) -> list[tuple[str, str]]:
-        """4. pending 延迟任务（按数量聚合汇报）。"""
-        pending = self._schedule.get_pending_deferred()
-        if not pending:
+    def _check_deferred(self, now: float) -> list[tuple[str, str]]:
+        """deferred-tasks.json 新增 status=pending → 通知「有 N 个延迟任务待处理」。"""
+        path = _schedule_mod.HANAKO_HOME / ".ephemeral" / "deferred-tasks.json"
+        data = self._read_json(path)
+        if not isinstance(data, dict) or not data:
             return []
-        count = len(pending)
-        return [(f"pending:{count}", f"有 {count} 个延迟任务待处理")]
+        pending_keys: list[str] = []
+        for key, task in data.items():
+            if not isinstance(task, dict):
+                continue
+            if str(task.get("status") or "") == "pending":
+                pending_keys.append(str(key))
+        if not pending_keys:
+            return []
+        new_pending = [k for k in pending_keys if k not in self._seen_deferred]
+        if not new_pending:
+            return []
+        # 只标记「新增」的为已见，已解决又再次出现者仍会被再次播报
+        self._seen_deferred.update(new_pending)
+        count = len(pending_keys)
+        # 节流 key 用 pending（同一批 pending 30 分钟内不重复）
+        return [("pending", f"有 {count} 个延迟任务待处理")]
 
-    # ── 去重 ──────────────────────────────────────────────
+    def _check_notifications(self, now: float) -> list[tuple[str, str]]:
+        """（可选）notifications.json 新增条目 → 播报其文案；文件不存在则跳过。"""
+        path = _schedule_mod.HANAKO_HOME / ".ephemeral" / "notifications.json"
+        if not path.exists():
+            return []
+        data = self._read_json(path)
+        if not isinstance(data, list) or not data:
+            return []
+        hits: list[tuple[str, str]] = []
+        for idx, item in enumerate(data):
+            if isinstance(item, dict):
+                nid = str(item.get("id") or item.get("key") or idx)
+                msg = (item.get("message") or item.get("text") or item.get("content")
+                       or item.get("title") or "")
+            elif isinstance(item, str):
+                nid = str(idx)
+                msg = item
+            else:
+                continue
+            msg = str(msg).strip()
+            if not msg:
+                continue
+            if nid in self._seen_notify:
+                continue
+            self._seen_notify.add(nid)
+            hits.append((f"notify:{nid}", msg))
+        return hits
+
+    # ── 辅助 ──────────────────────────────────────────────
+
+    def _build_job_label_map(self) -> dict[str, str]:
+        """job id -> label（来自 cron-jobs.json）。"""
+        mapping: dict[str, str] = {}
+        try:
+            for job in self._schedule.get_cron_jobs():
+                jid = str(job.get("id") or "")
+                label = str(job.get("label") or "").strip()
+                if jid and label:
+                    mapping[jid] = label
+        except Exception:
+            pass
+        return mapping
+
+    @staticmethod
+    def _job_id_of(obj: dict) -> str:
+        """从 cron-runs 行提取 job id（兼容多种字段名）。"""
+        for f in ("jobId", "job_id", "id", "name"):
+            v = obj.get(f)
+            if v:
+                return str(v)
+        return "unknown"
+
+    @staticmethod
+    def _resolve_label(obj: dict, job_map: dict[str, str]) -> str:
+        """解析 label：优先行内 label，否则用 job id 查 cron-jobs 表。"""
+        inline = obj.get("label")
+        if inline:
+            return str(inline).strip() or "未知任务"
+        jid = InspectionPerception._job_id_of(obj)
+        if jid in job_map:
+            return job_map[jid]
+        return "未知任务"
+
+    @staticmethod
+    def _read_json(path: Path):
+        """安全读 JSON；文件缺失/损坏返回 None。"""
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text("utf-8"))
+        except Exception as e:
+            logger.debug("读取 %s 失败: %s", path, e)
+            return None
 
     def _allow_report(self, key: str, now: float) -> bool:
-        """同一 key 在 REPORT_REPEAT_SECONDS 内只汇报一次。"""
+        """同一 key 在 REPORT_REPEAT_SECONDS 内只通知一次。"""
         last = self._reported.get(key)
         if last is not None and now - last < REPORT_REPEAT_SECONDS:
             return False

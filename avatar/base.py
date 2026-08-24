@@ -77,6 +77,27 @@ class AvatarRenderer(ABC):
         """
         ...
 
+    @abstractmethod
+    def apply_action_intent(self, intent: dict) -> None:
+        """应用结构化动作意图（任意动作；向后兼容 [emotion:xxx] 标签路径）。
+
+        intent 形如::
+
+            {"gesture": "wave", "intensity": 0.8,
+             "params": {"ParamAngleX": 15, "ParamMouthOpenY": 0.6}}
+
+        - ``gesture``: 语义动作名（映射 pet.json 的 motion/expression 或渲染器内置）。
+        - ``intensity``: 0.0~1.0，动作幅度 / 参数强度系数。
+        - ``params``: 可选，直接 Live2D 参数目标字典（精灵图等无参数概念的实现忽略）。
+
+        实现要求：
+        - Live2D：把 params 作为目标值，复用程序化表情层的每帧平滑插值
+          过渡到目标（不要瞬间跳变）；gesture 名也可触发对应 motion/expression。
+        - 精灵图：gesture 名 → 映射 ``frames/<anim>/`` 序列播放；params 字典忽略。
+        - 参数为空 / intent 非法时必须安全忽略，不抛异常。
+        """
+        ...
+
     def set_master_emotion(self, emotion: str) -> None:
         """P2-6: 推送当前主导情绪（master emotion）到渲染器。
 

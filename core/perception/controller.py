@@ -28,6 +28,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from config import load_config
+
 from .time import TimePerception
 from .emotion import EmotionStateMachine
 from .schedule import SchedulePerception
@@ -38,6 +40,10 @@ from .screen_types import ScreenEvent, ActivityEvent
 from .proactive import ProactiveScheduler
 
 logger = logging.getLogger(__name__)
+
+# A：Obsidian 日记输出目录回退默认路径（config.perception.obsidian_diary_dir
+# 与环境变量 OC_PET_OBSIDIAN_DIR 均缺失时使用）。
+DEFAULT_OBSIDIAN_DIARY_DIR = "W:/Games/Obsidian/Work/无极限/03-日记/日常"
 
 
 class PerceptionController:
@@ -59,8 +65,10 @@ class PerceptionController:
         ctrl.trigger_emotion("happy")
     """
 
-    def __init__(self, character_id: str = "yuexinmiao"):
+    def __init__(self, character_id: str = "yuexinmiao", config: dict | None = None):
         self._character_id = character_id
+        # A：感知层配置（缺省回退到磁盘 config.json）。
+        self._config = config if config is not None else load_config()
         self._time = TimePerception()
         self._emotion = EmotionStateMachine()
         # BugFix #5-C：SchedulePerception 绑定 agent_id，读
@@ -210,11 +218,33 @@ class PerceptionController:
 
     # ── 日报生成 ──
 
+    def _resolve_obsidian_diary_dir(self, output_dir: str = "") -> str:
+        """A：解析 Obsidian 日记输出目录。
+
+        优先级：
+          1. 显式传入的 output_dir（最高优先）
+          2. config.perception.obsidian_diary_dir（非空）
+          3. 环境变量 OC_PET_OBSIDIAN_DIR
+          4. 内置默认路径 DEFAULT_OBSIDIAN_DIARY_DIR
+        任一环节缺失/为空都安全回退到下一优先级，绝不抛异常。
+        """
+        if output_dir:
+            return output_dir
+        cfg = self._config or {}
+        cfg_dir = (cfg.get("perception") or {}).get("obsidian_diary_dir") or ""
+        if cfg_dir:
+            return cfg_dir
+        env_dir = os.environ.get("OC_PET_OBSIDIAN_DIR", "") or ""
+        if env_dir:
+            return env_dir
+        return DEFAULT_OBSIDIAN_DIARY_DIR
+
     def generate_daily_diary(self, output_dir: str = "", preview_only: bool = False) -> str | None:
         """从活动事件生成日报 Markdown
 
         Args:
-            output_dir: Obsidian 日记目录，默认 W:/Games/Obsidian/Work/无极限/03-日记/日常
+            output_dir: Obsidian 日记目录（缺省按配置/环境变量/内置默认解析，
+                见 _resolve_obsidian_diary_dir）
             preview_only: True 则只返回 Markdown 内容，不写文件
 
         Returns:
@@ -307,7 +337,7 @@ class PerceptionController:
 
         # 写入文件
         if not output_dir:
-            output_dir = "W:/Games/Obsidian/Work/无极限/03-日记/日常"
+            output_dir = self._resolve_obsidian_diary_dir()
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         filename = f"{date_str}-桌宠日报.md"

@@ -6,8 +6,8 @@
     1. ~/.hanako/agents/<agent_id>/desk/cron-jobs.json（jobs[]，只列 enabled）
     2. ~/.hanako/.ephemeral/deferred-tasks.json（pending 延迟任务）
     3. ~/.hanako/.ephemeral/plugin-tasks.json（schedules[] 非空时列出）
-- D：InspectionPerception 每 5 分钟节流 + 四种命中判定（任务临近 / 该跑没跑 /
-  连续失败 / pending）+ 同 key 去重。
+- D：InspectionPerception 每 5 分钟节流 + 订阅 Hanako 产出（cron-runs 运行结果 /
+  deferred 延迟任务 / 可选 notifications）+ 同 key 去重（30 分钟）。
 
 运行: python -m pytest tests/test_bugfix5_schedule_inspection.py -v
 """
@@ -35,6 +35,15 @@ def _write(home, rel, data):
     p = home / rel
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    return p
+
+
+def _append_jsonl(home, rel, obj):
+    """向 .jsonl 文件追加一行 JSON（cron-runs 运行结果用）。"""
+    p = home / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(obj, ensure_ascii=False) + "\n")
     return p
 
 
@@ -142,88 +151,74 @@ def test_schedule_agent_id_path_is_used(hanako_home):
 
 
 def test_inspection_throttle_5min(hanako_home):
-    """D：5 分钟节流——间隔内 tick 返回空。"""
+    """D：5 分钟节流——间隔内 tick 返回空（订阅 cron-runs 新增行）。"""
     now = 1_000_000.0
     _write(hanako_home, "agents/aimis/desk/cron-jobs.json", {
-        "jobs": [{"id": "j1", "label": "签到", "enabled": True,
-                  "consecutiveErrors": 0, "lastRunAt": _cron_iso(now - 86400),
-                  "nextRunAt": _cron_iso(now + 600)}],  # 10 分钟内保持 near
+        "jobs": [{"id": "j1", "label": "签到", "enabled": True}],
     })
+    _append_jsonl(hanako_home, "agents/aimis/desk/cron-runs/run.jsonl",
+                  {"jobId": "j1", "status": "success"})
     insp = InspectionPerception(SchedulePerception(agent_id="aimis"))
-    assert insp.tick(now=now)  # 首次命中
-    assert insp.tick(now=now + INSPECTION_INTERVAL_SECONDS - 1) == []  # 节流内
-    assert insp.tick(now=now + INSPECTION_INTERVAL_SECONDS + 1) == []  # 过节流但去重
+    hits = insp.tick(now=now)
+    assert len(hits) == 1
+    assert "签到" in hits[0] and "跑完了" in hits[0]
+    # 5 分钟节流内：即便再追加新行也不重复扫描
+    _append_jsonl(hanako_home, "agents/aimis/desk/cron-runs/run.jsonl",
+                  {"jobId": "j1", "status": "success"})
+    assert insp.tick(now=now + INSPECTION_INTERVAL_SECONDS - 1) == []
 
 
-def test_inspection_four_hits(hanako_home):
-    """D：四种命中判定全部覆盖。"""
+def test_inspection_cron_run_reported(hanako_home):
+    """D：cron-runs 新增 success/failed 行 → 通知完成/失败（label 来自 cron-jobs）。"""
     now = 2_000_000.0
     _write(hanako_home, "agents/aimis/desk/cron-jobs.json", {
         "jobs": [
-            # 1. 任务临近：nextRunAt 在未来 10 分钟内，lastRunAt 未更新
-            {"id": "near", "label": "午休提醒", "enabled": True,
-             "consecutiveErrors": 0, "lastRunAt": _cron_iso(now - 86400),
-             "nextRunAt": _cron_iso(now + 300)},
-            # 2. 该跑没跑：nextRunAt 已过但 lastRunAt < nextRunAt
-            {"id": "over", "label": "日报生成", "enabled": True,
-             "consecutiveErrors": 0, "lastRunAt": _cron_iso(now - 86400),
-             "nextRunAt": _cron_iso(now - 120)},
-            # 3. 连续失败：consecutiveErrors > 0（已执行过不再报临近）
-            {"id": "err", "label": "数据同步", "enabled": True,
-             "consecutiveErrors": 3, "lastRunAt": _cron_iso(now - 60),
-             "nextRunAt": _cron_iso(now - 60)},
-        ]
+            {"id": "sign", "label": "每日签到", "enabled": True},
+            {"id": "sync", "label": "数据同步", "enabled": True},
+        ],
     })
+    _append_jsonl(hanako_home, "agents/aimis/desk/cron-runs/run.jsonl",
+                  {"jobId": "sign", "status": "success"})
+    _append_jsonl(hanako_home, "agents/aimis/desk/cron-runs/run.jsonl",
+                  {"jobId": "sync", "status": "failed"})
+    insp = InspectionPerception(SchedulePerception(agent_id="aimis"))
+    hits = insp.tick(now=now)
+    text = "\n".join(hits)
+    assert "【任务】每日签到跑完了 ✅" in text
+    assert "【任务】数据同步跑失败了 ❌" in text
+
+
+def test_inspection_deferred_new_pending(hanako_home):
+    """D：deferred-tasks 新增 pending → 通知「有 N 个延迟任务待处理」。"""
+    now = 3_000_000.0
     _write(hanako_home, ".ephemeral/deferred-tasks.json", {
         "subagent-x": {"status": "pending", "delivered": False,
                        "sessionId": "sess_1234567890abcdef"},
     })
     insp = InspectionPerception(SchedulePerception(agent_id="aimis"))
     hits = insp.tick(now=now)
-    text = "\n".join(hits)
-    assert "快到 午休提醒 时间了" in text
-    assert "日报生成 该执行了，好像还没跑" in text
-    assert "数据同步 连续失败 3 次" in text
-    assert "有 1 个延迟任务待处理" in text
-
-
-def test_inspection_already_run_not_reported(hanako_home):
-    """D：lastRunAt >= nextRunAt（已执行过）→ 不报临近/该跑没跑。"""
-    now = 3_000_000.0
-    _write(hanako_home, "agents/aimis/desk/cron-jobs.json", {
-        "jobs": [{"id": "j1", "label": "已跑任务", "enabled": True,
-                  "consecutiveErrors": 0, "lastRunAt": _cron_iso(now),
-                  "nextRunAt": _cron_iso(now - 60)}],
-    })
-    insp = InspectionPerception(SchedulePerception(agent_id="aimis"))
-    assert insp.tick(now=now) == []
-
-
-def test_inspection_disabled_job_skipped(hanako_home):
-    """D：disabled cron 不触发（巡检只盯 enabled 任务）。"""
-    now = 4_000_000.0
-    _write(hanako_home, "agents/aimis/desk/cron-jobs.json", {
-        "jobs": [{"id": "j1", "label": "禁用任务", "enabled": False,
-                  "consecutiveErrors": 0, "lastRunAt": "",
-                  "nextRunAt": _cron_iso(now + 60)}],
-    })
-    insp = InspectionPerception(SchedulePerception(agent_id="aimis"))
-    assert insp.tick(now=now) == []
+    assert "有 1 个延迟任务待处理" in "\n".join(hits)
+    # 同一批 pending 未变 → 下一个巡检周期（过 5 分钟）不再重复
+    assert insp.tick(now=now + INSPECTION_INTERVAL_SECONDS + 1) == []
 
 
 def test_inspection_dedup_same_key(hanako_home):
-    """D：同一触发 key 在 REPORT_REPEAT_SECONDS 内只汇报一次。"""
+    """D：同一 job+status 在 REPORT_REPEAT_SECONDS 内只通知一次。"""
     now = 5_000_000.0
     _write(hanako_home, "agents/aimis/desk/cron-jobs.json", {
-        "jobs": [{"id": "near", "label": "提醒", "enabled": True,
-                  "consecutiveErrors": 0, "lastRunAt": _cron_iso(now - 86400),
-                  "nextRunAt": _cron_iso(now + 600)}],  # 10 分钟内保持 near
+        "jobs": [{"id": "j1", "label": "提醒", "enabled": True}],
     })
+    _append_jsonl(hanako_home, "agents/aimis/desk/cron-runs/run.jsonl",
+                  {"jobId": "j1", "status": "success"})
     insp = InspectionPerception(SchedulePerception(agent_id="aimis"))
     assert len(insp.tick(now=now)) == 1
-    # 超过 5 分钟节流但同 key 未过 30 分钟重复冷却 → 不重复
+    # 5 分钟后再追加同 job 同 status → 同 key 未过 30 分钟冷却 → 不重复
+    _append_jsonl(hanako_home, "agents/aimis/desk/cron-runs/run.jsonl",
+                  {"jobId": "j1", "status": "success"})
     assert insp.tick(now=now + INSPECTION_INTERVAL_SECONDS + 1) == []
     # 超过 REPORT_REPEAT 后再次允许
+    _append_jsonl(hanako_home, "agents/aimis/desk/cron-runs/run.jsonl",
+                  {"jobId": "j1", "status": "success"})
     later = now + REPORT_REPEAT_SECONDS + INSPECTION_INTERVAL_SECONDS + 1
     assert len(insp.tick(now=later)) == 1
 
@@ -240,6 +235,30 @@ def test_inspection_format_for_prompt(hanako_home):
     ctx = insp.format_for_prompt()
     assert "[任务巡检]" in ctx
     assert "有 1 个延迟任务待处理" in ctx
+
+
+def test_inspection_files_missing_tolerant(hanako_home):
+    """D：cron-runs / deferred / notifications 文件均缺失 → 不抛异常，返回空。"""
+    insp = InspectionPerception(SchedulePerception(agent_id="aimis"))
+    # 既无 cron-runs 目录也无 deferred / notifications 文件
+    assert insp.tick(now=1_000_000.0) == []
+    assert insp.format_for_prompt() == ""
+
+
+def test_inspection_notifications_optional(hanako_home):
+    """D：（可选）notifications.json 新增条目播报；缺失则跳过不报错。"""
+    now = 7_000_000.0
+    _write(hanako_home, ".ephemeral/notifications.json", [
+        {"id": "n1", "message": "记得喝水"},
+        "直接文本条目",
+    ])
+    insp = InspectionPerception(SchedulePerception(agent_id="aimis"))
+    hits = insp.tick(now=now)
+    text = "\n".join(hits)
+    assert "记得喝水" in text
+    assert "直接文本条目" in text
+    # 同条目已见 → 下一个周期不重复
+    assert insp.tick(now=now + INSPECTION_INTERVAL_SECONDS + 1) == []
 
 
 def test_controller_tick_inspection_callback():

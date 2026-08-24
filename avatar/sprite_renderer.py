@@ -536,6 +536,23 @@ class SpriteRenderer(AvatarRenderer):
         # 通过 play_anim 实现
         self.play_anim(self._anim_seq, emotion=emotion)
 
+    def apply_action_intent(self, intent: dict) -> None:
+        """应用结构化动作意图（精灵图：gesture 名 → frames/<anim>/ 序列播放）。
+
+        精灵图只有帧序列、无参数概念，故 intent["params"] 字典直接忽略；
+        仅 gesture 名映射到已加载的动画序列播放（未加载的 gesture 名安全忽略）。
+        intent 非法时安全返回（不抛异常）。
+        """
+        if not isinstance(intent, dict):
+            return
+        gesture = intent.get("gesture")
+        if not gesture or not isinstance(gesture, str):
+            return
+        try:
+            self.play_anim(gesture)
+        except Exception:
+            pass
+
     # ── 内部动画 ──
 
     def _anim_tick(self):

@@ -433,6 +433,10 @@ class Live2DRenderer(AvatarRenderer):
         self._emote_seq_step_started: float = 0.0
         self._emote_seq_name: str = ""
         self._emote_seq_fast: dict[str, float] = {}  # 跳过平滑直接写的参数（如眨眼脉冲）
+        # 结构化动作意图（[action:{...}] 注入）直接参数目标：每帧平滑过渡到目标，
+        # 不跳变。params 为 Live2D 标准参数名（如 ParamAngleX / ParamMouthOpenY）→ 目标值。
+        self._param_intent: dict[str, float] = {}
+        self._param_cur: dict[str, float] = {}
 
     # ── 生命周期 ──
 
@@ -1342,6 +1346,19 @@ class Live2DRenderer(AvatarRenderer):
             cur["blush"] = cur.get("blush", 0.0) + (targets.get("blush", 0.0) - cur.get("blush", 0.0)) * alpha
             self._proc_cur = cur
 
+            # 结构化动作意图（[action:{...}] 注入的直接参数目标）：复用同一帧率无关
+            # 指数平滑，平滑过渡到目标值，避免瞬间跳变。每条独立 try/except 兜底。
+            intent_targets = getattr(self, "_param_intent", None) or {}
+            if intent_targets:
+                _pcur = getattr(self, "_param_cur", {}) or {}
+                for _name, _tgt in intent_targets.items():
+                    try:
+                        _tgt_f = float(_tgt)
+                    except (TypeError, ValueError):
+                        continue
+                    _pcur[_name] = _pcur.get(_name, 0.0) + (_tgt_f - _pcur.get(_name, 0.0)) * alpha
+                self._param_cur = _pcur
+
             # 眼睛开合（0=闭 1=全开；surprised 超 1 截断）
             try:
                 eye_open = max(0.0, min(1.0, cur["eye_open"]))
@@ -1444,6 +1461,14 @@ class Live2DRenderer(AvatarRenderer):
                 try:
                     _ev = max(0.0, min(1.0, float(_fast["eye_open_r"])))
                     self._model.SetParameterValue(P.ParamEyeROpen, _ev, 0.9)
+                except Exception:
+                    pass
+            # 写入结构化动作意图参数目标（已在上方按 alpha 平滑到 _param_cur）
+            _intent_cur = getattr(self, "_param_cur", None) or {}
+            for _name, _val in _intent_cur.items():
+                try:
+                    _pid = getattr(P, _name, _name)
+                    self._model.SetParameterValue(_pid, float(_val), 1.0)
                 except Exception:
                     pass
         except Exception:
@@ -2236,6 +2261,75 @@ class Live2DRenderer(AvatarRenderer):
         self._emotion_motion_cooldown[f"_lastcall:{emotion}"] = now
         # 表情
         self._apply_expression(emotion)
+
+    # ── 结构化动作意图（[action:{...}]）─────────────────────
+
+    def apply_action_intent(self, intent: dict) -> None:
+        """应用结构化动作意图（任意动作；向后兼容 [emotion:xxx] 标签路径）。
+
+        intent ∈ {"gesture": str, "intensity": float, "params": dict}：
+        - params 非空 → 作为 Live2D 直接参数目标（如 ParamAngleX/ParamMouthOpenY），
+          复用 _update_procedural_emotion 的每帧平滑插值过渡到目标（不跳变）。
+        - gesture 非空 → 触发对应 motion/expression（情绪名走表情+对应 motion，
+          否则当作 motion 组名尝试播放）。
+        - 缺省/非法字段安全忽略（不抛异常）。
+        """
+        if not isinstance(intent, dict):
+            return
+        gesture = intent.get("gesture")
+        params = intent.get("params")
+        try:
+            intensity = float(intent.get("intensity", 1.0))
+        except (TypeError, ValueError):
+            intensity = 1.0
+        intensity = max(0.0, min(1.0, intensity))
+        if isinstance(params, dict) and params:
+            self._set_intent_params(params, intensity)
+        if gesture:
+            self._trigger_gesture(gesture, intensity)
+
+    def _set_intent_params(self, params: dict, intensity: float) -> None:
+        """把 params 字典归一化为平滑目标值（按 intensity 缩放幅度）。
+
+        只保留字符串键 + 数值值的合法项；其余忽略。新意图会重置目标集合
+        （未提及的参数即视为“释放”，不再作为目标写入）。
+        """
+        targets: dict[str, float] = {}
+        for k, v in params.items():
+            if not isinstance(k, str) or not k:
+                continue
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            targets[k] = fv * intensity
+        self._param_intent = targets
+        # 不清空 _param_cur：保留当前平滑值作为起点，继续平滑过渡。
+
+    def _trigger_gesture(self, gesture, intensity: float) -> None:
+        """gesture 名 → 触发对应 motion/expression。
+
+        - 已知情绪名（config.EXPRESSION_MAP）→ 同步表情并播放对应 anim 的 motion。
+        - 否则当作 motion 组名直接播放（play_anim 内部会按 _ANIM_TO_MOTION_KW /
+          motion 组匹配，无匹配则安全忽略）。
+        """
+        if not gesture or not isinstance(gesture, str):
+            return
+        g = gesture.strip().lower()
+        if not g:
+            return
+        try:
+            from config import EXPRESSION_MAP
+            if g in EXPRESSION_MAP:
+                anim = (EXPRESSION_MAP.get(g) or (None,))[0] or "idle"
+                self.play_anim(anim, emotion=g)
+                return
+        except Exception:
+            pass
+        try:
+            self.play_anim(g)
+        except Exception:
+            pass
 
     # ── 视线 ──
 

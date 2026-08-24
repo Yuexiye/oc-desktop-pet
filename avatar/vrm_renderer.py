@@ -77,6 +77,21 @@ class VRMRenderer(AvatarRenderer):
     def set_emotion(self, emotion: str, intensity: float = 1.0) -> None:
         self._current_emotion = emotion
 
+    def apply_action_intent(self, intent: dict) -> None:
+        """应用结构化动作意图（VRM：gesture 名 → play_anim；params 忽略）。
+
+        VRM 渲染器仅实现基础播放，无直接参数概念，故 params 字典忽略；
+        gesture 名直接作为动画名尝试播放，未识别时安全忽略。intent 非法安全返回。
+        """
+        if not isinstance(intent, dict):
+            return
+        gesture = intent.get("gesture")
+        if gesture and isinstance(gesture, str):
+            try:
+                self.play_anim(gesture)
+            except Exception:
+                pass
+
     def look_at(self, x: int, y: int) -> None:
         pass
 

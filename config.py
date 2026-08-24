@@ -225,6 +225,12 @@ DEFAULT_CONFIG = {
         # 避免"每次截图 = 视觉 API + enrich LLM 两次请求"打满限流；场景变化立即补。
         "llm_enrich_cooldown": 300,
     },
+    # P6-A：感知层配置
+    "perception": {
+        # Obsidian 日报输出目录（generate_daily_diary 用）。
+        # 缺省空串 → 回退到环境变量 OC_PET_OBSIDIAN_DIR → 内置默认路径。
+        "obsidian_diary_dir": "",
+    },
 }
 
 CHARACTER_INFO = {

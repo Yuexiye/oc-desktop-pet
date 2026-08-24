@@ -231,28 +231,45 @@ class HanakoContext:
         return _read_file(self._agent_dir / "memory" / "longterm.md")
 
     def build_memory_context(self, max_chars: int = 1000) -> str:
-        """组合记忆文件为上下文摘要"""
-        parts = []
+        """组合记忆文件为上下文摘要（today / facts / longterm / memory）。
+
+        受 max_chars 预算约束：分段注入，每段按其剩余预算截断，合计内容
+        字符数不超过 max_chars（对话注入时即 memory_budget，本地记忆 +
+        Hanako 记忆共用同一预算，超则截断，不挤占对话正文）。
+
+        容错：aimis 等 agent 的 memory/ 下 today.md / facts.md / longterm.md
+        可能不存在（_read_file 已返回空串，不抛异常，见 read_today /
+        read_facts / read_longterm）。
+        """
+        # (标签, 读取器, 单段硬上限)；today 限 300 字，其余吃满剩余预算。
+        sections = [
+            ("今日", self.read_today, 300),
+            ("事实", self.read_facts, None),
+            ("长期", self.read_longterm, None),
+            ("记忆", self.read_memory, None),
+        ]
+        parts: list[str] = []
         total = 0
-
-        today = self.read_today()
-        if today:
-            parts.append(f"【今日】\n{today[:300]}")
-            total += len(parts[-1])
-
-        if total < max_chars:
-            facts = self.read_facts()
-            if facts:
-                remaining = max_chars - total
-                parts.append(f"【事实】\n{facts[:remaining]}")
-                total += len(parts[-1])
-
-        if total < max_chars:
-            memory = self.read_memory()
-            if memory:
-                remaining = max_chars - total
-                parts.append(f"【记忆】\n{memory[:remaining]}")
-
+        for label, reader, cap in sections:
+            if total >= max_chars:
+                break
+            text = reader() or ""
+            if not text:
+                continue
+            if cap is not None:
+                text = text[:cap]
+            remaining = max_chars - total
+            if remaining <= 0:
+                break
+            # 计入「【标签】\n」前缀长度，确保整体不超过预算
+            prefix = f"【{label}】\n"
+            body_room = remaining - len(prefix)
+            if body_room <= 0:
+                break
+            text = text[:body_room]
+            total += len(prefix) + len(text)
+            if text:
+                parts.append(f"{prefix}{text}")
         return "\n\n".join(parts)
 
     # ── 当前 Session ──
