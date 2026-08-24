@@ -2160,8 +2160,8 @@ class Live2DRenderer(AvatarRenderer):
                 pass
             self._expression_active = False
             self._expression_suppress_until = now + self.GESTURE_TIMEOUT
-            logger.debug("Live2DRenderer: 表情超时(%ds)，已自动重置回默认，%s 秒冷却",
-                         self.GESTURE_TIMEOUT, self.GESTURE_TIMEOUT)
+            logger.info("Live2DRenderer: 表情超时(%ds)，已自动重置回默认，%s 秒冷却",
+                        self.GESTURE_TIMEOUT, self.GESTURE_TIMEOUT)
 
     def set_emotion(self, emotion: str, intensity: float = 1.0) -> None:
         # 同一 emotion 短时间内重复调用：直接同步表情，不重播 motion。

@@ -220,10 +220,16 @@ class BubbleMixin:
         except Exception:
             pass
 
-        # A2: 情绪过期 — 重置计时器
+        # A2: 情绪过期 — thinking 类情绪"延长而非重置"。
+        # hanako_monitor 的 mood 节流是 1s，而 _emotion_expiry_timer 是 3s：
+        # 持续 thinking 事件每 1s 到达都会 start(3000) 重置计时器，
+        # 导致 _on_emotion_expired 永远不触发、情绪脸持续滞留。
+        # 修：thinking 且计时器已在运行时不再重置（保留原到期点），
+        # 让表情在 3s 后自然过期回 neutral。
         self._current_emotion = emotion or "neutral"
         if self._current_emotion != "neutral":
-            self._emotion_expiry_timer.start(3000)
+            if not (self._current_emotion == "thinking" and self._emotion_expiry_timer.isActive()):
+                self._emotion_expiry_timer.start(3000)
         else:
             self._emotion_expiry_timer.stop()
 

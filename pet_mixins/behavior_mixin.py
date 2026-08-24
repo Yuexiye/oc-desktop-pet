@@ -593,9 +593,25 @@ class BehaviorMixin:
             # 收窄：surprised/angry 不切瞪眼帧，避免高频瞪眼
             if emotion in ('surprised', 'angry'):
                 anim = 'idle'
-            if anim in self._renderer._frames:
-                self._set_anim_seq(anim, emotion=emotion, style=get_transition_style(emotion))
-                self._set_surface_emotion(emotion, duration_ms=3000, source="screen")
+            # P: Live2D 的 _frames 恒为空 dict（仅兼容占位），`anim in _frames` 恒为
+            # False → 整块死代码，屏幕情绪对 Live2D 永远不生效。
+            # 按渲染器类型判断 anim 是否支持：
+            #   - Live2D（有 _model）：anim/emotion 命中 _ANIM_TO_MOTION_KW 或 anim 命中 _motion_groups
+            #   - Sprite：anim 在 _frames 帧序列中才算支持
+            renderer = getattr(self, "_renderer", None)
+            if renderer is not None:
+                if hasattr(renderer, "_model"):
+                    kw_map = getattr(renderer, "_ANIM_TO_MOTION_KW", {})
+                    supported = (
+                        anim in kw_map
+                        or emotion in kw_map
+                        or anim in getattr(renderer, "_motion_groups", {})
+                    )
+                else:
+                    supported = anim in getattr(renderer, "_frames", {})
+                if supported:
+                    self._set_anim_seq(anim, emotion=emotion, style=get_transition_style(emotion))
+                    self._set_surface_emotion(emotion, duration_ms=3000, source="screen")
         except Exception:
             pass
 

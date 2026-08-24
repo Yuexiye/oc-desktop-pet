@@ -2621,7 +2621,7 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         导致 _last_body_emotion 陈旧，下一轮 set_emotion 判断失效。
         """
         if self._current_emotion != "neutral":
-            logger.debug("Emotion expired: %s -> neutral", self._current_emotion)
+            logger.info("Emotion expired: %s -> neutral", self._current_emotion)
             self._current_emotion = "neutral"
             self._emotion_source = "neutral"  # E4: 复位来源
             try:
