@@ -45,8 +45,8 @@ class Live2DRenderer(AvatarRenderer):
         "happy": ("happy", "joy", "smile", "fun", "usui", "唱歌", "比心"),
         "angry": ("angry", "ikari", "mad"),
         "sad": ("sad", "kanashii", "cry"),
-        "surprised": ("surprise", "odoroki", "shock", "圈圈", "前倾"),
-        "thinking": ("think", "thinking", "doubt", "kangaeru", "圈圈", "前倾"),
+        "surprised": ("surprise", "odoroki", "shock", "圈圈"),
+        "thinking": ("think", "thinking", "doubt", "kangaeru"),
         "cute": ("cute", "脸红"),
         "neutral": (),
     }

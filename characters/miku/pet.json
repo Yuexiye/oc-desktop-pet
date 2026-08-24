@@ -51,8 +51,7 @@
       "expression": "圈圈"
     },
     "thinking": {
-      "anim": "thinking",
-      "expression": "前倾"
+      "anim": "thinking"
     },
     "sad": {
       "anim": "sad"
