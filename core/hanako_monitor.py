@@ -294,9 +294,9 @@ def mood_text_to_emotion(text: str) -> str:
             return emotion
     return _mood_keyword_score(text)
 
-STALE_TIMEOUT = 30
-# E-watchdog: 最后一次事件后超过此秒数且未收到 turn_end，强制回 idle
-# 旧实现只依赖 tick() 的 STALE_TIMEOUT=30s，但对高频事件场景无效（每次事件都重置 last_update）
+# E-watchdog: 最后一次事件后超过此秒数且未收到 turn_end，强制回 idle。
+# 由 push_event() 维护事件心跳（_last_update），tick() 消费本常量：
+# 若 turn_end 丢失/WS 断流，状态可能卡在 thinking/working，15s 后兜底回 idle。
 WATCHDOG_TIMEOUT = 15.0
 
 
@@ -338,6 +338,8 @@ class HanakoMonitor:
         # P0：mood_text 内省块累积（mood_start..mood_end 之间），
         # 用于把真实情绪词映射到 emotion key，驱动 Live2D 表情。
         self._mood_acc = ""
+        # P2：按 mood 分别节流（thinking/working/talking 互不干扰）
+        self._mood_last_push: dict[str, float] = {}
 
 
     def tick(self):
@@ -645,7 +647,7 @@ class HanakoMonitor:
             
             # E-watchdog: turn_end 是明确终止信号，立即回 idle
             if event_type == "turn_end":
-                self._last_event_push_at = 0.0  # 重置节流，允许下一条立即推送
+                self._mood_last_push.clear()  # P2: 清除所有 mood 节流
                 self._current_emotion = "neutral"
                 self._current_state_name = "idle"
                 self._current_anim = "idle"
@@ -657,13 +659,14 @@ class HanakoMonitor:
             # P0 节流：thinking/tool 事件在 turn 期间高频到来，
             # 同一 mood 事件 1s 内只推送一次，避免持续重置情绪过期计时器。
             # turn_end/tool_end(success) 等终态事件不受节流限制。
+            # P2 修复：改用 per-mood 节流字典，避免 thinking→working 状态转换被吞。
             now = time.time()
             is_terminal = event_type in ("tool_end", "turn_end")
             if not is_terminal:
-                last_push = getattr(self, "_last_event_push_at", 0.0)
+                last_push = self._mood_last_push.get(mood, 0.0)
                 if now - last_push < 1.0:
-                    return  # 节流：1s 内同类型事件只推一次
-                self._last_event_push_at = now
+                    return  # 节流：1s 内同一 mood 事件只推一次
+                self._mood_last_push[mood] = now
             
             # P3: EXPRESSION_MAP 已改为 tuple 格式，提取序列名
             mapped = EXPRESSION_MAP.get(emotion, ("idle", None, None))
@@ -683,4 +686,4 @@ class HanakoMonitor:
         mapped = EXPRESSION_MAP.get(emotion, ("idle", None, None))
         anim = mapped[0] if isinstance(mapped, tuple) else mapped
         self._set_if_changed(anim, "", emotion=emotion, state="speaking")
-        self._last_event_push_at = 0.0  # 重置节流，不掩盖随后到达的 text_delta
+        self._mood_last_push.clear()  # P2: 重置所有 mood 节流
