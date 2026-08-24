@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -286,3 +287,233 @@ def test_foreign_message_events_rejected_for_pending_turn():
     assert result.error is None
     assert "本 turn 回复" in result.text
     assert "别人的回复" not in result.text
+
+
+# ── 7. BugFix #4（任务 #2）：只收到 tool 事件、无最终文本事件 → 工具静默恢复 ──
+
+
+def _wait_for_turn(sm, session, timeout=2.0):
+    """等待 send_and_wait 的 turn 被索引（send_message 在子线程中执行）。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        turn = sm._pending_by_session.get(session.session_id)
+        if turn is not None:
+            return turn
+        time.sleep(0.01)
+    raise AssertionError("turn 未被索引，无法注入事件")
+
+
+def test_tool_only_events_trigger_tool_silent_recovery():
+    """#2 端到端：用户消息后只有 tool_start/tool_end 事件（无 text_delta/turn_end），
+    工具链静默超过 silent_turn_grace → send_and_wait 主动从历史恢复，不等
+    activity_timeout(60s) —— 修复"工具气泡有、最终回复气泡/TTS 没有"。"""
+    sm = _make_sm(grace=0.05, reply_timeout=180.0)
+    sm.get_history = _history_with_reply
+    session = SessionRef("sess-1", "/agents/aimis/sessions/sess-1", "aimis")
+
+    holder: dict = {}
+    def run():
+        holder["result"] = sm.send_and_wait(session, "你好", display_text="你好", timeout=180.0)
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    turn = _wait_for_turn(sm, session)
+
+    # 模拟：tool 事件到达（不带 clientMessageId），但最终文本事件永远不来
+    sm._handle_event({
+        "type": "tool_start", "sessionId": session.session_id,
+        "sessionPath": session.session_path, "streamId": "tool-stream",
+        "seq": 1, "name": "biaoqingbao_express",
+    })
+    time.sleep(0.02)
+    sm._handle_event({
+        "type": "tool_end", "sessionId": session.session_id,
+        "sessionPath": session.session_path, "streamId": "tool-stream",
+        "seq": 2, "name": "biaoqingbao_express", "success": True,
+    })
+    t.join(timeout=6.0)
+
+    assert not t.is_alive(), "send_and_wait 应在工具链静默后从历史恢复并返回"
+    result = holder["result"]
+    assert result.error is None
+    assert "晚上好呀" in result.text
+    assert turn.received_any_event is True, "tool 事件应算活跃"
+    assert turn.received_final_text_event is False, "tool 事件不应算最终文本"
+
+
+def test_tool_events_with_matching_client_message_id_still_recover():
+    """tool 事件带匹配本 turn 的 clientMessageId → c5f2995 校验放行，
+    但仍无最终文本事件 → 工具静默恢复生效。"""
+    sm = _make_sm(grace=0.05, reply_timeout=180.0)
+    sm.get_history = _history_with_reply
+    session = SessionRef("sess-1", "/agents/aimis/sessions/sess-1", "aimis")
+
+    holder: dict = {}
+    def run():
+        holder["result"] = sm.send_and_wait(session, "你好", display_text="你好", timeout=180.0)
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    turn = _wait_for_turn(sm, session)
+    client_id = turn.client_message_id  # 匹配本 turn
+
+    sm._handle_event({
+        "type": "tool_start", "sessionId": session.session_id,
+        "sessionPath": session.session_path, "streamId": "tool-stream",
+        "seq": 1, "name": "biaoqingbao_express", "clientMessageId": client_id,
+    })
+    sm._handle_event({
+        "type": "tool_end", "sessionId": session.session_id,
+        "sessionPath": session.session_path, "streamId": "tool-stream",
+        "seq": 2, "name": "biaoqingbao_express", "success": True,
+        "clientMessageId": client_id,
+    })
+    t.join(timeout=6.0)
+
+    assert not t.is_alive()
+    result = holder["result"]
+    assert result.error is None
+    assert "晚上好呀" in result.text
+
+
+def test_foreign_tool_event_rejected_then_original_silent_recovery():
+    """tool 事件带不匹配 clientMessageId（他人在同 session 发消息）→ BugFix #3
+    拒收（不置位活跃、不绑定 stream），turn 仍按原静默恢复路径从历史取回复。"""
+    sm = _make_sm(grace=0.05, reply_timeout=180.0)
+    sm.get_history = _history_with_reply
+    session = SessionRef("sess-1", "/agents/aimis/sessions/sess-1", "aimis")
+
+    holder: dict = {}
+    def run():
+        holder["result"] = sm.send_and_wait(session, "你好", display_text="你好", timeout=180.0)
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    turn = _wait_for_turn(sm, session)
+
+    sm._handle_event({
+        "type": "tool_start", "sessionId": session.session_id,
+        "sessionPath": session.session_path, "streamId": "foreign-stream",
+        "seq": 1, "name": "biaoqingbao_express", "clientMessageId": "someone_else",
+    })
+    t.join(timeout=6.0)
+
+    assert not t.is_alive()
+    result = holder["result"]
+    assert result.error is None
+    assert "晚上好呀" in result.text
+    assert turn.received_any_event is False, "外来 tool 事件必须被拒收"
+    assert turn.stream_id is None, "外来 tool 事件不得绑定 stream"
+
+
+def test_tool_events_then_text_events_skip_tool_silent_recovery():
+    """工具事件后最终文本事件（text_delta/turn_end）正常到达 → 不触发工具静默恢复，
+    使用流式文本完成（防误用历史旧回复截断实时回复）。"""
+    sm = _make_sm(grace=0.05, reply_timeout=180.0)
+    sm.get_history = _history_with_reply  # 若误恢复会拿到旧回复（回归点）
+    session = SessionRef("sess-1", "/agents/aimis/sessions/sess-1", "aimis")
+
+    holder: dict = {}
+    def run():
+        holder["result"] = sm.send_and_wait(session, "你好", display_text="你好", timeout=180.0)
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    turn = _wait_for_turn(sm, session)
+
+    sm._handle_event({
+        "type": "tool_start", "sessionId": session.session_id,
+        "sessionPath": session.session_path, "streamId": "tool-stream",
+        "seq": 1, "name": "biaoqingbao_express",
+    })
+    sm._handle_event({
+        "type": "tool_end", "sessionId": session.session_id,
+        "sessionPath": session.session_path, "streamId": "tool-stream",
+        "seq": 2, "name": "biaoqingbao_express", "success": True,
+    })
+    sm._handle_event({
+        "type": "text_delta", "sessionId": session.session_id,
+        "sessionPath": session.session_path, "streamId": "own-stream",
+        "seq": 3, "delta": "实时回复",
+    })
+    sm._handle_event({
+        "type": "turn_end", "sessionId": session.session_id,
+        "sessionPath": session.session_path, "streamId": "own-stream", "seq": 4,
+    })
+    t.join(timeout=6.0)
+
+    assert not t.is_alive()
+    result = holder["result"]
+    assert result.error is None
+    assert "实时回复" in result.text
+    assert "晚上好呀" not in result.text, "收到最终文本事件的 turn 不得被历史旧回复截断"
+    assert turn.received_final_text_event is True
+
+
+def test_tool_silent_recovery_retries_until_reply_available():
+    """首次工具静默恢复时历史还没有回复 → 不判死、不打断（finish_on_missing=False），
+    静默 grace 后重试，历史出现回复后完成。"""
+    sm = _make_sm(grace=0.05, reply_timeout=180.0)
+    calls = {"n": 0}
+
+    def history(session, limit=30):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _history_without_reply(session, limit)
+        return _history_with_reply(session, limit)
+
+    sm.get_history = history
+    session = SessionRef("sess-1", "/agents/aimis/sessions/sess-1", "aimis")
+
+    holder: dict = {}
+    def run():
+        holder["result"] = sm.send_and_wait(session, "你好", display_text="你好", timeout=180.0)
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    turn = _wait_for_turn(sm, session)
+
+    sm._handle_event({
+        "type": "tool_start", "sessionId": session.session_id,
+        "sessionPath": session.session_path, "streamId": "tool-stream",
+        "seq": 1, "name": "biaoqingbao_express",
+    })
+    sm._handle_event({
+        "type": "tool_end", "sessionId": session.session_id,
+        "sessionPath": session.session_path, "streamId": "tool-stream",
+        "seq": 2, "name": "biaoqingbao_express", "success": True,
+    })
+    t.join(timeout=8.0)
+
+    assert not t.is_alive(), "工具静默恢复重试后应完成"
+    result = holder["result"]
+    assert result.error is None
+    assert "晚上好呀" in result.text
+    assert calls["n"] >= 2, "首次无回复后应重试，而不是提前判死"
+    assert not getattr(turn, "_silent_recovery_tried", False), "仅 tool 事件不应走原静默分支"
+
+
+def test_final_text_event_flag_set_only_by_text_delta_and_turn_end():
+    """received_final_text_event 只由 text_delta/turn_end 置位，tool 事件不置位。"""
+    sm = _make_sm(grace=5.0)
+    session = SessionRef("sess-1", "/agents/aimis/sessions/sess-1", "aimis")
+
+    future = sm.send_message(session, "你好", display_text="你好")
+    turn = sm._pending_by_session[session.session_id]
+
+    sm._handle_event({
+        "type": "tool_start", "sessionId": session.session_id,
+        "sessionPath": session.session_path, "streamId": "s1", "seq": 1, "name": "x",
+    })
+    assert turn.received_any_event is True
+    assert turn.received_final_text_event is False, "tool 事件不得置最终文本标志"
+
+    sm._handle_event({
+        "type": "text_delta", "sessionId": session.session_id,
+        "sessionPath": session.session_path, "streamId": "s1", "seq": 2, "delta": "hi",
+    })
+    assert turn.received_final_text_event is True, "text_delta 应置最终文本标志"
+
+    sm._handle_event({
+        "type": "turn_end", "sessionId": session.session_id,
+        "sessionPath": session.session_path, "streamId": "s1", "seq": 3,
+    })
+    result = future.result(timeout=5.0)
+    assert result.error is None
+    assert result.text == "hi"
+

@@ -159,6 +159,15 @@ class TurnAccumulator:
     # last_event_ts 后可能与 created_at 相等，导致"收到事件的 turn"被误判静默、
     # 静默恢复误触发（历史有旧回复时提前用旧文本完成/截断流式回复）。
     received_any_event: bool = False
+    # BugFix #4（任务 #2）：是否收到过"携带最终回复文本"的事件（text_delta/turn_end）。
+    # tool_start/tool_end/thinking_* 等事件会刷新 last_event_ts（turn 活跃、顺延
+    # deadline），但**不携带最终回复文本**——若 turn 身份与 WS 事件不匹配，服务端
+    # 在别的流身份上回推文本，text_delta/turn_end 永远不会到达本 turn。此时只靠
+    # tool 事件计数"活跃"会把 turn 拖到 activity_timeout(60s) 才恢复，用户看到
+    # "工具气泡有、最终回复气泡/TTS 没有"。用本标志区分"turn 还活着（工具事件）"
+    # 与"turn 已拿到最终文本"，让 send_and_wait 在工具链静默 grace 秒后主动从
+    # 会话历史恢复最终回复。
+    received_final_text_event: bool = False
 
     @property
     def done(self) -> bool:
@@ -529,6 +538,31 @@ class HanakoSessionManager:
                 # 是否收到过本 turn 的事件：显式布尔（accept_event 命中置位），
                 # 不依赖时间戳严格递增（BugFix #2：monotonic 粒度下可能相等）。
                 received_any_event = bool(getattr(turn, "received_any_event", False))
+                # BugFix #4（任务 #2）：是否收到过最终文本事件（text_delta/turn_end）。
+                received_final_text = bool(getattr(turn, "received_final_text_event", False))
+                # BugFix #4（任务 #2）：turn 收到过事件（如 tool_start/tool_end 的
+                # 进度推送），但**从未收到最终文本事件**——典型场景是 turn 身份与 WS
+                # 事件不匹配：工具进度事件能到达（hanako_monitor 独立推送分支），而
+                # 本 turn 的流式 text_delta/turn_end 永远不会来。工具链静默超过
+                # silent_turn_grace 秒后主动从会话历史恢复；历史暂无回复则继续等
+                # （finish_on_missing=False，绝不提前判死），并每隔 grace 秒重试，
+                # 直到 deadline 墙兜底。修复"工具气泡有、最终回复气泡/TTS 没有"。
+                if (received_any_event and not received_final_text and not turn.done
+                        and (now - last) >= self.silent_turn_grace):
+                    last_tool_recovery = float(getattr(turn, "_last_tool_silent_recovery_ts", 0.0))
+                    if (now - last_tool_recovery) >= self.silent_turn_grace:
+                        turn._last_tool_silent_recovery_ts = now
+                        logger.warning(
+                            "[SM] tool-silent turn: %.0fs 仅收到 tool/thinking 事件、"
+                            "无最终文本事件，尝试从会话历史恢复 (session=%s)",
+                            now - last, getattr(turn.session, "session_id", "?"),
+                        )
+                        try:
+                            self._recover_from_history(turn, finish_on_missing=False)
+                        except Exception:
+                            pass
+                        if turn.done:
+                            return future.result(timeout=1.0)
                 if received_any_event and (now - last) < self.activity_timeout:
                     deadline = now + self.activity_timeout
                     continue
@@ -656,6 +690,11 @@ class HanakoSessionManager:
         if turn.stream_id:
             with self._lock:
                 self._pending_by_stream[turn.stream_id] = turn
+
+        # BugFix #4（任务 #2）：text_delta/turn_end 是"携带最终回复文本"的事件。
+        # tool_*/thinking_* 只算活跃不算终态——见 TurnAccumulator.received_final_text_event。
+        if event_type in {"text_delta", "turn_end"}:
+            turn.received_final_text_event = True
 
         if event_type == "session_user_message":
             self._handle_user_echo(turn, event)
