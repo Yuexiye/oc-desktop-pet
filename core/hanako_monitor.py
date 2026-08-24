@@ -340,6 +340,9 @@ class HanakoMonitor:
         self._mood_acc = ""
         # P2：按 mood 分别节流（thinking/working/talking 互不干扰）
         self._mood_last_push: dict[str, float] = {}
+        # P2-8：tool_end 独立节流——success→celebrating 会触发撒花+完工音，
+        # WS 重放/镜像/工具链连续成功会产生高频 tool_end，10s 窗口内只推一次。
+        self._tool_end_last_push = 0.0
 
 
     def tick(self):
@@ -660,9 +663,14 @@ class HanakoMonitor:
             # 同一 mood 事件 1s 内只推送一次，避免持续重置情绪过期计时器。
             # turn_end/tool_end(success) 等终态事件不受节流限制。
             # P2 修复：改用 per-mood 节流字典，避免 thinking→working 状态转换被吞。
+            # P2-8 修复：tool_end 不再无限制放行——WS 重放/镜像/多工具连续成功会
+            # 造成每 5-10s 一次庆祝刷屏，统一按 10s 窗口节流；turn_end 仍直通。
             now = time.time()
-            is_terminal = event_type in ("tool_end", "turn_end")
-            if not is_terminal:
+            if event_type == "tool_end":
+                if now - self._tool_end_last_push < 10.0:
+                    return  # 节流：10s 内同一 tool_end 只推一次
+                self._tool_end_last_push = now
+            elif event_type != "turn_end":
                 last_push = self._mood_last_push.get(mood, 0.0)
                 if now - last_push < 1.0:
                     return  # 节流：1s 内同一 mood 事件只推一次

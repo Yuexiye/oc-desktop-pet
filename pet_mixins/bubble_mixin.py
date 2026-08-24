@@ -249,6 +249,20 @@ class BubbleMixin:
         不 import/触碰渲染器内部实现（Live2D C 层/渲染线程），不新增渲染线程。
         TTS 合成在后台线程，播放经 tts_celebration_signal 回主线程（绝不直接碰 Qt）。
         """
+        # 并发防护：上一次庆祝未结束（3s revert 计时器未到/合成线程未收尾）时
+        # 跳过重复触发，避免同一批 tool_end 产生多条庆祝序列和多个合成线程。
+        if getattr(self, "_celebration_in_progress", False):
+            logger.debug("celebrating 进行中，跳过重复触发")
+            return
+        # 时间节流兜底（_do_hanako_state 已节流，这里防御其他入口直调）
+        _now = time.time()
+        if _now - getattr(self, "_last_celebrating_at", 0.0) < 5.0:
+            logger.debug("celebrating 节流：5s 内已触发，跳过")
+            return
+        self._last_celebrating_at = _now
+        self._celebration_in_progress = True
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(3000, lambda: setattr(self, "_celebration_in_progress", False))
         # 1. 双形态撒花动作（统一接口）
         try:
             mapper = getattr(self, "_status_mapper", None)
