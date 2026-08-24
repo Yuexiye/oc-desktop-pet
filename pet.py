@@ -2592,7 +2592,9 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
             self._is_thinking = False
             self._pending_chat = False
             self.bubble.hide_bubble()
-            self._set_anim_seq('idle')
+            # P2-10 修复：带 emotion=neutral，确保表情被清除
+            from config import get_transition_style
+            self._set_anim_seq('idle', emotion='neutral', style=get_transition_style('neutral'))
             self._show_bubble("…信号不太好", emotion="sad")
 
     def _clear_hanako_bubble(self):
@@ -2750,6 +2752,10 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
             if emotion in ('surprised', 'angry'):
                 body_anim = 'idle'
             self._set_anim_seq(body_anim, emotion=emotion, style=get_transition_style(emotion))
+            # P2-10 修复：回复路径强制清渲染器表情，不依赖 play_anim 的 if emotion 守卫
+            r = getattr(self, "_renderer", None)
+            if r is not None and hasattr(r, "set_emotion_expression_only"):
+                r.set_emotion_expression_only(emotion or "neutral")
         except Exception:
             pass
 

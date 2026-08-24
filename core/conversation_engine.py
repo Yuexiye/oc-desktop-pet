@@ -1002,7 +1002,7 @@ class ConversationEngine:
                 logger.warning("adapter.set_session 失败: %s", e)
 
     def create_new_session(self, agent_id: str = None, **kwargs) -> "object | None":
-        """创建新 Session（供 pet.py 菜单“新建对话”调）
+        """创建新 Session（供 pet.py 菜单"新建对话"调）
 
         Returns:
             SessionRef 或 None（创建失败）
@@ -1014,6 +1014,16 @@ class ConversationEngine:
             aid = agent_id or self._agent_id
             session = self._session_manager.create_session(agent_id=aid, **kwargs)
             self.set_session(session)
+            # P2-10 修复：更新 adapter 的 pin 缓存，否则 chat_via_hanako
+            # 还是复用旧 session（记忆被污染）。
+            if self._adapter is not None:
+                self._adapter._current_session = session
+                self._adapter._agent_sessions[aid] = session
+                self._adapter._agent_pinned[aid] = getattr(session, 'session_id', None)
+                self._adapter._pinned_session_id = getattr(session, 'session_id', None)
+                # 清空本地历史，避免旧上下文注入
+                if hasattr(self._adapter, '_history'):
+                    self._adapter._history.clear()
             logger.info("新 Session 已创建: %s (agent=%s)", getattr(session, "session_id", "?"), aid)
             return session
         except Exception as e:

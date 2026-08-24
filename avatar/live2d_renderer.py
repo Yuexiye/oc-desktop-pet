@@ -2118,6 +2118,11 @@ class Live2DRenderer(AvatarRenderer):
                 # P2-9: 无论 _expression_active 真假，只要曾设过表情就重置
                 if self._expression_active or self._last_expression:
                     self._model.ResetExpressions()
+                # P2-10: 无条件重置，彻底清除贴图表情，不依赖簿记状态
+                try:
+                    self._model.ResetExpressions()
+                except Exception:
+                    pass
                 self._expression_active = False
                 self._last_expression = ""
                 return
