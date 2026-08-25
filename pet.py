@@ -294,7 +294,16 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
             logger.warning("Presence 初始化失败（非致命）: %s", e)
 
         # ── 感知控制器(P2: 时间 + 情绪状态机 + 日程)──
-        self._perception = PerceptionController(self._current_char)
+        # 定时/巡检读取绑定的 Hanako agent：与对话后端一致（默认 ophelia），
+        # 而非显示角色 miku（miku 在 ~/.hanako/agents/ 下无目录 → 读空）。
+        _dlg_agent = ""
+        try:
+            _dlg_agent = (load_config().get("dialog", {}) or {}).get("agent_id", "") or ""
+        except Exception:
+            _dlg_agent = ""
+        if not _dlg_agent:
+            _dlg_agent = self._current_char
+        self._perception = PerceptionController(self._current_char, agent_id=_dlg_agent)
         # BugFix #5-D：Hanako 任务巡检命中 → 主动汇报（复用 proactive 触发链路）
         try:
             self._perception.set_inspection_callback(self._on_proactive_trigger)

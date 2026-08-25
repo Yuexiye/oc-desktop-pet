@@ -22,7 +22,7 @@
     }
   ],
   "dialog": {
-    "agent_id": "aimis"
+    "agent_id": "ophelia"
   },
   "character": "miku",
   "scale": 0.8,

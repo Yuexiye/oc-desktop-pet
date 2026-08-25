@@ -65,15 +65,19 @@ class PerceptionController:
         ctrl.trigger_emotion("happy")
     """
 
-    def __init__(self, character_id: str = "yuexinmiao", config: dict | None = None):
+    def __init__(self, character_id: str = "yuexinmiao", config: dict | None = None, agent_id: str | None = None):
         self._character_id = character_id
+        # Hanako 读取用的 agent（定时/巡检）：默认与显示角色一致，可被对话后端
+        # agent 覆盖。桌宠显示角色（如 miku）在 ~/.hanako/agents/ 下往往无目录，
+        # 必须绑定到真实的 Hanako 助手 agent（如 ophelia）才能读到 desk/cron-jobs.json。
+        self._hanako_agent = (agent_id or character_id).strip()
         # A：感知层配置（缺省回退到磁盘 config.json）。
         self._config = config if config is not None else load_config()
         self._time = TimePerception()
         self._emotion = EmotionStateMachine()
         # BugFix #5-C：SchedulePerception 绑定 agent_id，读
         # ~/.hanako/agents/<agent_id>/desk/cron-jobs.json（原 automation*.json 不存在）
-        self._schedule = SchedulePerception(agent_id=character_id)
+        self._schedule = SchedulePerception(agent_id=self._hanako_agent)
         # BugFix #5-D：Hanako 任务巡检（每 5 分钟观察者轮询）
         self._inspection = InspectionPerception(self._schedule)
         self._inspection_callback = None  # 巡检命中回调（pet.py 注入 _on_proactive_trigger）
