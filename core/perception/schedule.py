@@ -1,15 +1,16 @@
 """日程感知 — 读取 Hanako 自动化任务
 
 数据源（BugFix #5-C：原实现读 ~/.hanako/.ephemeral/automation*.json，该文件
-不存在 → 感知永远空转，主动生成拿不到 Hanako 任务）：
-  1. ~/.hanako/agents/<agent_id>/desk/cron-jobs.json   — Hanako 定时任务 jobs[]
-     （id/type/schedule(cron表达式)/label/enabled/consecutiveErrors/lastRunAt/
-       nextRunAt）
-  2. ~/.hanako/.ephemeral/deferred-tasks.json           — 延迟任务 dict
-     （key=subagent id，value 含 status/delivered/sessionId/sessionPath）
-  3. ~/.hanako/.ephemeral/plugin-tasks.json             — 插件任务 {tasks, schedules}
+不存在 → 感知永远空转；BugFix #8：UI 任务计划真实存储在 studio 空间，
+agents/<id>/desk/cron-jobs.json 已弃用/为空）：
+  1. ~/.hanako/studios/<space_id>/desk/cron-jobs.json   — UI「任务计划」真实来源
+     按 actorAgentId 过滤当前 agent 的任务；空间 ID 从 spaces.json 的
+     defaultSpaceId 读取。
+  2. ~/.hanako/agents/<agent_id>/desk/cron-jobs.json   — 兜底（legacy）
+  3. ~/.hanako/.ephemeral/deferred-tasks.json           — 延迟任务 dict
+  4. ~/.hanako/.ephemeral/plugin-tasks.json             — 插件任务 {tasks, schedules}
 
-refresh() 把三处数据归一化为单列表（每项带 kind 字段），
+refresh() 把四处数据归一化为单列表（每项带 kind 字段），
 format_for_prompt() 只输出 enabled 的 cron + pending 的 deferred + 非空
 plugin schedules。
 """
@@ -23,6 +24,22 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 HANAKO_HOME = Path.home() / ".hanako"
+
+
+def _get_default_studio_id(hanako_home: Path | None = None) -> str | None:
+    """从 ~/.hanako/spaces.json 读取 defaultSpaceId（工作室空间 ID）。"""
+    if hanako_home is None:
+        hanako_home = HANAKO_HOME
+    path = hanako_home / "spaces.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text("utf-8"))
+        sid = str(data.get("defaultSpaceId") or "").strip()
+        return sid or None
+    except Exception as e:
+        logger.debug("读取 spaces.json 失败: %s", e)
+        return None
 
 
 def _parse_iso(ts: str) -> float | None:
@@ -69,10 +86,28 @@ class SchedulePerception:
     # ── 数据源 ────────────────────────────────────────────
 
     def _read_cron_jobs(self) -> list[dict]:
-        """读 ~/.hanako/agents/<agent_id>/desk/cron-jobs.json 的 jobs[]。"""
+        """读 cron-jobs.json：优先 studio 空间（UI 真实来源），兜底 agent 目录。"""
         if not self._agent_id:
             return []
-        path = HANAKO_HOME / "agents" / self._agent_id / "desk" / "cron-jobs.json"
+
+        # 主数据源：studio 空间的 cron-jobs.json
+        studio_id = _get_default_studio_id()
+        if studio_id:
+            studio_path = HANAKO_HOME / "studios" / studio_id / "desk" / "cron-jobs.json"
+            studio_items = self._read_cron_jobs_from_path(
+                studio_path, filter_agent_id=self._agent_id
+            )
+            if studio_items:
+                return studio_items
+
+        # 兜底：agent 自身目录（legacy / 未迁移到 studio 的任务）
+        agent_path = HANAKO_HOME / "agents" / self._agent_id / "desk" / "cron-jobs.json"
+        return self._read_cron_jobs_from_path(agent_path)
+
+    def _read_cron_jobs_from_path(
+        self, path: Path, filter_agent_id: str | None = None
+    ) -> list[dict]:
+        """读取指定路径的 cron-jobs.json；studio 数据按 actorAgentId 过滤。"""
         data = self._read_json(path)
         jobs = data.get("jobs") if isinstance(data, dict) else None
         if not isinstance(jobs, list):
@@ -81,6 +116,11 @@ class SchedulePerception:
         for job in jobs:
             if not isinstance(job, dict):
                 continue
+            if filter_agent_id:
+                actor = str(job.get("actorAgentId") or "").strip()
+                # actor 为空时保留（兼容性），否则必须匹配当前 agent
+                if actor and actor != filter_agent_id:
+                    continue
             label = str(job.get("label") or job.get("prompt") or "未知任务").strip()
             items.append({
                 "kind": "cron",

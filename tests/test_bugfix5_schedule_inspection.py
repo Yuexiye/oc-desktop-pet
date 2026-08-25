@@ -147,6 +147,51 @@ def test_schedule_agent_id_path_is_used(hanako_home):
     assert labels == ["A 的任务"]
 
 
+def test_schedule_reads_studio_cron_jobs(hanako_home):
+    """BugFix #8：优先读 studio 空间 cron-jobs.json，并按 actorAgentId 过滤。"""
+    _write(hanako_home, "spaces.json", {
+        "schemaVersion": 1,
+        "defaultSpaceId": "space_test",
+        "spaces": [{"spaceId": "space_test"}],
+    })
+    _write(hanako_home, "studios/space_test/desk/cron-jobs.json", {
+        "jobs": [
+            {"id": "studio_job_1", "label": "Ophelia 任务", "enabled": True,
+             "schedule": "0 8 * * *", "actorAgentId": "ophelia",
+             "consecutiveErrors": 0, "lastRunAt": "", "nextRunAt": ""},
+            {"id": "studio_job_2", "label": "Luoqixi 任务", "enabled": True,
+             "schedule": "0 9 * * *", "actorAgentId": "luoqixi",
+             "consecutiveErrors": 0, "lastRunAt": "", "nextRunAt": ""},
+            {"id": "studio_job_3", "label": "无 actor 的任务", "enabled": True,
+             "schedule": "0 10 * * *", "consecutiveErrors": 0,
+             "lastRunAt": "", "nextRunAt": ""},
+        ]
+    })
+    s = SchedulePerception(agent_id="ophelia")
+    s.refresh()
+    labels = [j["label"] for j in s.get_cron_jobs()]
+    assert labels == ["Ophelia 任务", "无 actor 的任务"]
+
+
+def test_schedule_studio_empty_falls_back_to_agent(hanako_home):
+    """BugFix #8：studio 空间存在但 jobs 为空时，兜底读 agent 目录。"""
+    _write(hanako_home, "spaces.json", {
+        "schemaVersion": 1,
+        "defaultSpaceId": "space_test",
+        "spaces": [{"spaceId": "space_test"}],
+    })
+    _write(hanako_home, "studios/space_test/desk/cron-jobs.json", {"jobs": []})
+    _write(hanako_home, "agents/ophelia/desk/cron-jobs.json", {
+        "jobs": [{"id": "j1", "label": "Agent 兜底任务", "enabled": True,
+                  "schedule": "0 8 * * *", "consecutiveErrors": 0,
+                  "lastRunAt": "", "nextRunAt": ""}],
+    })
+    s = SchedulePerception(agent_id="ophelia")
+    s.refresh()
+    labels = [j["label"] for j in s.get_cron_jobs()]
+    assert labels == ["Agent 兜底任务"]
+
+
 # ── D：InspectionPerception 巡检 ──────────────────────────
 
 
@@ -259,6 +304,60 @@ def test_inspection_notifications_optional(hanako_home):
     assert "直接文本条目" in text
     # 同条目已见 → 下一个周期不重复
     assert insp.tick(now=now + INSPECTION_INTERVAL_SECONDS + 1) == []
+
+
+def test_inspection_studio_cron_run_by_filename(hanako_home):
+    """BugFix #8：studio 运行记录文件名即 job id，status=error 视为失败。"""
+    now = 8_000_000.0
+    _write(hanako_home, "spaces.json", {
+        "schemaVersion": 1,
+        "defaultSpaceId": "space_test",
+        "spaces": [{"spaceId": "space_test"}],
+    })
+    _write(hanako_home, "studios/space_test/desk/cron-jobs.json", {
+        "jobs": [
+            {"id": "studio_job_22", "label": "鸣潮提醒（早）", "enabled": True,
+             "actorAgentId": "ophelia"},
+            {"id": "studio_job_35", "label": "鸣潮提醒（晚）", "enabled": True,
+             "actorAgentId": "ophelia"},
+        ],
+    })
+    _append_jsonl(hanako_home, "studios/space_test/desk/cron-runs/studio_job_22.jsonl",
+                  {"status": "success", "startedAt": "", "finishedAt": ""})
+    _append_jsonl(hanako_home, "studios/space_test/desk/cron-runs/studio_job_35.jsonl",
+                  {"status": "error", "error": "quota exceeded"})
+    insp = InspectionPerception(SchedulePerception(agent_id="ophelia"))
+    hits = insp.tick(now=now)
+    text = "\n".join(hits)
+    assert "【任务】鸣潮提醒（早）跑完了 ✅" in text
+    assert "【任务】鸣潮提醒（晚）跑失败了 ❌" in text
+
+
+def test_inspection_studio_skips_other_agent_runs(hanako_home):
+    """BugFix #8：studio 运行记录包含其他 agent 任务时，只播报当前 agent。"""
+    now = 9_000_000.0
+    _write(hanako_home, "spaces.json", {
+        "schemaVersion": 1,
+        "defaultSpaceId": "space_test",
+        "spaces": [{"spaceId": "space_test"}],
+    })
+    _write(hanako_home, "studios/space_test/desk/cron-jobs.json", {
+        "jobs": [
+            {"id": "studio_job_22", "label": "鸣潮提醒（早）", "enabled": True,
+             "actorAgentId": "ophelia"},
+            {"id": "studio_job_14", "label": "洛琪希推送", "enabled": True,
+             "actorAgentId": "luoqixi"},
+        ],
+    })
+    _append_jsonl(hanako_home, "studios/space_test/desk/cron-runs/studio_job_22.jsonl",
+                  {"status": "success"})
+    _append_jsonl(hanako_home, "studios/space_test/desk/cron-runs/studio_job_14.jsonl",
+                  {"status": "success"})
+    insp = InspectionPerception(SchedulePerception(agent_id="ophelia"))
+    hits = insp.tick(now=now)
+    assert len(hits) == 1
+    assert "鸣潮提醒（早）" in hits[0]
+    assert "洛琪希推送" not in hits[0]
 
 
 def test_controller_tick_inspection_callback():

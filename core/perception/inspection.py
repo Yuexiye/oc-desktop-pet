@@ -118,17 +118,20 @@ class InspectionPerception:
     # ── 命中检测 ──────────────────────────────────────────
 
     def _check_cron_runs(self, now: float) -> list[tuple[str, str]]:
-        """监控 cron-runs/*.jsonl 新增行；status=success/failed → 通知完成/失败。
+        """监控 cron-runs/*.jsonl 新增行；status=success → 完成，failed/error → 失败。
+
+        studio 运行记录文件名即 job id（JSONL 行内不一定含 jobId），
+        且只播报属于当前 agent 的任务（过滤不在 job_map 中的记录）。
 
         Returns:
             [(dedup_key, 触发文案), ...]
         """
         if not self._agent_id:
             return []
-        runs_dir = _schedule_mod.HANAKO_HOME / "agents" / self._agent_id / "desk" / "cron-runs"
-        if not runs_dir.is_dir():
+        runs_dir = self._get_runs_dir()
+        if not runs_dir or not runs_dir.is_dir():
             return []
-        # 构建 job id -> label 查表（来自同目录 cron-jobs.json）
+        # 构建 job id -> label 查表（来自 cron-jobs.json）
         job_map = self._build_job_label_map()
         hits: list[tuple[str, str]] = []
         for jsonl in sorted(runs_dir.glob("*.jsonl")):
@@ -154,15 +157,19 @@ class InspectionPerception:
                 if not isinstance(obj, dict):
                     continue
                 status = str(obj.get("status") or "").lower()
-                if status not in ("success", "failed"):
+                jid = self._job_id_of(obj, jsonl.name)
+                # 只播报当前 agent 的任务（防止读到其他 agent 的运行记录）
+                if jid not in job_map:
                     continue
-                label = self._resolve_label(obj, job_map)
+                label = job_map[jid]
                 if status == "success":
                     text = f"【任务】{label}跑完了 ✅"
-                    dedup = f"cron:{self._job_id_of(obj)}:success"
-                else:
+                    dedup = f"cron:{jid}:success"
+                elif status in ("failed", "error"):
                     text = f"【任务】{label}跑失败了 ❌"
-                    dedup = f"cron:{self._job_id_of(obj)}:failed"
+                    dedup = f"cron:{jid}:failed"
+                else:
+                    continue
                 hits.append((dedup, text))
         return hits
 
@@ -219,6 +226,20 @@ class InspectionPerception:
 
     # ── 辅助 ──────────────────────────────────────────────
 
+    def _get_runs_dir(self) -> Path | None:
+        """cron-runs 目录：优先 studio 空间，兜底 agent 目录。"""
+        studio_id = _schedule_mod._get_default_studio_id()
+        if studio_id:
+            studio_dir = (
+                _schedule_mod.HANAKO_HOME / "studios" / studio_id / "desk" / "cron-runs"
+            )
+            if studio_dir.is_dir():
+                return studio_dir
+        agent_dir = (
+            _schedule_mod.HANAKO_HOME / "agents" / self._agent_id / "desk" / "cron-runs"
+        )
+        return agent_dir if agent_dir.is_dir() else None
+
     def _build_job_label_map(self) -> dict[str, str]:
         """job id -> label（来自 cron-jobs.json）。"""
         mapping: dict[str, str] = {}
@@ -233,12 +254,17 @@ class InspectionPerception:
         return mapping
 
     @staticmethod
-    def _job_id_of(obj: dict) -> str:
-        """从 cron-runs 行提取 job id（兼容多种字段名）。"""
+    def _job_id_of(obj: dict, filename: str | None = None) -> str:
+        """从 cron-runs 行提取 job id（兼容多种字段名）； studio 文件名即 job id。"""
         for f in ("jobId", "job_id", "id", "name"):
             v = obj.get(f)
             if v:
                 return str(v)
+        if filename:
+            # studio 运行记录命名：studio_job_22.jsonl -> studio_job_22
+            stem = Path(filename).stem
+            if stem:
+                return stem
         return "unknown"
 
     @staticmethod
