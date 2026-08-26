@@ -15,6 +15,7 @@ import collections
 import inspect
 import json
 import logging
+import re
 import os
 import threading
 import time
@@ -746,27 +747,44 @@ class ConversationEngine:
             # 线程池已关闭（引擎停止中），直接丢弃本次合成
             logger.debug("TTS 线程池已关闭，跳过合成: gen=%d", gen)
 
-    def _friendly_tool_text(self, route_result) -> str:
-        """把工具路由结果转成可读文案，避免原始 JSON 直接上气泡。
+    # 内部总线/日志标签（不应上气泡）：截获打印进 tool_result 的 [bus]/[WS]/[httpx] 等
+    _INTERNAL_TAG_RE = re.compile(r'^\[\w+\]')
+    _JSON_SUBSTR_RE = re.compile(r'[\{\[][\s\S]*[\}\]]')
 
-        R3 结果友好化：工具执行结果（tool_result，常为 JSON 字符串）不再原样塞进
-        气泡——JSON 对象/数组提取关键字段拼自然语言；非 JSON 截断 80 字优雅摘要。
-        规则：
+    def _friendly_tool_text(self, route_result) -> str:
+        """把工具路由结果转成可读文案，避免原始 JSON / 内部日志直接上气泡。
+
+        R3 结果友好化：工具执行结果（tool_result）先做内部日志清洗，再尝试解析成
+        JSON 提取关键字段；解析不出时按能力名兜底友好话，绝不把 [bus]/[WS] 等
+        内部日志原样展示给用户。规则：
         - 无 tool_result → text 已是可读文案（内部能力如日报/会话信息），原样展示
-        - tool_result 是 JSON 对象 → _summarize_dict_result 提取 name/id/action/状态等
+        - 清洗后仍为空 / 仍是 JSON-ish 噪声（[ { 开头但解析失败）→ 能力兜底话术
+        - tool_result 是 JSON 对象 → _summarize_dict_result 提取 name/id/action/状态
         - tool_result 是 JSON 数组 → "共 N 项结果…"（N 为元素数）
-        - 其他 → 截断 80 字 + "…"（超长时）
+        - 其余可读文本 → 截断 80 字（兼容正常自然语言返回）
         """
         raw = (route_result.tool_result or "").strip()
         if not raw:
             # 内部能力/静态能力：text 就是最终可读文案（日报/会话信息等），不截断
             return route_result.text or "执行完成"
 
+        # 1) 清洗内部日志标签（[bus]/[WS]/[httpx]…），保留可能的 JSON 片段
+        cleaned = self._sanitize_tool_result(raw)
+        if not cleaned:
+            # 整段都是内部噪声 → 直接走能力兜底话术
+            return self._capability_fallback(route_result.capability)
+
+        # 2) 尝试 JSON 解析（整段，或其中 JSON 子串）
         data = None
         try:
-            data = json.loads(raw)
+            data = json.loads(cleaned)
         except (json.JSONDecodeError, ValueError):
-            data = None
+            m = self._JSON_SUBSTR_RE.search(cleaned)
+            if m:
+                try:
+                    data = json.loads(m.group(0))
+                except (json.JSONDecodeError, ValueError):
+                    data = None
 
         if isinstance(data, dict):
             summary = self._summarize_dict_result(data, route_result.capability)
@@ -777,10 +795,54 @@ class ConversationEngine:
                 return f"共 {len(data)} 项结果，已为你整理好～"
             return "暂无结果"
 
-        # 非 JSON：优雅截断
-        if len(raw) <= 80:
-            return raw
-        return raw[:80] + "…"
+        # 3) 非 JSON：清洗后仍是 JSON-ish / 内部噪声（[ { 开头）→ 能力兜底话术，
+        #    否则保留可读文本截断（兼容正常的自然语言返回）
+        if cleaned[0] in "{[":
+            return self._capability_fallback(route_result.capability)
+        if len(cleaned) <= 80:
+            return cleaned
+        return cleaned[:80] + "…"
+
+    def _sanitize_tool_result(self, raw: str) -> str:
+        """剥离内部总线/日志噪声，返回可展示的干净文本。
+
+        处理 [bus] Queue migrated… / [WS]… / [httpx]… 这类打印进 tool_result 的
+        内部日志：整行是标签日志则丢弃；若同行的标签后还有 JSON，则只保留 JSON。
+        """
+        kept: list[str] = []
+        for ln in raw.splitlines():
+            s = ln.strip()
+            if not s:
+                continue
+            if self._INTERNAL_TAG_RE.match(s):
+                # 先剥掉开头的 [tag]，再在剩余部分找 JSON 括号
+                # （否则会命中标签自身的 [，误把整行当 JSON 片段保留）
+                rest = self._INTERNAL_TAG_RE.sub("", s, count=1).lstrip()
+                m = re.search(r'[\{\[]', rest)
+                if not m:
+                    continue  # 纯内部日志行，丢弃
+                s = rest[m.start():]  # 仅保留标签后的 JSON 片段
+            kept.append(s)
+        return "\n".join(kept).strip()
+
+    @staticmethod
+    def _capability_fallback(capability: str) -> str:
+        """按能力名兜底一句友好话，避免把内部日志/破损 JSON 泄漏到气泡。"""
+        friendly = {
+            "next_track": "好，切到下一首啦～",
+            "prev_track": "好，切回上一首～",
+            "pause_music": "暂停啦～",
+            "resume_music": "继续播放～",
+            "stop_music": "停止播放啦～",
+            "play_music": "给你放首歌～",
+            "random_play": "给你随机放一首～",
+            "daily_report": "今天的日报来啦～",
+            "screenshot": "已帮你截图～",
+            "capture_screen": "已帮你截图～",
+        }
+        if capability in friendly:
+            return friendly[capability]
+        return "好的，已经帮你处理好啦～"
 
     def _summarize_dict_result(self, data: dict, capability: str) -> str:
         """从工具返回的 JSON 对象中提取关键字段，拼一句自然语言摘要。
@@ -801,6 +863,8 @@ class ConversationEngine:
             parts.append(str(name)[:40])
 
         ok = data.get("success")
+        if ok is None:
+            ok = data.get("ok")
         if ok is True:
             parts.append("执行成功")
         elif ok is False:
