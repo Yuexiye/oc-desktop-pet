@@ -16,6 +16,17 @@ logger = logging.getLogger(__name__)
 class AnimationMixin:
     """动画逻辑：呼吸浮动、视线跟随、动画序列切换、帧推进。"""
 
+    def _emotion_bob_factor(self) -> float:
+        """按情绪调制呼吸浮动幅度（happy 更弹、sad 更稳）。"""
+        return {
+            "happy": 1.8,
+            "surprised": 1.3,
+            "sad": 0.3,
+            "thinking": 1.0,
+            "angry": 1.1,
+            "neutral": 1.0,
+        }.get(getattr(self, '_current_emotion', 'neutral'), 1.0)
+
     # ── 呼吸浮动 ──
 
     def _bob_tick(self):

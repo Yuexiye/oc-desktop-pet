@@ -37,9 +37,7 @@ from motion.behavior import (
 from ui.bubble import ChatBubble
 from ui.activity_feed import ActivityFeed
 from ui.heart_particles import HeartBurst
-from ui.status_hud import StatusHUD
 from ui.theme.palette import rgb, rgba
-from ui.emotion_face import EmotionFace
 from ui.theme import get_default, rgb, rgba
 
 from motion.action_linker import ActionLinker
@@ -58,13 +56,11 @@ from motion.mouse_tracker import MouseTracker
 from core.window_interaction import WindowInteraction
 from pet_mixins.audio_mixin import AudioMixin
 from pet_mixins.gacha_mixin import GachaMixin
-from pet_mixins.status_hud_mixin import StatusHudMixin
 from pet_mixins.animation_mixin import AnimationMixin
 from pet_mixins.interaction_mixin import InteractionMixin
 from pet_mixins.chat_mixin import ChatMixin
 from pet_mixins.behavior_mixin import BehaviorMixin
 from pet_mixins.voice_provider_mixin import VoiceProviderMixin
-from pet_mixins.nurturing_mixin import NurturingMixin
 from pet_mixins.play_mixin import PlayMixin
 from pet_mixins.bubble_mixin import BubbleMixin
 
@@ -80,7 +76,7 @@ except ImportError:
 
 # ─── 设置对话框 ─────────────────────────────────────────
 
-class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, InteractionMixin, ChatMixin, BehaviorMixin, VoiceProviderMixin, NurturingMixin, PlayMixin, BubbleMixin, QWidget):
+class PetWindow(AudioMixin, GachaMixin, AnimationMixin, InteractionMixin, ChatMixin, BehaviorMixin, VoiceProviderMixin, PlayMixin, BubbleMixin, QWidget):
     """透明桌面宠物窗口"""
 
     # 跨线程信号：后台线程 -> 主线程
@@ -103,12 +99,6 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
     # 气泡：MultiPetBridge dispatcher / mission_tracker 等后台线程也会调 _show_bubble，
     # 而它内部要 start QTimer——必须先绕回主线程，否则 Qt 拒绝启动定时器。
     bubble_signal = Signal(str, str, int)  # text, emotion, priority
-    # 任务完成气泡：mission_completed 可能从 MultiPetDispatcher(后台线程)链触发，
-    # 直接创建/start QTimer 会报 Cannot create children + startTimer 跨线程警告。
-    mission_bubble_signal = Signal(str, str, object)  # mission_id, name, rewards
-    # 升级事件：PetSaveManager.on_level_up 回调可能处于任意线程，且需要在主线程
-    # 用 singleShot(0) 异步发射（切断奖励结算递归链）——跨线程先绕回主线程。
-    level_up_signal = Signal(int, int)  # old_level, new_level
     # G celebrating 完工音：TTS 合成在后台线程完成，播放必须经信号回主线程
     # （QMediaPlayer 是 COM 组件，跨线程调用会触发 RPC_E_SERVERCALL_RETRYLATER 0x8001010D）。
     tts_celebration_signal = Signal(str)  # audio_path
@@ -373,11 +363,6 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self._click_timer.setSingleShot(True)
         self._click_timer.timeout.connect(self._fire_pending_click)
         self._pending_click = False
-        # 状态 HUD 显隐
-        self._hud_pinned = False
-        self._hud_auto_hide_timer = QTimer(self)
-        self._hud_auto_hide_timer.setSingleShot(True)
-        self._hud_auto_hide_timer.timeout.connect(self._auto_hide_status_hud)
         # 抚摸手势状态
         self._pet_press_time = 0.0
         self._pet_press_pos = QPoint()
@@ -443,8 +428,6 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self.tool_progress_signal.connect(self._do_tool_progress)
         # 后台线程调 _show_bubble 时经此信号绕回主线程（queued connection）
         self.bubble_signal.connect(self._show_bubble_impl)
-        self.mission_bubble_signal.connect(self._on_mission_completed_bubble)
-        self.level_up_signal.connect(self._fire_level_up)
 
         # 连接跨线程信号
         self.engine_reply_signal.connect(self._do_engine_reply)
@@ -1446,53 +1429,11 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         item_registry,
         work_registry,
     ):
-        """注入养成系统（由 PetManager 调用，可选）
+        """注入 P0 养成系统（已弃用）。
 
-        把 PetSaveManager / PetStateManager / WorkTimer 三个实例
-        注入到 PetWindow，由 _unified_tick 驱动每秒 tick。
-        全程 hasattr 守卫，未注入时主循环不崩。
-
-        Args:
-            save_mgr: 养成数据存档管理器
-            state_mgr: 养成状态管理器（衰减 + 挂起池回流 + 模式）
-            work_timer: 工作计时器
-            item_registry: 物品注册表（菜单填充用）
-            work_registry: 工作注册表（菜单填充用）
+        保留空方法以兼容旧调用方；状态 / 喂食 / 工作 / 任务玩法已移除。
         """
-        try:
-            self._save_mgr = save_mgr
-            self._state_mgr = state_mgr
-            self._work_timer = work_timer
-            self._item_registry = item_registry
-            self._work_registry = work_registry
-
-            # 在右键菜单里动态插入"喂食" / "工作" / "状态"入口
-            if hasattr(self, '_menu') and self._menu is not None:
-                self._build_nurturing_menu()
-
-            # ── 任务系统（03 成长计划）──
-            try:
-                from core.event_bus import EventBus
-                from core.mission.mission_manager import MissionManager
-                self._mission_mgr = MissionManager(save_mgr=save_mgr, state_mgr=state_mgr)
-                self._mission_mgr.start()
-                # 保存 handler 引用，closeEvent 时 off() 退订（防止全局注册表累积、
-                # 多桌宠串扰、回调持有已销毁实例）
-                self._mission_completed_handler = self._on_mission_completed_bubble
-                EventBus.on("mission_completed", self._mission_completed_handler)
-                self._mission_subscribed = True
-
-                # 解耦升级事件：把"升级"钩子接到事件总线（延迟发射，避免奖励结算重入 add_exp 递归）
-                save_mgr.on_level_up = self._emit_level_up
-                self._build_mission_menu()
-                logger.info("任务系统已注入并启动")
-            except Exception as e:
-                self._mission_mgr = None
-                logger.warning("任务系统初始化失败（非致命）: %s", e)
-
-            logger.info("Nurturing system injected into PetWindow")
-        except Exception as e:
-            logger.warning("set_nurturing failed: %s", e)
+        logger.debug("set_nurturing is deprecated and does nothing")
 
 
     def _inject_agent_identity(self):
@@ -1712,16 +1653,9 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         if self._mousePassthrough:
             self.input_widget.hide()
             self.bubble.hide_bubble()
-            # 状态栏常驻提示穿透已启用（不自动消失，直到退出穿透），
-            # 避免用户误以为“穿透没生效”。
-            self._status_label.setText("🖱️ 穿透中·点托盘退出")
-            self._status_label.setStyleSheet(self._passthrough_qss())
-            self._status_label.show()
-            self._reposition_status_label()
         else:
-            # 退出穿透：恢复输入区，并立即恢复状态栏
+            # 退出穿透：恢复输入区
             self.input_widget.show()
-            self._restore_status_label()
 
     # ── 系统托盘 ──
 
@@ -1803,12 +1737,6 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self._menu.setStyleSheet(self._menu_qss(theme))
         if hasattr(self, "_tray_menu"):
             self._tray_menu.setStyleSheet(self._menu_qss(theme))
-        if hasattr(self, "_feed_menu"):
-            self._feed_menu.setStyleSheet(self._menu_qss(theme))
-        if hasattr(self, "_work_menu"):
-            self._work_menu.setStyleSheet(self._menu_qss(theme))
-        if self._status_label.isVisible() and "穿透" in (self._status_label.text() or ""):
-            self._status_label.setStyleSheet(self._passthrough_qss(theme))
 
     def _maybe_show_onboarding(self):
         """首次启动弹出轻量引导；看过则不再现"""
@@ -1902,7 +1830,6 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
             logger.info("PetWindow: 窗口贴合模型 %dx%d (缩放 %.2f → %dx%d)",
                         self._base_w, self._base_h, self._pet_scale, w_final, h_final)
             QTimer.singleShot(50, self._store_label_pos)
-            QTimer.singleShot(50, self._reposition_status_label)
             QTimer.singleShot(50, self._reposition_bubble)
         except Exception as e:
             logger.warning("PetWindow: 窗口贴合失败: %s", e)
@@ -1925,7 +1852,6 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self._renderer.set_scale(self._pet_scale)
         self._renderer.recalc_geometry(w, h)
         QTimer.singleShot(50, self._store_label_pos)
-        QTimer.singleShot(50, self._reposition_status_label)
         QTimer.singleShot(50, self._reposition_bubble)
 
     def _apply_scale(self):
@@ -2042,26 +1968,16 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self.bubble.move(0, 0)
         self.bubble.raise_()
 
-        # 宠物互动叠层：爱心粒子 / 状态 HUD / 情绪脸
+        # 宠物互动叠层：爱心粒子
         self._heart_overlay = HeartBurst(self)
         self._heart_overlay.resize_to_parent()
         self._heart_overlay.raise_()
-        self._status_hud = StatusHUD(self)
-        self._status_hud.hide()  # 默认不显示，避免遮挡桌宠主体
-        self._emotion_face = EmotionFace(self)
 
-        # 状态指示器(左下角悬浮)
-        self._status_label = QLabel(self)
-        self._status_label.setAlignment(Qt.AlignCenter)
-        self._status_label.setFixedSize(68, 20)
+        # 主题状态（用于菜单/输入框样式跟随）
         mgr = get_default()
         self._ui_theme = mgr.current if mgr else "dark"
-        self._status_label.setStyleSheet(self._status_idle_style())
         if mgr is not None:
-            mgr.theme_changed.connect(self._on_theme_changed)
             mgr.theme_changed.connect(self._refresh_window_theme)
-        self._status_label.setText("⚪ 空闲")
-        self._status_label.hide()
 
         # 底部输入区
         self.input_widget = QWidget(self)
@@ -2087,9 +2003,6 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
 
         self.main_layout.addStretch()
         self.main_layout.addWidget(self.input_widget, 0, Qt.AlignCenter)
-
-        # 状态指示器移到右下角
-        QTimer.singleShot(100, self._reposition_status_label)
 
         # 首次启动：延迟弹出引导（不挡启动流程）
         QTimer.singleShot(900, self._maybe_show_onboarding)
@@ -2123,15 +2036,9 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
                 idle_chatter.tick()
         # 5. 情绪过渡（无进行中过渡时 tick 内部直接 return，开销可忽略）
         self._transition.tick()
-        # 5.5 情绪脸轮询 + HUD 刷新（每秒一次）
+        # 5.5 情绪驱动本体动画（每秒一次；仅平静状态下，避免打断行走/追逐/对话）
         if self._bob_frame % 20 == 0:
             emo = getattr(self, '_current_emotion', 'neutral')
-            if hasattr(self, '_emotion_face'):
-                self._emotion_face.set_emotion(emo)
-            if getattr(self, '_status_hud', None):
-                self._status_hud.set_emotion(emo)
-                if self._status_hud.isVisible():
-                    self._refresh_status_hud()
             # 情绪驱动本体动画（仅平静状态下，避免打断行走/追逐/对话）
             # 收窄：surprised/angry 不切瞪眼帧（用户反馈高频瞪眼），只保留表情脸表达
             if not hasattr(self, '_last_body_emotion'):
@@ -2153,26 +2060,10 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
                     except Exception:
                         pass
                 self._last_body_emotion = body_emo
-        # 6. 养成 tick（每秒一次）+ 自动保存（自带 60s 节流）
-        #    所有访问都靠 hasattr 守卫，没注入养成模块时跳过
-        if self._bob_frame % 20 == 0:
-            state_mgr = getattr(self, '_state_mgr', None)
-            if state_mgr:
-                try:
-                    state_mgr.tick(1.0)
-                except Exception:
-                    logger.exception("pet state tick failed")
-            save_mgr = getattr(self, '_save_mgr', None)
-            if save_mgr:
-                try:
-                    save_mgr.auto_save()
-                except Exception:
-                    logger.exception("pet auto_save failed")
-
-        # 7. 待机微动作（约每秒一次）
+        # 6. 待机微动作（约每秒一次）
         if self._bob_frame % 33 == 0:
             self._tick_idle_life()
-        # 8. 鼠标追逐：持续跟随光标
+        # 7. 鼠标追逐：持续跟随光标
         if getattr(self, '_chasing', False):
             self._update_chase()
 
@@ -2210,7 +2101,6 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
         self._voice_continuous_action = self._interact_menu.addAction("🎤 持续监听", self._toggle_voice_continuous)
         self._voice_continuous_action.setCheckable(True)
         self._voice_continuous_action.setChecked(False)
-        self._interact_menu.addAction("🍙 喂一口", self._quick_feed)
 
         # 行为模式子菜单
         self._behavior_submenu = self._interact_menu.addMenu("🚶 行为")
@@ -2233,10 +2123,6 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
             a = self._interact_menu.addAction(f"{action.emoji} {action.label}", lambda a_id=action.id: self._trigger_action(a_id))
             a.setVisible(False)  # 默认隐藏,匹配时高亮
             self._action_menu_items[action.id] = a
-
-        # ── 玩法组（养成子菜单注入目标：喂食/工作/任务/抽卡）──
-        self._play_menu = self._menu.addMenu("🎮 玩法")
-        self._play_menu.setStyleSheet(self._menu_qss())
 
         # ── 管理组 ──
         self._manage_menu = self._menu.addMenu("⚙️ 管理")
@@ -2731,8 +2617,6 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
             return
         self._current_emotion = emotion
         self._emotion_source = source
-        if hasattr(self, '_emotion_face'):
-            self._emotion_face.set_emotion(self._current_emotion)
         # P2-6：主导情绪同步到渲染器程序化表情层（面部参数平滑过渡）
         self._sync_renderer_master_emotion(self._current_emotion)
         if self._current_emotion != "neutral":
@@ -2779,16 +2663,6 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
                 self.bubble.hide_bubble()
             except Exception:
                 pass
-
-        # 任务系统：对话完成事件（有效回复才计入）
-        if (getattr(self, "_mission_mgr", None) is not None
-                and reply and reply.strip()
-                and reply.strip() not in ("\u2026", "...")):
-            try:
-                from core.event_bus import EventBus
-                EventBus.emit("chat_completed", count=1)
-            except Exception:
-                logger.debug("chat_completed emit failed", exc_info=True)
 
         # 播放音频（和文字一起）
         if audio_path and os.path.exists(audio_path):
@@ -3092,33 +2966,6 @@ class PetWindow(AudioMixin, GachaMixin, StatusHudMixin, AnimationMixin, Interact
                 self._audio_bridge.disconnect()
             except Exception:
                 pass
-
-        # ── P0 养成：停止工作 + 落盘 ──
-        work_timer = getattr(self, '_work_timer', None)
-        if work_timer and getattr(work_timer, 'is_working', False):
-            try:
-                work_timer.stop_work(reason="close")
-            except Exception:
-                logger.exception("work_timer.stop_work failed on close")
-        save_mgr = getattr(self, '_save_mgr', None)
-        if save_mgr:
-            try:
-                save_mgr.save_to_disk()
-            except Exception:
-                logger.exception("save_to_disk failed on close")
-
-        # ── B2-2: 任务系统退订事件总线（防止多宠/反复开关累积订阅、回调已销毁实例）──
-        try:
-            if getattr(self, '_mission_subscribed', False):
-                from core.event_bus import EventBus
-                handler = getattr(self, '_mission_completed_handler', None)
-                if handler is not None:
-                    EventBus.off("mission_completed", handler)
-                self._mission_subscribed = False
-            if getattr(self, '_mission_mgr', None) is not None:
-                self._mission_mgr.stop()
-        except Exception:
-            logger.exception("mission unsubscribe failed on close")
 
         if hasattr(self, '_tray'):
             try:

@@ -419,17 +419,8 @@ class InteractionMixin:
         self._pet_combo = 0
 
     def _quick_feed(self):
-        """免费基础投喂：直接回流饥饿/口渴/心情，不依赖抽卡与钱"""
-        self._mark_user_interaction()
-        if hasattr(self, '_state_mgr') and self._state_mgr:
-            self._state_mgr.apply_item_effect({"hunger": 35, "thirst": 12, "mood": 4})
-        # 喂食时弹出「吃饭糰」插画贴纸（B：场景图转气泡贴图）
-        base = os.path.dirname(os.path.abspath(__file__))
-        sticker = os.path.join(base, "characters", "yuexinmiao", "stickers", "eat_moment.png")
-        if os.path.exists(sticker) and hasattr(self, '_bubble'):
-            self._bubble.set_sticker_image(sticker, "🍙 好吃~")
-        else:
-            self._show_bubble("🍙 好吃~", emotion="happy")
-        # 喂食专属吃动作（route B 反应帧）；无 eat 帧时安全回退到挥手
-        self._pet_play_happy(big=False, revert=700, seq="eat")
-        self._flash_status_hud()
+        """免费基础投喂（已弃用）。
+
+        养成系统移除后，该方法保留空壳以避免旧调用方报错。
+        """
+        logger.debug("_quick_feed is deprecated and does nothing")
