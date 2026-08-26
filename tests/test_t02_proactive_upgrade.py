@@ -392,3 +392,57 @@ def test_generation_available_false_without_generator():
     """未注入生成器 → generation_available()=False（行为与旧版一致）。"""
     sched, _, _ = _make_scheduler()
     assert sched.generation_available() is False
+
+
+def test_screen_slacking_not_mapped_to_weekend_on_weekday(monkeypatch):
+    """屏幕感知为摸鱼(slacking)时，工作日不应覆盖到 weekend_play，避免说出"周末"。"""
+    sched, _, _ = _make_scheduler(foreground_category="browsing", activity="idle", conv_idle_min=10.0)
+    sched._is_fullscreen = lambda: False
+    monkeypatch.setattr(
+        "core.perception.proactive.classify_intent",
+        lambda **kw: {"intent": "work", "scenario": "chat_idle", "confidence": 0.5, "reason": "test"},
+    )
+    signals = {
+        "period": "afternoon",
+        "category": "browsing",
+        "activity": "idle",
+        "fg_duration_min": 2.0,
+        "conversation_idle_min": 10.0,
+        "window_switches_5min": 0,
+        "is_weekend": False,
+        "weekday": 2,
+        "screen_scene": "slacking",
+        "screen_intent": "slacking",
+        "screen_confidence": 0.8,
+        "screen_propensity": "open",
+    }
+    result = sched._try_intent(time.time(), signals)
+    assert result is not None, "工作日摸鱼场景应触发非周末场景"
+    assert "周末" not in result, f"不应在工作日说出周末文案：{result}"
+
+
+def test_screen_slacking_maps_to_weekend_on_weekend(monkeypatch):
+    """屏幕感知为摸鱼(slacking)时，周末可正常映射到 weekend_play。"""
+    sched, _, _ = _make_scheduler(foreground_category="browsing", activity="idle", conv_idle_min=10.0)
+    sched._is_fullscreen = lambda: False
+    monkeypatch.setattr(
+        "core.perception.proactive.classify_intent",
+        lambda **kw: {"intent": "work", "scenario": "chat_idle", "confidence": 0.5, "reason": "test"},
+    )
+    signals = {
+        "period": "afternoon",
+        "category": "browsing",
+        "activity": "idle",
+        "fg_duration_min": 2.0,
+        "conversation_idle_min": 10.0,
+        "window_switches_5min": 0,
+        "is_weekend": True,
+        "weekday": 5,
+        "screen_scene": "slacking",
+        "screen_intent": "slacking",
+        "screen_confidence": 0.8,
+        "screen_propensity": "open",
+    }
+    result = sched._try_intent(time.time(), signals)
+    assert result is not None, "周末摸鱼场景应触发 weekend_play"
+    assert "周末" in result, f"周末应使用周末文案：{result}"
