@@ -2173,6 +2173,11 @@ class Live2DRenderer(AvatarRenderer):
         """
         expr = self._match_expression(emotion)
         try:
+            # 非 idle motion 播放期间，不叠加新表情：waving/happy 等动作本身已包含
+            # 肢体姿势，若再叠加上“比心/葱”等表情贴图，会出现“比心+举葱”叠加。
+            # 情绪系统每秒调用 set_emotion，在动作冷却期只同步表情，这里需要抑制。
+            if expr is not None and not getattr(self, "_motion_is_idle", True):
+                return
             if expr is None:
                 # P2-9: 无论 _expression_active 真假，只要曾设过表情就重置
                 if self._expression_active or self._last_expression:

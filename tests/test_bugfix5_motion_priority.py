@@ -22,6 +22,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pet  # noqa: E402  (PetWindow 可离屏导入)
+from avatar.live2d_renderer import Live2DRenderer  # noqa: E402
 
 
 class _FakeLive2D:
@@ -165,3 +166,55 @@ def test_reset_motion_expression_guard_without_model():
     renderer._model = None
     pet.PetWindow._reset_motion_expression(SimpleNamespace(_renderer=renderer))
     assert renderer.force_idle_calls == 0
+
+
+# ── C：非 idle motion 播放期间不叠加情绪表情 ───────────────
+
+def _make_live2d_renderer_with_model():
+    """用 object.__new__ 构造无 __init__ 的 Live2DRenderer，便于单元测试。"""
+    renderer = object.__new__(Live2DRenderer)
+    renderer._expression_active = False
+    renderer._last_expression = ""
+    renderer._expression_set_at = 0.0
+    renderer._expression_suppress_until = 0.0
+    renderer._motion_is_idle = True
+    renderer._emotion_exprs = {"happy": "比心"}
+    renderer._expression_names = ["比心", "脸红", "前倾"]
+    renderer._model = MagicMock()
+    return renderer
+
+
+def test_apply_expression_sets_expression_when_idle():
+    """idle 状态下 _apply_expression 正常设置表情。"""
+    renderer = _make_live2d_renderer_with_model()
+    renderer._motion_is_idle = True
+    renderer._apply_expression("happy")
+    renderer._model.SetExpression.assert_called_once_with("比心")
+    assert renderer._expression_active is True
+    assert renderer._last_expression == "比心"
+
+
+def test_apply_expression_suppressed_during_non_idle_motion():
+    """非 idle motion 播放期间，_apply_expression 不叠加新表情。
+
+    根因：自动随机动作 waving 播放时，情绪系统每秒 set_emotion('happy')
+    因全局 gesture 冷却只同步表情，会把比心叠到 waving 上。
+    """
+    renderer = _make_live2d_renderer_with_model()
+    renderer._motion_is_idle = False
+    renderer._apply_expression("happy")
+    renderer._model.SetExpression.assert_not_called()
+    assert renderer._expression_active is False
+    assert renderer._last_expression == ""
+
+
+def test_apply_expression_resets_during_non_idle_motion_for_neutral():
+    """非 idle motion 期间情绪回 neutral 仍应清表情。"""
+    renderer = _make_live2d_renderer_with_model()
+    renderer._motion_is_idle = False
+    renderer._expression_active = True
+    renderer._last_expression = "比心"
+    renderer._apply_expression("neutral")
+    renderer._model.ResetExpressions.assert_called()
+    assert renderer._expression_active is False
+    assert renderer._last_expression == ""
