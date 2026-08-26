@@ -55,6 +55,10 @@ class Live2DRenderer(AvatarRenderer):
     # 卡手势防御：非 idle motion 播满此秒数强制回 idle（模型 motion 全 Loop=true，
     # waving/touch 等手势 mp3.json 都是 2.667s 循环，播 1.5 圈后回位）
     GESTURE_TIMEOUT = 3.0
+    # 手动演示锁定：用户右键「动作展示」选动作/表情后，进入演示锁定，期间
+    # 程序化表情层（按情绪每帧写面部参数）与自动情绪系统完全让位，避免把
+    # 手动选的比心/葱等表情"冲淡"。超时后自动恢复自动情绪。
+    MANUAL_OVERRIDE_TIMEOUT = 30.0
     # 情绪 -> motion 组名（模型有对应动作组时播放）
     _EMOTION_MOTION = {
         "happy": ("happy", "joy", "fun"),
@@ -418,6 +422,9 @@ class Live2DRenderer(AvatarRenderer):
         self._expression_active: bool = False
         self._last_expression: str = ""
         self._expression_suppress_until: float = 0.0
+        # 手动演示锁定状态（动作展示/表情演示期间为真，期间自动系统让位）
+        self._manual_override: bool = False
+        self._manual_override_at: float = 0.0
 
         # ── 动作优化层状态（纯参数驱动，不依赖 motion 文件）──
         # idle 微摆动（正弦叠加；_motion_is_idle 时生效）
@@ -1315,6 +1322,9 @@ class Live2DRenderer(AvatarRenderer):
         if not self._model:
             return
         P = self._live2d.StandardParams
+        # 手动演示锁定：用户右键「动作展示」选动作/表情期间，跳过会与手动选择
+        # 冲突的面部参数写入（眼/眉/嘴/脸红），让手动选择完整显示不被程序化层冲淡。
+        _override = self._in_manual_override()
         try:
             # 目标值（未知情绪回退 neutral；neutral = 全 0 + 常态呼吸）
             emo = self.master_emotion
@@ -1359,39 +1369,42 @@ class Live2DRenderer(AvatarRenderer):
                     _pcur[_name] = _pcur.get(_name, 0.0) + (_tgt_f - _pcur.get(_name, 0.0)) * alpha
                 self._param_cur = _pcur
 
-            # 眼睛开合（0=闭 1=全开；surprised 超 1 截断）
-            try:
-                eye_open = max(0.0, min(1.0, cur["eye_open"]))
-                self._model.SetParameterValue(P.ParamEyeLOpen, eye_open, 0.5)
-                self._model.SetParameterValue(P.ParamEyeROpen, eye_open, 0.5)
-            except Exception:
-                pass
-            # 眯眼（微笑时眼睛变细 / 瞪眼）
-            try:
-                self._model.SetParameterValue(P.ParamEyeLSmile, cur["eye_smile"], 0.6)
-                self._model.SetParameterValue(P.ParamEyeRSmile, cur["eye_smile"], 0.6)
-            except Exception:
-                pass
-            # 眉毛角度/形态（生气皱眉负 / 惊讶挑眉正）
-            try:
-                self._model.SetParameterValue(P.ParamBrowLAngle, cur["brow_angle"], 0.6)
-                self._model.SetParameterValue(P.ParamBrowRAngle, cur["brow_angle"], 0.6)
-                self._model.SetParameterValue(P.ParamBrowLForm, cur["brow_form"], 0.6)
-                self._model.SetParameterValue(P.ParamBrowRForm, cur["brow_form"], 0.6)
-            except Exception:
-                pass
-            # 嘴型（笑 / 撇嘴）
-            try:
-                self._model.SetParameterValue(P.ParamMouthForm, cur["mouth_form"], 0.6)
-            except Exception:
-                pass
-            # 嘴张开：说话时让位给 _update_mouth（口型由 TTS 驱动），不叠加
-            if not getattr(self, "_speaking", False):
+            # 手动演示锁定期间：跳过眼/眉/嘴/脸红等会与手动表情/动作冲突的面部参数，
+            # 只保留呼吸/眼神/头部/头发等底层自然律动，让手动选择完整显示不被冲淡。
+            if not _override:
+                # 眼睛开合（0=闭 1=全开；surprised 超 1 截断）
                 try:
-                    mouth_open = max(0.0, min(1.0, cur["mouth_open"]))
-                    self._model.SetParameterValue(P.ParamMouthOpenY, mouth_open, 0.5)
+                    eye_open = max(0.0, min(1.0, cur["eye_open"]))
+                    self._model.SetParameterValue(P.ParamEyeLOpen, eye_open, 0.5)
+                    self._model.SetParameterValue(P.ParamEyeROpen, eye_open, 0.5)
                 except Exception:
                     pass
+                # 眯眼（微笑时眼睛变细 / 瞪眼）
+                try:
+                    self._model.SetParameterValue(P.ParamEyeLSmile, cur["eye_smile"], 0.6)
+                    self._model.SetParameterValue(P.ParamEyeRSmile, cur["eye_smile"], 0.6)
+                except Exception:
+                    pass
+                # 眉毛角度/形态（生气皱眉负 / 惊讶挑眉正）
+                try:
+                    self._model.SetParameterValue(P.ParamBrowLAngle, cur["brow_angle"], 0.6)
+                    self._model.SetParameterValue(P.ParamBrowRAngle, cur["brow_angle"], 0.6)
+                    self._model.SetParameterValue(P.ParamBrowLForm, cur["brow_form"], 0.6)
+                    self._model.SetParameterValue(P.ParamBrowRForm, cur["brow_form"], 0.6)
+                except Exception:
+                    pass
+                # 嘴型（笑 / 撇嘴）
+                try:
+                    self._model.SetParameterValue(P.ParamMouthForm, cur["mouth_form"], 0.6)
+                except Exception:
+                    pass
+                # 嘴张开：说话时让位给 _update_mouth（口型由 TTS 驱动），不叠加
+                if not getattr(self, "_speaking", False):
+                    try:
+                        mouth_open = max(0.0, min(1.0, cur["mouth_open"]))
+                        self._model.SetParameterValue(P.ParamMouthOpenY, mouth_open, 0.5)
+                    except Exception:
+                        pass
             # 眼神方向：情绪偏移低权重叠加在视线跟随之上（不打架）
             try:
                 self._model.SetParameterValue(P.ParamEyeBallX, cur["eye_ball_x"], 0.3)
@@ -1432,14 +1445,14 @@ class Live2DRenderer(AvatarRenderer):
                 self._model.SetParameterValue(P.ParamHairSide, hair * 0.4, 0.5)
             except Exception:
                 pass
-            # 脸红（动作叠加/表情序列专用）：优先 ParamCheek 标准参数，
-            # 模型没有则用 eye_smile + brow 组合模拟（独立 try/except 兜底）。
-            try:
-                blush_val = max(0.0, min(1.0, cur.get("blush", 0.0) or 0.0))
-                if blush_val > 0.01:
-                    self._apply_blush(blush_val)
-            except Exception:
-                pass
+            # 脸红（动作叠加/表情序列专用）：手动演示锁定期跳过，避免与手动表情冲突
+            if not _override:
+                try:
+                    blush_val = max(0.0, min(1.0, cur.get("blush", 0.0) or 0.0))
+                    if blush_val > 0.01:
+                        self._apply_blush(blush_val)
+                except Exception:
+                    pass
             # 表情序列快速参数（如眨眼脉冲）：跳过平滑直接写，保证眨眼节奏。
             # 眨眼脉冲 = eye_open 交替 0.1/1.0，若走指数平滑会被拉成"软眨眼"看不清。
             _fast = getattr(self, "_emote_seq_fast", None) or {}
@@ -1776,6 +1789,9 @@ class Live2DRenderer(AvatarRenderer):
         """
         if not self._auto_motion_enabled or not self._model or not self._motion_files:
             return
+        # 手动演示锁定期间不自动插播随机动作，避免打断用户正在看的展示
+        if self._in_manual_override():
+            return
         if len(self._motion_files) < 2:  # 只有一个 motion（或 idle）就不用调
             return
         # 仅在 idle 状态下触发随机调度
@@ -1884,6 +1900,9 @@ class Live2DRenderer(AvatarRenderer):
         self._expression_active = False
         self._last_expression = ""
         self._expression_suppress_until = 0.0
+        # 清除手动演示锁定：强制回 idle 即退出演示模式
+        self._manual_override = False
+        self._manual_override_at = 0.0
         # 双重 StopAllMotions：某些 wrapper 实现需要两次才彻底清
         try:
             if hasattr(self._model, "StopAllMotions"):
@@ -2134,6 +2153,11 @@ class Live2DRenderer(AvatarRenderer):
             return
         self._apply_expression(emotion)
 
+    def _in_manual_override(self) -> bool:
+        """是否处于手动演示锁定（动作展示/表情演示中）。"""
+        return bool(getattr(self, "_manual_override", False)) and \
+            (time.monotonic() - getattr(self, "_manual_override_at", 0.0)) < self.MANUAL_OVERRIDE_TIMEOUT
+
     def set_expression_by_name(self, name: str) -> None:
         """按 Live2D 表情名直接设置表情（供右键菜单手动触发）。
 
@@ -2177,7 +2201,11 @@ class Live2DRenderer(AvatarRenderer):
             self._motion_is_idle = True
             self._current_motion_idx = None
             self._note_motion_started("expression_" + str(name), is_idle=True)
-            logger.info("Live2DRenderer: 手动设置表情 '%s'，已清场所有 motion", name)
+            # 进入手动演示锁定：期间程序化表情层与自动情绪系统让位，避免把
+            # 手动选的表情/动作"冲淡"（每秒 set_emotion 会把表情覆盖回默认）。
+            self._manual_override = True
+            self._manual_override_at = time.monotonic()
+            logger.info("Live2DRenderer: 手动设置表情 '%s'，已清场所有 motion（演示锁定 30s）", name)
         except Exception as e:
             logger.warning("Live2DRenderer: 设置表情失败: %s", e)
 
@@ -2238,6 +2266,9 @@ class Live2DRenderer(AvatarRenderer):
         """
         if not self._expression_active or not self._model:
             return
+        # 手动演示锁定期间不过期，保持用户选择的表情完整显示
+        if self._in_manual_override():
+            return
         now = time.monotonic()
         if now - self._expression_set_at > self.GESTURE_TIMEOUT:
             try:
@@ -2250,6 +2281,14 @@ class Live2DRenderer(AvatarRenderer):
                         self.GESTURE_TIMEOUT, self.GESTURE_TIMEOUT)
 
     def set_emotion(self, emotion: str, intensity: float = 1.0) -> None:
+        # 手动演示锁定：用户右键「动作展示」选了动作/表情后，MANUAL_OVERRIDE_TIMEOUT
+        # 内情绪系统完全让位（不重播 motion、不设表情），避免每秒 tick 把用户
+        # 手动选的比心/葱等"冲淡/覆盖"。点「重置表情」或超时后自动恢复。
+        if self._in_manual_override():
+            # 仅同步标签，不影响实际表现
+            self._current_emotion = emotion
+            self._emotion_target = emotion
+            return
         # 同一 emotion 短时间内重复调用：直接同步表情，不重播 motion。
         # 真实场景：_unified_tick 每秒检查 emotion 并 set_emotion，
         # 若屏幕感知把 emotion 设为 happy，每秒都会触发 happy 调用，

@@ -2255,6 +2255,13 @@ class PetWindow(AudioMixin, GachaMixin, AnimationMixin, InteractionMixin, ChatMi
                 renderer._motion_started_at = time.monotonic()
             except Exception:
                 pass
+            # 进入手动演示锁定：动作展示期间程序化表情层与自动情绪系统让位，
+            # 避免把用户手动选的动作"冲淡/覆盖"。
+            try:
+                renderer._manual_override = True
+                renderer._manual_override_at = time.monotonic()
+            except Exception:
+                pass
         except Exception as e:
             logger.warning("菜单动作播放失败: %s", e)
 
