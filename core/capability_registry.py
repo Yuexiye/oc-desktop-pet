@@ -117,7 +117,7 @@ CAPABILITIES: list[Capability] = [
     # pause/resume/next/state/clear 都是 audio_bus 的固定 action，本地直达又快又准。
     Capability(
         name="pause_music",
-        patterns=["暂停", "暂停播放", "停一下", "pause"],
+        patterns=["暂停播放", "停一下", "pause"],
         handler="tool",
         tool_name="audio_bus",
         plugin_id="hanako-audio-player",
@@ -126,7 +126,7 @@ CAPABILITIES: list[Capability] = [
     ),
     Capability(
         name="resume_music",
-        patterns=["继续播放", "继续", "恢复播放", "resume"],
+        patterns=["继续播放", "恢复播放", "resume"],
         handler="tool",
         tool_name="audio_bus",
         plugin_id="hanako-audio-player",
@@ -135,7 +135,7 @@ CAPABILITIES: list[Capability] = [
     ),
     Capability(
         name="next_track",
-        patterns=["下一首", "切歌", "下一个", "next"],
+        patterns=["下一首", "切歌", "next"],
         handler="tool",
         tool_name="audio_bus",
         plugin_id="hanako-audio-player",
@@ -182,7 +182,7 @@ CAPABILITIES: list[Capability] = [
     ),
     Capability(
         name="screenshot_now",
-        patterns=["截个图", "看看屏幕", "截图", "screenshot"],
+        patterns=["截个图", "看看屏幕", "screenshot"],
         handler="internal",
         description="立即截图分析",
         emotion="thinking",
