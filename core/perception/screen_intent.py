@@ -587,9 +587,30 @@ def enrich_screen_scene(
 
 # ── 联动适配（复用 P0 已有接口）─────────────────────────────
 
-def to_intent_scenario(scene: str) -> str:
-    """屏幕场景 → proactive 意图场景名（scenarios.py 词汇）。"""
-    return _SCENE_TO_INTENT_SCENARIO.get(scene, "chat_idle")
+def to_intent_scenario(scene: str, is_weekend: bool | None = None) -> str:
+    """屏幕场景 → proactive 意图场景名（scenarios.py 词汇）。
+
+    weekend_play 类场景（slacking / music_listening）只在周末成立：非周末
+    降级为通用 chat_idle，避免"摸鱼 / 听音乐"被映射成 weekend_play 后，桌宠
+    在工作日说出"周末的下午"。
+
+    is_weekend 缺省时按真实时间戳（TimePerception）判定，保证调用方即使忘记
+    传参也不会凭空编造周末——时间相关逻辑一律看时间戳。
+    """
+    if is_weekend is None:
+        try:
+            from .time import TimePerception
+            is_weekend = bool(TimePerception().get_context().get("is_weekend", False))
+        except Exception:
+            is_weekend = False
+    target = _SCENE_TO_INTENT_SCENARIO.get(scene, "chat_idle")
+    if target == "weekend_play" and not is_weekend:
+        logger.debug(
+            "screen scene %r maps to weekend_play but not weekend -> downgrade chat_idle",
+            scene,
+        )
+        return "chat_idle"
+    return target
 
 
 def focus_score_from_scene(scene: ScreenScene, scorer=None):

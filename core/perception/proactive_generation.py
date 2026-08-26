@@ -59,6 +59,15 @@ def build_proactive_prompt(context: dict) -> str:
         lines.append(f"当前场景：{category}（{period}时段）")
     if conv_idle_min > 0:
         lines.append(f"最近一次对话距今约 {conv_idle_min} 分钟。")
+    # 注入真实时间戳（取自系统时钟），防止 LLM 凭空编造与时间不符的
+    # "周末 / 周五" 等表述——凡是涉及时间的内容都以这个时间为准。
+    try:
+        from .time import TimePerception
+        time_label = TimePerception().format_for_prompt()
+        if time_label:
+            lines.append(f"真实时间参考：{time_label}")
+    except Exception:
+        pass
     if fallback:
         lines.append(f"参考方向（可自由发挥，不要照抄）：{fallback}")
     lines.append("要求：一句话，不超过 20 字，口语化，贴合场景，不要重复最近说过的话。")

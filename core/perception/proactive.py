@@ -498,17 +498,10 @@ class ProactiveScheduler:
                 return None
             if screen_scene and screen_conf >= INTENT_MIN_CONFIDENCE:
                 from .screen_intent import to_intent_scenario
-                mapped = to_intent_scenario(screen_scene)
-                # 周末场景（weekend_play）只在周末生效，避免屏幕感知把"摸鱼"
-                # 映射到 weekend_play 后在工作日说出"周末的下午"。
-                # 工作日退化为 chat_idle 通用场景，仍保留屏幕感知带来的置信度。
-                if mapped == "weekend_play" and not signals.get("is_weekend"):
-                    logger.debug(
-                        "Proactive screen scene weekend_play remapped to chat_idle: "
-                        "not weekend (weekday=%s)",
-                        signals.get("weekday"),
-                    )
-                    mapped = "chat_idle"
+                # to_intent_scenario 内部已按 is_weekend 约束 weekend_play：
+                # 非周末（取自真实时间戳）的 slacking/music_listening 会自动
+                # 降级为 chat_idle，日期判断集中在这一个地方，无需调用处补丁。
+                mapped = to_intent_scenario(screen_scene, signals.get("is_weekend"))
                 if mapped:
                     scenario = mapped
                     confidence = max(confidence, screen_conf)

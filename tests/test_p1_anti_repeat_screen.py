@@ -251,11 +251,16 @@ def test_scene_title_ide():
 
 
 def test_to_intent_scenario_mapping():
-    assert to_intent_scenario("late_night_work") == "late_night_work"
-    assert to_intent_scenario("gaming") == "gaming"
-    assert to_intent_scenario("video_watching") == "video_watching"
-    assert to_intent_scenario("slacking") == "weekend_play"
-    assert to_intent_scenario("unknown_scene") == "chat_idle"
+    # 周末：weekend_play 类场景保持映射
+    assert to_intent_scenario("late_night_work", is_weekend=True) == "late_night_work"
+    assert to_intent_scenario("gaming", is_weekend=True) == "gaming"
+    assert to_intent_scenario("video_watching", is_weekend=True) == "video_watching"
+    assert to_intent_scenario("slacking", is_weekend=True) == "weekend_play"
+    assert to_intent_scenario("music_listening", is_weekend=True) == "weekend_play"
+    assert to_intent_scenario("unknown_scene", is_weekend=True) == "chat_idle"
+    # 工作日：weekend_play 类场景（slacking / music_listening）降级为 chat_idle
+    assert to_intent_scenario("slacking", is_weekend=False) == "chat_idle"
+    assert to_intent_scenario("music_listening", is_weekend=False) == "chat_idle"
 
 
 # ── LLM 语义增强：失败降级 / 成功合并 ─────────────────────
