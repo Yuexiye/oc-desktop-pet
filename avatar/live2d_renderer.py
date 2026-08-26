@@ -2146,16 +2146,38 @@ class Live2DRenderer(AvatarRenderer):
         expression 是独立 Param 切换），导致"比心+葱"叠加。先 ResetExpressions
         再设新表情，确保用户主动切换是互斥的。情绪系统走 _apply_expression
         不走此路径。
+
+        2026-08-26 修复：仅 ResetExpressions 不够——如果当前正播放 waving 等
+        非 idle motion，新表情仍会叠在 motion 上。手动切换表情/动作时必须
+        彻底互斥：先 StopAllMotions 清动作，再 ResetExpressions 清旧表情，
+        最后 SetExpression 设新表情。同步重置 motion 簿记，避免后续被
+        GESTURE_TIMEOUT 或 _apply_expression 抑制逻辑误判。
         """
         if not self._model:
             return
         try:
-            self._model.ResetExpressions()
+            # 彻底清场：停掉所有 motion，再清表情，确保手动表情不会叠在旧动作上
+            if hasattr(self._model, "StopAllMotions"):
+                try:
+                    self._model.StopAllMotions()
+                except Exception:
+                    pass
+                try:
+                    self._model.StopAllMotions()
+                except Exception:
+                    pass
+            if hasattr(self._model, "ResetExpressions"):
+                self._model.ResetExpressions()
             self._model.SetExpression(str(name))
             self._expression_active = True
             self._last_expression = str(name)
             self._expression_set_at = time.monotonic()
             self._expression_suppress_until = 0.0
+            # 手动表情独占画面：motion 已全停，按 idle 处理，避免情绪系统抑制
+            self._motion_is_idle = True
+            self._current_motion_idx = None
+            self._note_motion_started("expression_" + str(name), is_idle=True)
+            logger.info("Live2DRenderer: 手动设置表情 '%s'，已清场所有 motion", name)
         except Exception as e:
             logger.warning("Live2DRenderer: 设置表情失败: %s", e)
 

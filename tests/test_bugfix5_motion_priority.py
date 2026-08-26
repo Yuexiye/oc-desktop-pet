@@ -218,3 +218,29 @@ def test_apply_expression_resets_during_non_idle_motion_for_neutral():
     renderer._model.ResetExpressions.assert_called()
     assert renderer._expression_active is False
     assert renderer._last_expression == ""
+
+
+def test_set_expression_by_name_stops_motions_when_non_idle():
+    """手动点表情时，如果正在播非 idle motion，必须 StopAllMotions 清场。"""
+    renderer = _make_live2d_renderer_with_model()
+    renderer._motion_is_idle = False
+    renderer._current_motion_idx = 2
+    renderer.set_expression_by_name("比心")
+    assert renderer._model.StopAllMotions.call_count == 2
+    renderer._model.ResetExpressions.assert_called()
+    renderer._model.SetExpression.assert_called_once_with("比心")
+    assert renderer._expression_active is True
+    assert renderer._last_expression == "比心"
+    assert renderer._motion_is_idle is True
+    assert renderer._current_motion_idx is None
+
+
+def test_set_expression_by_name_resets_previous_expression():
+    """手动切换表情时先 ResetExpressions，确保不与前一个表情叠加。"""
+    renderer = _make_live2d_renderer_with_model()
+    renderer._expression_active = True
+    renderer._last_expression = "前倾"
+    renderer.set_expression_by_name("比心")
+    renderer._model.ResetExpressions.assert_called()
+    renderer._model.SetExpression.assert_called_once_with("比心")
+    assert renderer._last_expression == "比心"
