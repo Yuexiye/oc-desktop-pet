@@ -1845,7 +1845,8 @@ class Live2DRenderer(AvatarRenderer):
             if chosen is None:
                 chosen = candidates[-1][0]
         try:
-            self._start_motion_at(chosen, None)  # 默认 NORMAL 优先级
+            # exclusive=True 清场：避免与未结束的手势/表情姿势叠加
+            self._start_motion_at(chosen, None, exclusive=True)  # 默认 NORMAL 优先级
             logger.info(
                 "Live2DRenderer: 自动随机动作 idx=%d（%s）",
                 chosen, self._motion_files[chosen],
@@ -1982,12 +1983,12 @@ class Live2DRenderer(AvatarRenderer):
                 for i, f in enumerate(self._motion_files):
                     low = f.lower()
                     if all(k in low for k in kws):
-                        return self._start_motion_at(i, priority)
+                        return self._start_motion_at(i, priority, exclusive=True)
                 # 宽松：任一关键词命中
                 for i, f in enumerate(self._motion_files):
                     low = f.lower()
                     if any(k in low for k in kws):
-                        return self._start_motion_at(i, priority)
+                        return self._start_motion_at(i, priority, exclusive=True)
             return False
         except Exception as e:
             # 忽略 "motion priority is too low" 警告（正常行为）
@@ -1995,7 +1996,13 @@ class Live2DRenderer(AvatarRenderer):
                 logger.warning("Live2DRenderer._play_motion_kw 异常: %s", e)
             return False
 
-    def _start_motion_at(self, idx: int, priority=None, force_restart: bool = False) -> bool:
+    def _start_motion_at(
+        self,
+        idx: int,
+        priority=None,
+        force_restart: bool = False,
+        exclusive: bool = False,
+    ) -> bool:
         """按索引播 motion 并记录起始状态（卡手势超时兜底用）。
 
         去重：同一 motion 已在播（Loop=True 帧动画）时不重复 StartMotion、
@@ -2005,6 +2012,10 @@ class Live2DRenderer(AvatarRenderer):
         force_restart=True 时跳过上述去重（即使同一 idx 也重新 StartMotion），
         供菜单手动播放使用——用户明确点同一个动作也应重新触发，而不是被
         "已在播"静默忽略。
+
+        exclusive=True：启动前彻底清场（双重 StopAllMotions + ResetExpressions），
+        确保新 motion 不会与旧 motion 或表情姿势（如"比心/葱"）叠加。
+        用于菜单手动播放、自动随机动作、情绪触发动作等非 idle 场景。
         """
         try:
             fname = self._motion_files[idx] if idx < len(self._motion_files) else ""
@@ -2014,6 +2025,25 @@ class Live2DRenderer(AvatarRenderer):
                     logger.debug("Live2DRenderer: 同一 motion 已在播(idx=%d)，去重跳过", idx)
                 return True  # 继续播（Loop），不计时不受影响
             prio = priority if priority is not None else self._live2d.MotionPriority.NORMAL
+            if exclusive and self._model:
+                # 关键：彻底清场，避免新旧动作/表情叠加
+                try:
+                    if hasattr(self._model, "StopAllMotions"):
+                        self._model.StopAllMotions()
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self._model, "StopAllMotions"):
+                        self._model.StopAllMotions()
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self._model, "ResetExpressions"):
+                        self._model.ResetExpressions()
+                except Exception:
+                    pass
+                self._expression_active = False
+                self._last_expression = ""
             self._model.StartMotion(self._motion_group_name, idx, prio)
             self._current_motion_idx = idx
             self._note_motion_started(fname, is_idle=False)
@@ -2254,6 +2284,20 @@ class Live2DRenderer(AvatarRenderer):
             motion = self._match_motion(emotion)
             if motion:
                 try:
+                    # 清场：避免情绪 motion 与旧手势/表情叠加
+                    if self._model:
+                        if hasattr(self._model, "StopAllMotions"):
+                            try:
+                                self._model.StopAllMotions()
+                            except Exception:
+                                pass
+                        if hasattr(self._model, "ResetExpressions"):
+                            try:
+                                self._model.ResetExpressions()
+                            except Exception:
+                                pass
+                    self._expression_active = False
+                    self._last_expression = ""
                     self._model.StartRandomMotion(motion, self._live2d.MotionPriority.FORCE)
                     motion_played = True
                 except Exception:

@@ -402,6 +402,10 @@ def test_screen_slacking_not_mapped_to_weekend_on_weekday(monkeypatch):
         "core.perception.proactive.classify_intent",
         lambda **kw: {"intent": "work", "scenario": "chat_idle", "confidence": 0.5, "reason": "test"},
     )
+    monkeypatch.setattr(
+        "core.perception.proactive.get_reaction",
+        lambda scenario, intensity=1.0: {"text": "工作日摸鱼测试", "emotion": "neutral"},
+    )
     signals = {
         "period": "afternoon",
         "category": "browsing",
@@ -428,6 +432,10 @@ def test_screen_slacking_maps_to_weekend_on_weekend(monkeypatch):
     monkeypatch.setattr(
         "core.perception.proactive.classify_intent",
         lambda **kw: {"intent": "work", "scenario": "chat_idle", "confidence": 0.5, "reason": "test"},
+    )
+    monkeypatch.setattr(
+        "core.perception.proactive.get_reaction",
+        lambda scenario, intensity=1.0: {"text": "周末测试文案", "emotion": "happy"},
     )
     signals = {
         "period": "afternoon",
