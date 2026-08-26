@@ -34,7 +34,7 @@ class _FakeLive2D:
 
 
 class _FakeRenderer:
-    """模拟渲染器：记录 _start_motion_at / _force_idle 调用。"""
+    """模拟渲染器：记录 _start_motion_at / _force_idle / StopAllMotions 调用。"""
 
     def __init__(self):
         self._live2d = _FakeLive2D()
@@ -42,9 +42,10 @@ class _FakeRenderer:
         self.motion_calls = []
         self.force_idle_calls = 0
         self.start_idle_calls = 0
+        self.stop_all_calls = 0
 
-    def _start_motion_at(self, idx, priority=None):
-        self.motion_calls.append((idx, priority))
+    def _start_motion_at(self, idx, priority=None, force_restart=False):
+        self.motion_calls.append((idx, priority, force_restart))
         return True
 
     def _force_idle(self):
@@ -53,15 +54,18 @@ class _FakeRenderer:
     def _start_idle(self):
         self.start_idle_calls += 1
 
+    def StopAllMotions(self):
+        self.stop_all_calls += 1
+
 
 # ── A：菜单手动播放 FORCE 优先级 ──────────────────────────
 
 
 def test_menu_motion_passes_force_priority():
-    """A：菜单手动播放 → _start_motion_at 收到 FORCE 优先级。"""
+    """A：菜单手动播放 → _start_motion_at 收到 FORCE 优先级 + force_restart。"""
     renderer = _FakeRenderer()
     pet.PetWindow._start_menu_motion(SimpleNamespace(), renderer, 1)
-    assert renderer.motion_calls == [(1, _FakeLive2D.MotionPriority.FORCE)]
+    assert renderer.motion_calls == [(1, _FakeLive2D.MotionPriority.FORCE, True)]
 
 
 def test_menu_motion_multi_click_each_force():
@@ -70,17 +74,19 @@ def test_menu_motion_multi_click_each_force():
     for idx in (0, 2):
         pet.PetWindow._start_menu_motion(SimpleNamespace(), renderer, idx)
     assert renderer.motion_calls == [
-        (0, _FakeLive2D.MotionPriority.FORCE),
-        (2, _FakeLive2D.MotionPriority.FORCE),
+        (0, _FakeLive2D.MotionPriority.FORCE, True),
+        (2, _FakeLive2D.MotionPriority.FORCE, True),
     ]
 
 
 def test_menu_motion_fallback_when_no_live2d():
     """A：无 Live2D 环境（headless 单测）→ 回退默认（priority=None → NORMAL）。"""
-    renderer = SimpleNamespace(_live2d=None)
-    renderer._start_motion_at = MagicMock(return_value=True)
+    calls = []
+    def _start(idx, priority=None):
+        calls.append((idx, priority))
+    renderer = SimpleNamespace(_live2d=None, _start_motion_at=_start)
     pet.PetWindow._start_menu_motion(SimpleNamespace(), renderer, 0)
-    renderer._start_motion_at.assert_called_once_with(0, priority=None)
+    assert calls == [(0, None)]
 
 
 def test_menu_motion_degrades_for_renderer_without_priority():
@@ -104,7 +110,22 @@ def test_auto_random_path_unaffected():
     """A 回归：自动随机动作路径不传 priority（None → 默认 NORMAL），不被打断。"""
     renderer = _FakeRenderer()
     renderer._start_motion_at(3, None)  # 等价于 live2d_renderer 自动随机路径的调用
-    assert renderer.motion_calls == [(3, None)]
+    assert renderer.motion_calls == [(3, None, False)]
+
+
+def test_menu_motion_stops_existing_motions_first():
+    """A 治本：菜单手动播放前先 StopAllMotions 清场，避免动作叠加。
+
+    无 StopAllMotions 时，Live2D 不会自动打断正在播的 Loop 手势，新旧动作
+    会堆在队列里（"点新的、旧的还在、点重置也清不掉"）。
+    """
+    renderer = _FakeRenderer()
+    renderer._model = renderer  # model 自身带 StopAllMotions（通过守卫）
+    pet.PetWindow._start_menu_motion(SimpleNamespace(), renderer, 2)
+    # 双重 StopAllMotions 清场
+    assert renderer.stop_all_calls == 2
+    # 之后只播一次新动作（FORCE 优先级，force_restart 绕过 dedup）
+    assert renderer.motion_calls == [(2, _FakeLive2D.MotionPriority.FORCE, True)]
 
 
 # ── B：重置表情走 _force_idle ─────────────────────────────

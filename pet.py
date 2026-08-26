@@ -2215,21 +2215,37 @@ class PetWindow(AudioMixin, GachaMixin, AnimationMixin, InteractionMixin, ChatMi
         self._motion_submenu.addAction("🔄 重置表情", self._reset_motion_expression)
 
     def _start_menu_motion(self, renderer, idx: int) -> None:
-        """右键菜单手动播放动作：用 FORCE 优先级强制打断当前动作。
+        """右键菜单手动播放动作：强制打断当前所有动作，干净切换（动作互斥）。
 
-        BugFix #5-A 根因：`_start_motion_at` 默认 NORMAL 优先级，Live2D 同
-        优先级不打断正在播的 motion → 菜单连点两个不同动作时第二个被静默拒绝。
-        手动播放是用户明确意图，必须 FORCE 强制切换（每个播 3s 后由
-        GESTURE_TIMEOUT 回 idle）。自动随机动作路径（IDLE/NORMAL）不受影响。
+        根因（本轮）：Live2D v3 的 ``StartMotion`` 不会自动停止正在播放的
+        motion——Loop 类手势永远 ``IsFinished()==false``，新 ``StartMotion``
+        要么被同优先级（FORCE）拒绝、要么被并入队列，于是多个动作叠在一起、
+        点新的旧的不消失、点重置也清不掉。菜单手动播放是用户明确意图，必须
+        **先 StopAllMotions（双重）彻底清场**，再 FORCE 播新动作。
+
+        同动作重复点击也强制重新触发（force_restart 绕过 _start_motion_at 的
+        dedup），并重置手势计时避免刚播就被 GESTURE_TIMEOUT 抢回 idle。
         """
         try:
             prio = renderer._live2d.MotionPriority.FORCE
         except Exception:
             prio = None  # 无 Live2D 环境（headless 单测等）→ 走默认 NORMAL
         try:
+            model = getattr(renderer, '_model', None)
+            # 关键：彻底清场——双重 StopAllMotions（部分 wrapper 需两次才清空队列），
+            # 否则旧动作残留在队列里与新动作叠加（"动作重叠"）。
+            if model and hasattr(model, 'StopAllMotions'):
+                try:
+                    model.StopAllMotions()
+                except Exception:
+                    pass
+                try:
+                    model.StopAllMotions()
+                except Exception:
+                    pass
             start = renderer._start_motion_at
-            # 兼容旧式/非 Live2D 渲染器：_start_motion_at 不接受 priority 时不传
-            # （冒烟测试 FakeRenderer 等只实现 _start_motion_at(idx)）。
+            # 兼容旧式/非 Live2D 渲染器：_start_motion_at 不接受 priority/force_restart
+            # 时不传（冒烟测试 FakeRenderer 等只实现 _start_motion_at(idx)）。
             accepts_priority = False
             try:
                 import inspect
@@ -2240,9 +2256,17 @@ class PetWindow(AudioMixin, GachaMixin, AnimationMixin, InteractionMixin, ChatMi
             except Exception:
                 accepts_priority = False
             if accepts_priority:
-                start(idx, priority=prio)
+                try:
+                    start(idx, priority=prio, force_restart=True)
+                except TypeError:
+                    start(idx, priority=prio)
             else:
                 start(idx)
+            # 重置手势计时：避免手动动作刚播就被 GESTURE_TIMEOUT 抢回 idle 截断
+            try:
+                renderer._motion_started_at = time.monotonic()
+            except Exception:
+                pass
         except Exception as e:
             logger.warning("菜单动作播放失败: %s", e)
 

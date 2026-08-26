@@ -1995,17 +1995,21 @@ class Live2DRenderer(AvatarRenderer):
                 logger.warning("Live2DRenderer._play_motion_kw 异常: %s", e)
             return False
 
-    def _start_motion_at(self, idx: int, priority=None) -> bool:
+    def _start_motion_at(self, idx: int, priority=None, force_restart: bool = False) -> bool:
         """按索引播 motion 并记录起始状态（卡手势超时兜底用）。
 
         去重：同一 motion 已在播（Loop=True 帧动画）时不重复 StartMotion、
         也不重置计时——否则 emotion 周期刷新（happy 每 3s 续期）会不断
         重置 _motion_started_at，卡手势超时兜底永不触发（比心/挥手持久）。
+
+        force_restart=True 时跳过上述去重（即使同一 idx 也重新 StartMotion），
+        供菜单手动播放使用——用户明确点同一个动作也应重新触发，而不是被
+        "已在播"静默忽略。
         """
         try:
             fname = self._motion_files[idx] if idx < len(self._motion_files) else ""
             cur_idx = getattr(self, "_current_motion_idx", None)
-            if idx == cur_idx and not getattr(self, "_motion_is_idle", False):
+            if not force_restart and idx == cur_idx and not getattr(self, "_motion_is_idle", False):
                 if getattr(self, "_debug", False):
                     logger.debug("Live2DRenderer: 同一 motion 已在播(idx=%d)，去重跳过", idx)
                 return True  # 继续播（Loop），不计时不受影响
