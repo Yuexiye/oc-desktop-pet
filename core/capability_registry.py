@@ -46,6 +46,28 @@ from typing import Optional, Callable, Any
 
 logger = logging.getLogger(__name__)
 
+# 中文字符（用于能力关键词的"边界"判断，避免中文子串碰撞误匹配，
+# 如"接管一下一个对话"中的"一下一个"⊃"下一个"被 next_track 劫持）
+_CJK_RE = re.compile(r'[\u4e00-\u9fff]')
+
+
+def _is_valid_capability_match(text: str, pattern: str) -> bool:
+    """判断 pattern 是否作为"独立关键词"命中 text（而非嵌在大词里被夹住）。
+
+    纯子串 `pattern in text` 对中文会产生碰撞：'下一个' 会命中 '接管一下一个对话'
+    （下-一-个 恰好连续）。规则：仅当关键词前后都被中文字符夹住时，视为误匹配
+    （嵌在更大词内），放过给 LLM；其余情况（开头/结尾/被标点/空格/英文/数字包围）
+    视为有效命中。
+    """
+    idx = text.find(pattern)
+    if idx < 0:
+        return False
+    before = text[idx - 1] if idx > 0 else ''
+    after = text[idx + len(pattern)] if idx + len(pattern) < len(text) else ''
+    if _CJK_RE.match(before or ' ') and _CJK_RE.match(after or ' '):
+        return False
+    return True
+
 
 @dataclass
 class Capability:
@@ -210,7 +232,7 @@ class CapabilityRouter:
 
         for cap in CAPABILITIES:
             for pattern in cap.patterns:
-                if pattern in text_lower:
+                if _is_valid_capability_match(text_lower, pattern):
                     logger.info("Capability matched: %s (pattern='%s')", cap.name, pattern)
                     try:
                         if cap.handler == "tool":
