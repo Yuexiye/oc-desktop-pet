@@ -7,6 +7,13 @@ export const parameters = {
     device_id: { type: 'string', default: '', description: '设备 ID' }
   }
 };
+export const triggers = [
+  '手机截图',
+  '看手机屏幕',
+  '查看手机屏幕',
+  '看一下手机'
+];
+
 
 export async function execute(args, context) {
   const { linjianFetch, postCommand, latestInfo, fetchLatestImage, imageResult, textResult, DEFAULT_DEVICE } = await import('./_lib.mjs');

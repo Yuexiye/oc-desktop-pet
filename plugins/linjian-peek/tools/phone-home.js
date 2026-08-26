@@ -6,6 +6,12 @@ export const parameters = {
     device_id: { type: 'string', default: '', description: '设备 ID' }
   }
 };
+export const triggers = [
+  '回到手机桌面',
+  '手机主页',
+  '返回手机桌面'
+];
+
 
 export async function execute(args, context) {
   const { postCommand, textResult, DEFAULT_DEVICE } = await import('./_lib.mjs');

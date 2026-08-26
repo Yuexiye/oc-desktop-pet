@@ -10,6 +10,12 @@ export const parameters = {
   },
   required: ['hour', 'minute']
 };
+export const triggers = [
+  '设置闹钟',
+  '手机闹钟',
+  '定闹钟'
+];
+
 
 export async function execute(args, context) {
   const { postCommand, textResult, DEFAULT_DEVICE } = await import('./_lib.mjs');

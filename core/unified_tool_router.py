@@ -7,7 +7,8 @@
 
 本层把它们统一到一个快速路由，路由顺序（快→慢）：
 1. 显式指定：文本含"用X"/"调用X"/"使用X"/"X工具" → 精确匹配插件工具名（意图最明确，优先）
-2. 静态能力：先试 CapabilityRouter（内置确定性能力，如"暂停一下"→pause_music）
+2. 静态能力：先试 CapabilityRouter（仅 oc-pet 内部能力，如"截个图"→screenshot_now、
+   "今天的日报"→daily_diary；音乐/手机等插件控制已迁到步骤 3 动态读取 triggers）
 3. 关键词命中（白名单模式）：只对**确定性安全工具**做关键词匹配 → 直达插件工具。
    白名单 _KEYWORD_ROUTE_WHITELIST：hanako-audio-player 的 audio_bus 控制类 +
    linjian-peek 手机控制工具 + oc-pet 本地插件工具。
@@ -96,20 +97,9 @@ _COMMON_ZH_WORDS = [
     "桌面", "主页", "打开", "启动", "播放", "音频", "音乐", "队列",
 ]
 
-# 手工关键词映射：工具名 → 额外关键词（插件少，先手工维护 + name 拆分兜底）
-_TOOL_KEYWORD_MAP: dict[str, list[str]] = {
-    "phone_peek_screen": ["手机", "屏幕", "截图", "查看手机", "看手机", "看屏幕", "手机屏幕", "peek", "screen"],
-    "phone_state": ["手机", "状态", "前台", "应用", "屏幕文字", "state"],
-    "phone_life_state": ["手机", "状态", "电量", "生活", "life"],
-    "phone_open_app": ["打开", "启动", "应用", "打开应用", "启动应用", "打开手机", "open", "app"],
-    "phone_home": ["回到桌面", "返回桌面", "主页", "手机桌面", "home"],
-    "phone_notification": ["通知", "消息", "通知栏", "notification"],
-    "phone_alarm": ["闹钟", "设置闹钟", "alarm"],
-    "phone_status": ["手机状态", "状态", "信息", "在线", "连接", "status"],
-    # audio_bus：固定 action 控制（pause/resume/next/state/clear 等）——静态能力
-    # 未覆盖的说法（如"切换下一曲"）由关键词路由兜底直达。
-    "audio_bus": ["暂停", "继续播放", "下一首", "切歌", "清空播放列表", "播放状态", "音乐状态", "audio", "bus"],
-}
+# 关键词映射已废弃：触发词改为从 tool_registry 动态读取（ToolDef.triggers）。
+# 本地插件在 .js 里 export const triggers 声明；外部 Hanako 插件由
+# tool_registry._EXTERNAL_TOOL_TRIGGERS 集中声明。单一来源，根除手写镜像表漂移。
 
 # ── R3 关键词路由白名单 ──────────────────────────────────────
 # 只对白名单内的**确定性安全工具**构建关键词索引；非白名单 Hanako 插件工具
@@ -152,6 +142,7 @@ class UnifiedToolRouter:
         self._tool_executor = tool_executor    # 执行本地插件工具
         self._tool_registry = None             # 最近一次 refresh 的注册表
         self._keyword_index: dict[str, dict[str, int]] = {}  # 工具名 -> {关键词: 权重}
+        self._trigger_args: dict[str, dict[str, dict]] = {}   # 工具名 -> {关键词: 透传参数}
         self._last_refresh: float = time.monotonic()
 
     # ── 对外主入口 ──────────────────────────────────────────
@@ -199,8 +190,9 @@ class UnifiedToolRouter:
         if reg is not None:
             hit = self._match_keyword(text, reg)
             if hit is not None:
-                logger.info("统一路由 → 关键词命中: %s (plugin=%s)", hit[0], hit[1])
-                return self._build_tool_result(hit, reg, execute, "keyword")
+                name, plugin_id, args = hit
+                logger.info("统一路由 → 关键词命中: %s (plugin=%s)", name, plugin_id)
+                return self._build_tool_result((name, plugin_id), reg, execute, "keyword", args=args)
 
         # 4. 兜底：交给 LLM 工具调用 / Hanako 服务端
         return None
@@ -296,6 +288,7 @@ class UnifiedToolRouter:
         best_name: Optional[str] = None
         best_score = 0
         best_kw_count = 0
+        best_args: dict = {}
         for name, kws in index.items():
             score = 0
             kw_count = 0
@@ -303,6 +296,10 @@ class UnifiedToolRouter:
                 if kw and self._kw_in_text(kw, text_lower):
                     score += weight
                     kw_count += 1
+                    # 记录该关键词携带的透传参数（取最高权重命中词的参数）
+                    if score > best_score or (score == best_score and kw_count >= best_kw_count):
+                        if name in self._trigger_args and kw in self._trigger_args[name]:
+                            best_args = self._trigger_args[name][kw]
             if score > best_score or (score == best_score and kw_count > best_kw_count):
                 best_score = score
                 best_kw_count = kw_count
@@ -318,14 +315,29 @@ class UnifiedToolRouter:
         tool = tools.get(best_name)
         if tool is None:
             return None
-        return tool.name, tool.plugin_id
+        return tool.name, tool.plugin_id, best_args
 
     def _kw_in_text(self, kw: str, text_lower: str) -> bool:
-        """关键词匹配：拉丁关键词要求词边界（避免 "app" 命中 "happy"），中文子串即可。"""
+        """关键词匹配：拉丁关键词要求词边界（避免 "app" 命中 "happy"）。
+
+        中文关键词：≥3 字按子串匹配（明确的组合词如"下一首""截个图"，碰撞风险低）；
+        ≤2 字短词额外要求不被中文字符前后夹住（避免"一下一个"⊃"下一个"这类
+        子串碰撞——纯子串会误中）。纯拉丁仍走词边界正则。
+        """
         if re.fullmatch(r'[a-z0-9_]+', kw):
             return re.search(
                 r'(?<![a-z0-9])' + re.escape(kw) + r'(?![a-z0-9])', text_lower
             ) is not None
+        if re.fullmatch(r'[\u4e00-\u9fff]+', kw) and len(kw) <= 2:
+            idx = text_lower.find(kw)
+            while idx != -1:
+                before = text_lower[idx - 1] if idx > 0 else ''
+                after = text_lower[idx + len(kw)] if idx + len(kw) < len(text_lower) else ''
+                cjk = lambda c: '\u4e00' <= c <= '\u9fff'
+                if not (cjk(before) and cjk(after)):
+                    return True
+                idx = text_lower.find(kw, idx + 1)
+            return False
         return kw in text_lower
 
     def _is_question_text(self, text_lower: str) -> bool:
@@ -359,8 +371,12 @@ class UnifiedToolRouter:
     # ── 执行与结果构造 ──────────────────────────────────────
 
     def _build_tool_result(self, hit: Tuple[str, str], tool_registry,
-                           execute: bool, match_kind: str) -> RouteResult:
-        """构造插件工具的 RouteResult（capability=工具名，text=执行结果文案）。"""
+                           execute: bool, match_kind: str,
+                           args: Optional[dict] = None) -> RouteResult:
+        """构造插件工具的 RouteResult（capability=工具名，text=执行结果文案）。
+
+        args: 触发词透传参数（如 audio_bus 的 action=next），执行时交给工具。
+        """
         tool_name, plugin_id = hit
         tool = tool_registry.get_tool(tool_name) if hasattr(tool_registry, "get_tool") else None
         if tool is None:
@@ -385,11 +401,12 @@ class UnifiedToolRouter:
                 anim=anim,
             )
 
-        # 执行工具（快速路由不带参数，参数由 LLM 工具调用路径处理）
+        # 执行工具（触发词透传参数优先；无参数则空对象，由工具默认行为处理）
+        exec_args = dict(args) if args else {}
         try:
-            result_text = self._tool_executor.execute(tool, {})
-            logger.info("统一路由(%s) 执行工具 %s: %s",
-                        match_kind, tool_name, str(result_text or "")[:100])
+            result_text = self._tool_executor.execute(tool, exec_args)
+            logger.info("统一路由(%s) 执行工具 %s (args=%s): %s",
+                        match_kind, tool_name, exec_args, str(result_text or "")[:100])
         except Exception as e:
             logger.warning("统一路由执行工具 %s 失败: %s", tool_name, e)
             result_text = f"操作失败：{e}"
@@ -448,6 +465,7 @@ class UnifiedToolRouter:
         不写入索引。
         """
         index: dict[str, dict[str, int]] = {}
+        trigger_args: dict[str, dict[str, dict]] = {}
         tools = getattr(tool_registry, "_tools", {}) or {}
         skipped = 0
         for name, tool in tools.items():
@@ -470,11 +488,19 @@ class UnifiedToolRouter:
                 if zh:
                     kws[zh] = max(kws.get(zh, 0), 3)
 
-            # 3. 手工关键词映射（插件少，手工维护 + name 拆分兜底）
-            for k in _TOOL_KEYWORD_MAP.get(name, []):
-                kk = k.lower()
-                if kk:
-                    kws[kk] = max(kws.get(kk, 0), 3)
+            # 3. 动态触发词（单一来源 = tool_registry：本地插件 .js 的 triggers /
+            #    外部插件 _EXTERNAL_TOOL_TRIGGERS 集中声明）。元素为
+            #    str 或 {"text":..,"args":..}；args 透传给工具执行（如 action）。
+            for trig in getattr(tool, "triggers", None) or []:
+                if isinstance(trig, dict):
+                    tk = (trig.get("text") or "").lower()
+                    targs = trig.get("args") or {}
+                else:
+                    tk = str(trig).lower()
+                    targs = {}
+                if tk:
+                    kws[tk] = max(kws.get(tk, 0), 3)
+                    trigger_args.setdefault(name, {})[tk] = targs
 
             # 4. 描述中的常见中文词（权重低，防误伤）
             desc = tool.description or ""
@@ -484,6 +510,7 @@ class UnifiedToolRouter:
 
             index[name] = kws
         self._keyword_index = index
+        self._trigger_args = trigger_args
         self._last_refresh = time.monotonic()
         logger.debug("统一路由关键词索引: %d 个工具（跳过 %d 个非白名单 Hanako 工具）",
                      len(index), skipped)

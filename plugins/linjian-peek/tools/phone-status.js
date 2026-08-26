@@ -4,6 +4,12 @@ export const parameters = {
   type: 'object',
   properties: {}
 };
+export const triggers = [
+  '手机在线状态',
+  '手机连接状态',
+  '掌心窗在线'
+];
+
 
 export async function execute(args, context) {
   const { LINJIAN_URL, LINJIAN_TOKEN, textResult } = await import('./_lib.mjs');

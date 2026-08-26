@@ -3,7 +3,9 @@
 注意：仅直连模式 (transport_mode=direct) 使用。
 Hanako WS 模式下工具由服务端执行，不需要本地路由。
 
-快速路径：用户说"暂停一下" → 匹配 pause_music → 直接调用 audio_bus
+静态能力（仅 oc-pet 内部能力：日报/会话/感知/截图/记忆/帮助，无法"动态读插件"）；
+插件工具（audio_bus 音乐控制 / linjian-peek 手机控制）由 unified_tool_router 从
+tool_registry 动态读取 triggers 路由，本模块不再镜像。
 LLM 路径：匹配失败 → 回退到 LLM 选工具
 
 设计决策（2026-08-2x R3 架构收敛）：
@@ -114,52 +116,12 @@ CAPABILITIES: list[Capability] = [
         emotion="happy",
         anim="extra",
     ),
-    # pause/resume/next/state/clear 都是 audio_bus 的固定 action，本地直达又快又准。
-    Capability(
-        name="pause_music",
-        patterns=["暂停播放", "停一下", "pause"],
-        handler="tool",
-        tool_name="audio_bus",
-        plugin_id="hanako-audio-player",
-        extract_args=lambda text: {"action": "pause"},
-        description="暂停音乐",
-    ),
-    Capability(
-        name="resume_music",
-        patterns=["继续播放", "恢复播放", "resume"],
-        handler="tool",
-        tool_name="audio_bus",
-        plugin_id="hanako-audio-player",
-        extract_args=lambda text: {"action": "resume"},
-        description="恢复播放",
-    ),
-    Capability(
-        name="next_track",
-        patterns=["下一首", "切歌", "next"],
-        handler="tool",
-        tool_name="audio_bus",
-        plugin_id="hanako-audio-player",
-        extract_args=lambda text: {"action": "next"},
-        description="下一首",
-    ),
-    Capability(
-        name="music_state",
-        patterns=["现在放的什么", "当前播放", "在听什么", "正在播什么"],
-        handler="tool",
-        tool_name="audio_bus",
-        plugin_id="hanako-audio-player",
-        extract_args=lambda text: {"action": "state"},
-        description="查看当前播放状态",
-    ),
-    Capability(
-        name="clear_playlist",
-        patterns=["清空播放列表", "清空列表", "clear playlist"],
-        handler="tool",
-        tool_name="audio_bus",
-        plugin_id="hanako-audio-player",
-        extract_args=lambda text: {"action": "clear"},
-        description="清空播放列表",
-    ),
+    # 注意：audio_bus 的 pause/resume/next/state/clear 等**不再在此镜像**——
+    # 其触发词由 tool_registry 动态提供（外部插件 _EXTERNAL_TOOL_TRIGGERS 集中声明，
+    # 单一来源），经 unified_tool_router 关键词路由直达，根除手写镜像表漂移。
+    # 仅保留 oc-pet 内部能力（日报/会话/感知/截图/记忆/帮助），这些无法"动态读插件"。
+    # 音乐控制类 keywords（下一首/切歌/暂停播放/继续播放/清空播放列表）已统一迁到
+    # tool_registry 动态索引；自然语言说法交给 LLM 工具调用。
 
     # ── 日报与感知 ──
     Capability(

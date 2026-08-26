@@ -37,7 +37,7 @@ def test_bus_log_with_json_shows_clean_summary():
         "[bus] Queue migrated to TrackRef format\n"
         '{"ok":true,"event":"next"}'
     )
-    out = _engine()._friendly_tool_text(_rr("next_track", raw))
+    out = _engine()._friendly_tool_text(_rr("audio_bus", raw))
     assert "[bus]" not in out
     assert "{" not in out
     assert "执行成功" in out
@@ -46,9 +46,9 @@ def test_bus_log_with_json_shows_clean_summary():
 def test_bus_log_only_no_json_uses_capability_fallback():
     """纯内部日志无 JSON → 能力兜底话术，不泄漏。"""
     raw = "[bus] Queue migrated to TrackRef format\n[bus] Queue migrated to TrackRef format"
-    out = _engine()._friendly_tool_text(_rr("next_track", raw))
+    out = _engine()._friendly_tool_text(_rr("audio_bus", raw))
     assert "[bus]" not in out
-    assert out == "好，切到下一首啦～"
+    assert out == "好的，已为你处理音乐～"
 
 
 def test_unknown_capability_bus_log_generic_fallback():
@@ -83,7 +83,7 @@ def test_readable_plain_text_preserved():
 
 def test_empty_tool_result_returns_text():
     """无 tool_result → 返回 text（日报/会话信息等内部能力文案）。"""
-    out = _engine()._friendly_tool_text(_rr("daily_report", text="今天的日报来啦～"))
+    out = _engine()._friendly_tool_text(_rr("daily_diary", text="今天的日报来啦～"))
     assert out == "今天的日报来啦～"
 
 

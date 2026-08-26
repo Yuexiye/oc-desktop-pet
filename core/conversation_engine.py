@@ -827,18 +827,24 @@ class ConversationEngine:
 
     @staticmethod
     def _capability_fallback(capability: str) -> str:
-        """按能力名兜底一句友好话，避免把内部日志/破损 JSON 泄漏到气泡。"""
+        """按能力名兜底一句友好话，避免把内部日志/破损 JSON 泄漏到气泡。
+
+        注意：动态路由后 capability 已是工具名（如 audio_bus / phone_peek_screen），
+        不再使用旧的静态能力名（next_track/pause_music 等）。
+        """
         friendly = {
-            "next_track": "好，切到下一首啦～",
-            "prev_track": "好，切回上一首～",
-            "pause_music": "暂停啦～",
-            "resume_music": "继续播放～",
-            "stop_music": "停止播放啦～",
+            "audio_bus": "好的，已为你处理音乐～",
+            "phone_peek_screen": "已帮你看了手机屏幕～",
+            "phone_state": "已查看手机状态～",
+            "phone_life_state": "已查看手机状态～",
+            "phone_open_app": "已帮你打开应用～",
+            "phone_home": "已回到手机桌面～",
+            "phone_notification": "已查看通知～",
+            "phone_alarm": "已设置闹钟～",
+            "phone_status": "已查看手机状态～",
             "play_music": "给你放首歌～",
-            "random_play": "给你随机放一首～",
-            "daily_report": "今天的日报来啦～",
-            "screenshot": "已帮你截图～",
-            "capture_screen": "已帮你截图～",
+            "daily_diary": "今天的日报来啦～",
+            "screenshot_now": "已帮你截图～",
         }
         if capability in friendly:
             return friendly[capability]

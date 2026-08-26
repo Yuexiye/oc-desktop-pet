@@ -23,17 +23,43 @@ logger = logging.getLogger(__name__)
 HANAKO_PLUGINS = Path.home() / ".hanako" / "plugins"
 LOCAL_PLUGINS = Path(__file__).parent.parent / "plugins"
 
+# 外部 Hanako 插件触发词集中声明（单一来源）。
+# 这些插件由 Hanako 平台托管（Git 仓库），无法在其自身 manifest 声明 triggers
+# （改动会被上游覆盖），故在 oc-pet 侧以「工具名为键」声明一次。元素为
+# {"text": 触发词, "args": 透传给工具执行的参数}；args 让"下一首"等携带
+# action，避免统一路由默认 action="state" 而只查不操作（见 hanako-audio-player
+# tools/bus.js: input.action || "state"）。
+# 关键：不使用歧义裸词（"暂停"/"截图"/"下一个"），只保留明确组合词，根除子串碰撞。
+_EXTERNAL_TOOL_TRIGGERS: dict[str, list] = {
+    "audio_bus": [
+        {"text": "下一首", "args": {"action": "next"}},
+        {"text": "切歌", "args": {"action": "next"}},
+        {"text": "暂停播放", "args": {"action": "pause"}},
+        {"text": "继续播放", "args": {"action": "resume"}},
+        {"text": "清空播放列表", "args": {"action": "clear"}},
+        {"text": "播放状态", "args": {"action": "state"}},
+        {"text": "音乐状态", "args": {"action": "state"}},
+        {"text": "audio", "args": {}},
+        {"text": "bus", "args": {}},
+    ],
+}
+
 
 class ToolDef:
     """单个工具定义"""
 
     def __init__(self, name: str, description: str, parameters: dict,
-                 plugin_id: str, source_path: str):
+                 plugin_id: str, source_path: str, triggers: list = None):
         self.name = name
         self.description = description
         self.parameters = parameters
         self.plugin_id = plugin_id
         self.source_path = source_path
+        # 触发词（单一来源）：本地插件从 .js 的 export const triggers 解析；
+        # 外部 Hanako 插件无法在自身 manifest 声明（上游托管会被覆盖），
+        # 由 _EXTERNAL_TOOL_TRIGGERS 以工具名为键集中声明一次。
+        # 元素为 str 或 {"text": "...", "args": {...}}（args 透传给工具执行）。
+        self.triggers = triggers or []
 
     def to_openai_tool(self) -> dict:
         """转换为 OpenAI tool calling 格式"""
@@ -142,15 +168,21 @@ class ToolRegistry:
                             tool_path = plugin_dir / t.lstrip('./')
                             tool_def = self._parse_tool_file(tool_path, plugin_id)
                             if tool_def:
+                                if tool_def.name in _EXTERNAL_TOOL_TRIGGERS:
+                                    tool_def.triggers = _EXTERNAL_TOOL_TRIGGERS[tool_def.name]
                                 if tool_def.name in self._tools:
                                     tool_def.name = f"{plugin_id}.{tool_def.name}"
                                 self._tools[tool_def.name] = tool_def
                         else:
                             # 是工具 ID
-                            self._tools[t] = ToolDef(
+                            tool_def = ToolDef(
                                 name=t, description="", parameters={"type": "object", "properties": {}},
                                 plugin_id=plugin_id, source_path=""
                             )
+                            # 外部插件触发词集中声明（单一来源）
+                            if t in _EXTERNAL_TOOL_TRIGGERS:
+                                tool_def.triggers = _EXTERNAL_TOOL_TRIGGERS[t]
+                            self._tools[tool_def.name] = tool_def
                         continue
                     if not isinstance(t, dict):
                         continue
@@ -161,6 +193,8 @@ class ToolRegistry:
                         tool_path = plugin_dir / source
                         tool_def = self._parse_tool_file(tool_path, plugin_id)
                         if tool_def:
+                            if tool_def.name in _EXTERNAL_TOOL_TRIGGERS:
+                                tool_def.triggers = _EXTERNAL_TOOL_TRIGGERS[tool_def.name]
                             # 避免重名覆盖
                             if tool_def.name in self._tools:
                                 tool_def.name = f"{plugin_id}.{tool_def.name}"
@@ -180,6 +214,8 @@ class ToolRegistry:
                                 plugin_id=plugin_id,
                                 source_path="",
                             )
+                            if tool_def.name in _EXTERNAL_TOOL_TRIGGERS:
+                                tool_def.triggers = _EXTERNAL_TOOL_TRIGGERS[tool_def.name]
                         # 避免重名覆盖
                         if tool_def.name in self._tools:
                             tool_def.name = f"{plugin_id}.{tool_def.name}"
@@ -258,16 +294,50 @@ class ToolRegistry:
             if not parameters:
                 parameters = {"type": "object", "properties": {}}
 
+            # 提取 triggers（本地插件可声明触发词，动态驱动路由）
+            triggers = self._parse_triggers(content)
+
             return ToolDef(
                 name=name,
                 description=description,
                 parameters=parameters,
                 plugin_id=plugin_id,
                 source_path=str(path),
+                triggers=triggers,
             )
         except Exception as e:
             logger.warning("Failed to parse tool %s: %s", path, e)
             return None
+
+    def _parse_triggers(self, content: str) -> list:
+        """从 JS 工具文件提取 triggers（字符串数组或 {text,args} 数组）。
+
+        支持两种写法：
+          export const triggers = ['下一首', '切歌'];
+          export const triggers = [{ text: '下一首', args: { action: 'next' } }, ...];
+        返回统一结构：[{"text": str, "args": dict}, ...]（args 缺省为 {}）。
+        """
+        m = re.search(
+            r"(?:export\s+(?:const|let|var)|const|let|var)\s+triggers\s*=\s*(\[[\s\S]*?\])\s*;",
+            content,
+        )
+        if not m:
+            return []
+        raw = m.group(1)
+        # JS → JSON：单引号字符串→双引号；key 限定 ASCII 加引号（与 _extract_json_block 一致）
+        raw = re.sub(r"'((?:[^'\\]|\\.)*)'", r'"\1"', raw)
+        raw = re.sub(r'([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)(\s*:)', r'\1"\2"\3', raw)
+        try:
+            arr = json.loads(raw)
+        except (json.JSONDecodeError, Exception):
+            return []
+        out: list = []
+        for item in arr:
+            if isinstance(item, str):
+                out.append({"text": item, "args": {}})
+            elif isinstance(item, dict) and item.get("text"):
+                out.append({"text": item["text"], "args": item.get("args") or {}})
+        return out
 
     def _extract_json_block(self, content: str, var_name: str) -> Optional[dict]:
         """从 JS 源码中提取 JSON 对象赋值

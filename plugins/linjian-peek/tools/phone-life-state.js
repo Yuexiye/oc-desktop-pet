@@ -6,6 +6,12 @@ export const parameters = {
     device_id: { type: 'string', default: '', description: '设备 ID，默认使用配置的默认设备' }
   }
 };
+export const triggers = [
+  '手机电量',
+  '手机生活状态',
+  '手机生活信息'
+];
+
 
 export async function execute(args, context) {
   const { linjianFetch, textResult, DEFAULT_DEVICE } = await import('./_lib.mjs');
