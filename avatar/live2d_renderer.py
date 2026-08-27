@@ -1935,11 +1935,26 @@ class Live2DRenderer(AvatarRenderer):
                     self._model.StartMotion(group, idx, self._live2d.MotionPriority.FORCE)
                     self._note_motion_started(fname, is_idle=True)
                     logger.info("Live2DRenderer: _force_idle 成功播放 idle（idx=%d, FORCE 优先级）", idx)
+                    # 重置后让自动随机动作从完整间隔重新计时：_tick_auto_motion 在手动
+                    # 演示锁定期会直接 return 不更新 _auto_motion_next_at，导致该计时器
+                    # 停在"过去"；一旦锁定解除（如本重置）就立即重播随机手势，视觉上像
+                    # "重置没生效"。这里推到未来一个完整间隔，重置后桌宠真正静止休息。
+                    try:
+                        self._auto_motion_next_at = time.monotonic() + random.uniform(
+                            self._auto_motion_min_s, self._auto_motion_max_s)
+                    except Exception:
+                        self._auto_motion_next_at = time.monotonic() + 45.0
                     return
         except Exception as e:
             logger.warning("Live2DRenderer: _force_idle 强切 idle 失败: %s", e)
         # 兜底：状态机切回 idle（即使没真播放，UI 状态对）
         self._note_motion_started("force_idle_fallback", is_idle=True)
+        # 同成功路径：重置自动随机动作计时器，避免重置后秒级重播手势。
+        try:
+            self._auto_motion_next_at = time.monotonic() + random.uniform(
+                self._auto_motion_min_s, self._auto_motion_max_s)
+        except Exception:
+            self._auto_motion_next_at = time.monotonic() + 45.0
 
     def _start_idle(self) -> None:
         if not self._model:

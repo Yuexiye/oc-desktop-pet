@@ -2266,21 +2266,63 @@ class PetWindow(AudioMixin, GachaMixin, AnimationMixin, InteractionMixin, ChatMi
             logger.warning("菜单动作播放失败: %s", e)
 
     def _reset_motion_expression(self):
-        """重置模型表情到默认，并回到 idle 动作。"""
+        """重置模型表情到默认，并回到 idle 动作。
+
+        BugFix #5-B + 复位增强：
+        - 模型层：走 ``_force_idle()``（ResetExpressions + StopAllMotions +
+          FORCE 优先级强制回 idle）清场（#5-B 已修"无反应"）。
+        - 业务层：同步复位 PetWindow 情绪状态机（_current_emotion /
+          _emotion_source / _last_body_emotion）与程序化表情层 master emotion，
+          否则 _current_emotion 仍停留在 happy 等旧值，很快被情绪系统重新覆盖，
+          视觉上"重置没生效"。
+        - 防御：渲染器自身情绪簿记（_current_emotion / _emotion_target）也复位；
+          显式 neutral 不需要过期计时器，停止 _emotion_expiry_timer；
+          若感知层提供 reset_emotion 一并调用。
+        全程 try/except 兜底，任一环节失败不影响其他复位。
+        """
         renderer = getattr(self, '_renderer', None)
         if not renderer:
             return
         model = getattr(renderer, '_model', None)
         if not model:
             return
+        # 模型层清场：ResetExpressions + StopAllMotions + FORCE 回 idle。
         try:
-            # BugFix #5-B 根因：旧实现先 ResetExpressions() 清表情（成功），再
-            # `_start_idle()`（IDLE 优先级）——IDLE 打不过正在播的非 idle 手势，
-            # 动作没切回 idle，表现为"重置表情无反应"。改走 `_force_idle()`
-            # （ResetExpressions + StopAllMotions + FORCE 优先级强制回 idle）。
             renderer._force_idle()
         except Exception as e:
             logger.warning("重置表情失败: %s", e)
+        # 业务层情绪状态机复位（根因①：避免旧值被情绪系统重新覆盖）。
+        try:
+            self._current_emotion = "neutral"
+            self._emotion_source = "neutral"
+            self._last_body_emotion = "neutral"
+        except Exception:
+            pass
+        # 程序化表情层（面部参数平滑回归）同步到 neutral。
+        try:
+            self._sync_renderer_master_emotion("neutral")
+        except Exception:
+            pass
+        # 防御性：渲染器自身情绪簿记也复位（_force_idle 已清 _manual_override 锁）。
+        try:
+            renderer._current_emotion = "neutral"
+            renderer._emotion_target = "neutral"
+        except Exception:
+            pass
+        # 显式 neutral 不需要过期计时器。
+        try:
+            timer = getattr(self, "_emotion_expiry_timer", None)
+            if timer is not None:
+                timer.stop()
+        except Exception:
+            pass
+        # 同步感知层情绪（若有 reset_emotion）。
+        try:
+            perc = getattr(self, "_perception", None)
+            if perc is not None and callable(getattr(perc, "reset_emotion", None)):
+                perc.reset_emotion()
+        except Exception:
+            pass
 
     # ── 养成接入（set_nurturing 后才填充） ──
 

@@ -47,6 +47,12 @@ class _FakeParams:
     ParamHairSide = "HairSide"
 
 
+class _FakeMotionPriority:
+    FORCE = 3
+    IDLE = 1
+    NORMAL = 2
+
+
 class _FakeModel:
     """记录 SetParameterValue 调用，并提供手动演示所需的 no-op 模型方法。"""
 
@@ -65,12 +71,21 @@ class _FakeModel:
     def SetExpression(self, name):
         self.calls.append(("SetExpression", name))
 
+    def GetMotions(self):
+        return {"": [{"File": "idle.motion3.json"}]}
+
+    def StartMotion(self, group, idx, prio):
+        self.calls.append(("StartMotion", group, idx, prio))
+
 
 def _make_renderer():
     r = Live2DRenderer(parent=None)
-    r._live2d = SimpleNamespace(StandardParams=_FakeParams)
+    r._live2d = SimpleNamespace(StandardParams=_FakeParams, MotionPriority=_FakeMotionPriority)
     r._model = _FakeModel()
     r._proc_last_t = time.monotonic() - 0.033
+    r._auto_motion_min_s = 30.0
+    r._auto_motion_max_s = 80.0
+    r._auto_motion_next_at = 0.0
     r.set_master_emotion("happy")
     return r
 
@@ -155,3 +170,21 @@ def test_set_emotion_yields_during_override():
     assert r._emotion_target == "sad"
     # 锁定让位：不应有任何新的模型调用（无 motion、无表情参数写入）
     assert r._model.calls == before
+
+
+def test_force_idle_resets_auto_motion_timer():
+    """_force_idle 回到 idle 后，自动随机动作计时器应推到未来。
+
+    根因②：_tick_auto_motion 在手动演示锁定期直接 return 不更新
+    _auto_motion_next_at，计时器停在"过去"；一旦锁定解除（如点重置）就
+    立即重播随机手势，视觉上"重置没生效"。_force_idle 必须把计时器推到
+    未来一个完整间隔，让桌宠重置后静止休息。
+    """
+    r = _make_renderer()
+    # 模拟演示锁定期：_auto_motion_next_at 停在很久以前
+    r._auto_motion_next_at = time.monotonic() - 100.0
+    _enter_override(r)  # 锁定（与真实"动作展示"场景一致）
+    r._force_idle()
+    assert r._manual_override is False, "force_idle 应清除手动演示锁"
+    assert r._auto_motion_next_at > time.monotonic(), \
+        "force_idle 后自动动作计时器应推到未来，避免秒级重播手势"
