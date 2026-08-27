@@ -1890,12 +1890,15 @@ class Live2DRenderer(AvatarRenderer):
         P1 修复：同时 ResetExpressions，清除前倾/脸红等贴图表情。
         旧实现只切 motion 不清表情，导致 motion 回 idle 后前倾贴图仍挂着。
         """
-        # P1: 先重置表情，再切 motion（确保贴图清除优先）
+        # P1: 先重置表情，再切 motion（确保贴图清除优先）。
+        # miku 的比心/葱等是 Param131-137 贴图开关，某些 wrapper/模型状态下
+        # 单次 ResetExpressions 不能立即清掉，这里多重调用 + 日志便于排查。
         try:
             if hasattr(self._model, "ResetExpressions"):
                 self._model.ResetExpressions()
-        except Exception:
-            pass
+                logger.info("Live2DRenderer: _force_idle 第一次 ResetExpressions 完成")
+        except Exception as e:
+            logger.warning("Live2DRenderer: _force_idle 第一次 ResetExpressions 失败: %s", e)
         # P2-9: 同步重置表情簿记，避免后续 _apply_expression 基于旧状态误判
         self._expression_active = False
         self._last_expression = ""
@@ -1914,6 +1917,14 @@ class Live2DRenderer(AvatarRenderer):
                 self._model.StopAllMotions()
         except Exception:
             pass
+        # 在 StopAllMotions 后再清一次表情：有些模型 motion 停止后才真正释放
+        # 表情贴图，确保比心/葱等不会残留在 idle 上。
+        try:
+            if hasattr(self._model, "ResetExpressions"):
+                self._model.ResetExpressions()
+                logger.info("Live2DRenderer: _force_idle 第二次 ResetExpressions 完成")
+        except Exception as e:
+            logger.warning("Live2DRenderer: _force_idle 第二次 ResetExpressions 失败: %s", e)
         # 用 FORCE 优先级播 idle（最高，强制接管当前任何 motion）
         try:
             if not self._model:
@@ -1933,6 +1944,14 @@ class Live2DRenderer(AvatarRenderer):
                              if isinstance(motion_list[idx], dict) else "idle")
                     # 关键：FORCE 优先级，强制替换正在播的 happy/手势 motion
                     self._model.StartMotion(group, idx, self._live2d.MotionPriority.FORCE)
+                    # 切到 idle motion 后再清一次表情：防止 motion 启动过程中又把
+                    # 旧表情贴图带回来（miku 比心/葱残留问题）。
+                    try:
+                        if hasattr(self._model, "ResetExpressions"):
+                            self._model.ResetExpressions()
+                            logger.info("Live2DRenderer: _force_idle 第三次 ResetExpressions 完成")
+                    except Exception as e:
+                        logger.warning("Live2DRenderer: _force_idle 第三次 ResetExpressions 失败: %s", e)
                     self._note_motion_started(fname, is_idle=True)
                     logger.info("Live2DRenderer: _force_idle 成功播放 idle（idx=%d, FORCE 优先级）", idx)
                     # 重置后让自动随机动作从完整间隔重新计时：_tick_auto_motion 在手动
@@ -1948,6 +1967,12 @@ class Live2DRenderer(AvatarRenderer):
         except Exception as e:
             logger.warning("Live2DRenderer: _force_idle 强切 idle 失败: %s", e)
         # 兜底：状态机切回 idle（即使没真播放，UI 状态对）
+        try:
+            if hasattr(self._model, "ResetExpressions"):
+                self._model.ResetExpressions()
+                logger.info("Live2DRenderer: _force_idle 兜底 ResetExpressions 完成")
+        except Exception as e:
+            logger.warning("Live2DRenderer: _force_idle 兜底 ResetExpressions 失败: %s", e)
         self._note_motion_started("force_idle_fallback", is_idle=True)
         # 同成功路径：重置自动随机动作计时器，避免重置后秒级重播手势。
         try:

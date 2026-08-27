@@ -2291,6 +2291,13 @@ class PetWindow(AudioMixin, GachaMixin, AnimationMixin, InteractionMixin, ChatMi
             renderer._force_idle()
         except Exception as e:
             logger.warning("重置表情失败: %s", e)
+        # 再显式走 neutral 表情重置路径：触发 _apply_expression("neutral") 内部的
+        # 多重 ResetExpressions + 簿记清理，防止 miku 比心/葱等贴图表情残留。
+        try:
+            if callable(getattr(renderer, "_apply_expression", None)):
+                renderer._apply_expression("neutral")
+        except Exception as e:
+            logger.warning("重置表情后 neutral 清理失败: %s", e)
         # 业务层情绪状态机复位（根因①：避免旧值被情绪系统重新覆盖）。
         try:
             self._current_emotion = "neutral"
