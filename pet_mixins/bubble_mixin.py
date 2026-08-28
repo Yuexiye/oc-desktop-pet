@@ -119,9 +119,6 @@ class BubbleMixin:
         # 任务系统：每次弹出前刷新进度 / 盲盒资源
         if hasattr(self, '_refresh_mission_menu'):
             self._refresh_mission_menu()
-        # 模型动作子菜单：每次弹出前按当前模型动态重建
-        if hasattr(self, '_motion_submenu'):
-            self._rebuild_motion_menu()
         try:
             self._menu.popup(self.mapToGlobal(pos))
         except Exception:

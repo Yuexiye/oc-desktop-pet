@@ -36,26 +36,7 @@ w.show()
 app.processEvents()
 print("构造完成, renderer =", type(w._renderer).__name__)
 
-# ── 1. 表情切换（真实 renderer）──────────────────────────
-def t_expression() -> None:
-    r = w._renderer
-    names = getattr(r, "_expression_names", [])
-    assert names, "无 expression 列表"
-    r.set_expression_by_name(names[0])
-    assert getattr(r, "_expression_active", False), "表情未激活"
-    # 互斥性：切到另一个表情后 _last_expression 应为新值（前置 ResetExpressions
-    # 已清空旧 Param，2026-08-20 修复"比心+葱叠加"bug）
-    if len(names) >= 2:
-        r.set_expression_by_name(names[1])
-        assert r._last_expression == names[1], \
-            f"切到 {names[1]!r} 后 _last_expression 仍是 {r._last_expression!r}"
-        print(f"   表情互斥: {names[0]!r}→{names[1]!r} ✓")
-    else:
-        print(f"   表情 {names[0]!r} 已设置, active={r._expression_active}")
-
-check("表情切换", t_expression)
-
-# ── 2. 动作切换（真实 renderer）──────────────────────────
+# ── 1. 动作切换（真实 renderer）──────────────────────────
 def t_motion() -> None:
     r = w._renderer
     mfiles = getattr(r, "_motion_files", [])

@@ -55,10 +55,6 @@ class Live2DRenderer(AvatarRenderer):
     # 卡手势防御：非 idle motion 播满此秒数强制回 idle（模型 motion 全 Loop=true，
     # waving/touch 等手势 mp3.json 都是 2.667s 循环，播 1.5 圈后回位）
     GESTURE_TIMEOUT = 3.0
-    # 手动演示锁定：用户右键「动作展示」选动作/表情后，进入演示锁定，期间
-    # 程序化表情层（按情绪每帧写面部参数）与自动情绪系统完全让位，避免把
-    # 手动选的比心/葱等表情"冲淡"。超时后自动恢复自动情绪。
-    MANUAL_OVERRIDE_TIMEOUT = 30.0
     # 情绪 -> motion 组名（模型有对应动作组时播放）
     _EMOTION_MOTION = {
         "happy": ("happy", "joy", "fun"),
@@ -422,9 +418,6 @@ class Live2DRenderer(AvatarRenderer):
         self._expression_active: bool = False
         self._last_expression: str = ""
         self._expression_suppress_until: float = 0.0
-        # 手动演示锁定状态（动作展示/表情演示期间为真，期间自动系统让位）
-        self._manual_override: bool = False
-        self._manual_override_at: float = 0.0
 
         # ── 动作优化层状态（纯参数驱动，不依赖 motion 文件）──
         # idle 微摆动（正弦叠加；_motion_is_idle 时生效）
@@ -1322,9 +1315,8 @@ class Live2DRenderer(AvatarRenderer):
         if not self._model:
             return
         P = self._live2d.StandardParams
-        # 手动演示锁定：用户右键「动作展示」选动作/表情期间，跳过会与手动选择
-        # 冲突的面部参数写入（眼/眉/嘴/脸红），让手动选择完整显示不被程序化层冲淡。
-        _override = self._in_manual_override()
+        # 手动演示锁定机制已随「动作/表情展示」面板移除；面部参数始终由情绪驱动。
+        _override = False
         try:
             # 目标值（未知情绪回退 neutral；neutral = 全 0 + 常态呼吸）
             emo = self.master_emotion
@@ -1789,9 +1781,6 @@ class Live2DRenderer(AvatarRenderer):
         """
         if not self._auto_motion_enabled or not self._model or not self._motion_files:
             return
-        # 手动演示锁定期间不自动插播随机动作，避免打断用户正在看的展示
-        if self._in_manual_override():
-            return
         if len(self._motion_files) < 2:  # 只有一个 motion（或 idle）就不用调
             return
         # 仅在 idle 状态下触发随机调度
@@ -1903,9 +1892,6 @@ class Live2DRenderer(AvatarRenderer):
         self._expression_active = False
         self._last_expression = ""
         self._expression_suppress_until = 0.0
-        # 清除手动演示锁定：强制回 idle 即退出演示模式
-        self._manual_override = False
-        self._manual_override_at = 0.0
         # 双重 StopAllMotions：某些 wrapper 实现需要两次才彻底清
         try:
             if hasattr(self._model, "StopAllMotions"):
@@ -2193,62 +2179,6 @@ class Live2DRenderer(AvatarRenderer):
             return
         self._apply_expression(emotion)
 
-    def _in_manual_override(self) -> bool:
-        """是否处于手动演示锁定（动作展示/表情演示中）。"""
-        return bool(getattr(self, "_manual_override", False)) and \
-            (time.monotonic() - getattr(self, "_manual_override_at", 0.0)) < self.MANUAL_OVERRIDE_TIMEOUT
-
-    def set_expression_by_name(self, name: str) -> None:
-        """按 Live2D 表情名直接设置表情（供右键菜单手动触发）。
-
-        与 set_emotion_expression_only（情绪→表情映射）不同，这里 name 是
-        _expression_names 里的原始表情 ID（如 比心/葱/唱歌/前倾）。
-        复用 _expire_expression_if_stale 超时兜底，表情会在 GESTURE_TIMEOUT
-        后自动 ResetExpressions 回默认。
-
-        2026-08-20 修复：SetExpression 不自动清空之前激活的表情（miku 的
-        expression 是独立 Param 切换），导致"比心+葱"叠加。先 ResetExpressions
-        再设新表情，确保用户主动切换是互斥的。情绪系统走 _apply_expression
-        不走此路径。
-
-        2026-08-26 修复：仅 ResetExpressions 不够——如果当前正播放 waving 等
-        非 idle motion，新表情仍会叠在 motion 上。手动切换表情/动作时必须
-        彻底互斥：先 StopAllMotions 清动作，再 ResetExpressions 清旧表情，
-        最后 SetExpression 设新表情。同步重置 motion 簿记，避免后续被
-        GESTURE_TIMEOUT 或 _apply_expression 抑制逻辑误判。
-        """
-        if not self._model:
-            return
-        try:
-            # 彻底清场：停掉所有 motion，再清表情，确保手动表情不会叠在旧动作上
-            if hasattr(self._model, "StopAllMotions"):
-                try:
-                    self._model.StopAllMotions()
-                except Exception:
-                    pass
-                try:
-                    self._model.StopAllMotions()
-                except Exception:
-                    pass
-            if hasattr(self._model, "ResetExpressions"):
-                self._model.ResetExpressions()
-            self._model.SetExpression(str(name))
-            self._expression_active = True
-            self._last_expression = str(name)
-            self._expression_set_at = time.monotonic()
-            self._expression_suppress_until = 0.0
-            # 手动表情独占画面：motion 已全停，按 idle 处理，避免情绪系统抑制
-            self._motion_is_idle = True
-            self._current_motion_idx = None
-            self._note_motion_started("expression_" + str(name), is_idle=True)
-            # 进入手动演示锁定：期间程序化表情层与自动情绪系统让位，避免把
-            # 手动选的表情/动作"冲淡"（每秒 set_emotion 会把表情覆盖回默认）。
-            self._manual_override = True
-            self._manual_override_at = time.monotonic()
-            logger.info("Live2DRenderer: 手动设置表情 '%s'，已清场所有 motion（演示锁定 30s）", name)
-        except Exception as e:
-            logger.warning("Live2DRenderer: 设置表情失败: %s", e)
-
     def _apply_expression(self, emotion: str) -> None:
         """应用情绪对应的表情（不碰 motion）。
 
@@ -2306,9 +2236,6 @@ class Live2DRenderer(AvatarRenderer):
         """
         if not self._expression_active or not self._model:
             return
-        # 手动演示锁定期间不过期，保持用户选择的表情完整显示
-        if self._in_manual_override():
-            return
         now = time.monotonic()
         if now - self._expression_set_at > self.GESTURE_TIMEOUT:
             try:
@@ -2321,14 +2248,6 @@ class Live2DRenderer(AvatarRenderer):
                         self.GESTURE_TIMEOUT, self.GESTURE_TIMEOUT)
 
     def set_emotion(self, emotion: str, intensity: float = 1.0) -> None:
-        # 手动演示锁定：用户右键「动作展示」选了动作/表情后，MANUAL_OVERRIDE_TIMEOUT
-        # 内情绪系统完全让位（不重播 motion、不设表情），避免每秒 tick 把用户
-        # 手动选的比心/葱等"冲淡/覆盖"。点「重置表情」或超时后自动恢复。
-        if self._in_manual_override():
-            # 仅同步标签，不影响实际表现
-            self._current_emotion = emotion
-            self._emotion_target = emotion
-            return
         # 同一 emotion 短时间内重复调用：直接同步表情，不重播 motion。
         # 真实场景：_unified_tick 每秒检查 emotion 并 set_emotion，
         # 若屏幕感知把 emotion 设为 happy，每秒都会触发 happy 调用，

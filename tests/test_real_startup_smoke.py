@@ -57,9 +57,6 @@ class FakeRenderer:
     def _start_motion_at(self, idx: int) -> None:
         self.called_motion = idx
 
-    def set_expression_by_name(self, name: str) -> None:
-        self.called_expr = name
-
 
 @pytest.fixture()
 def window(app):
@@ -81,14 +78,7 @@ def window(app):
             self.called_motion = idx
 
         r._start_motion_at = types.MethodType(_start_motion_at, r)
-    if not hasattr(r, "set_expression_by_name"):
-        def _set_expr(self, name: str) -> None:
-            self.called_expr = name
 
-        r.set_expression_by_name = types.MethodType(_set_expr, r)
-
-    # 建真实 QMenu 子菜单（右键菜单里 addMenu 的实例；这里手动建）
-    w._motion_submenu = QMenu("模型动作")
     yield w
     try:
         w.close()
@@ -115,31 +105,3 @@ class TestRealStartupSmoke:
         """真实 _focus_manager 实例注入下，多轮 tick 不崩（2026-08-20 崩溃回归）。"""
         for _ in range(5):
             window._unified_tick()  # 覆盖 _can_idle_chatter → _focus_suppresses_proactive
-
-    def test_rebuild_motion_menu_and_trigger_no_crash(self, window):
-        """真实 QMenu addAction + QAction.trigger() → lambda 无 checked 崩溃（回归）。
-
-        PySide6 的 QMenu.addAction(text, callable) 在本环境不传 checked，
-        旧代码 lambda checked 必崩；*args 修复后应正常。
-        """
-        window._rebuild_motion_menu()
-        actions = window._motion_submenu.actions()
-        # 应有：动作标题 + 2 motion + separator + 表情标题 + 2 expr + separator + 重置
-        motion_items = [a for a in actions if "▶️" in a.text()]
-        expr_items = [a for a in actions if "✨" in a.text()]
-        assert len(motion_items) == 2, f"动作项 {len(motion_items)} != 2"
-        assert len(expr_items) == 2, f"表情项 {len(expr_items)} != 2"
-
-        # 触发动作项（真实 triggered 信号，会传 checked）
-        motion_items[0].trigger()
-        assert window._renderer.called_motion == 0
-        # 触发表情项
-        expr_items[0].trigger()
-        assert window._renderer.called_expr == "比心"
-
-    def test_reset_expression_menu_item(self, window):
-        """重置表情菜单项（直接绑定方法，不受 lambda 影响）应存在且可触发。"""
-        window._rebuild_motion_menu()
-        reset_items = [a for a in window._motion_submenu.actions() if "重置表情" in a.text()]
-        assert len(reset_items) == 1
-        reset_items[0].trigger()  # 调用 _reset_motion_expression，renderer 为假对象需兜底
