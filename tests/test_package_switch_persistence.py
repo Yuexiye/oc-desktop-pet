@@ -128,6 +128,9 @@ def test_switch_pet_persists_and_no_dropdown(monkeypatch):
 
     # 替换模态弹窗/信息框，避免测试阻塞
     import ui.settings_dialog as sd
+    import avatar.factory as fac
+    # 资源预校验在资源齐备时放行（本测试只验证切换写盘逻辑，不校验资源）
+    monkeypatch.setattr(fac, "resource_available", lambda cid: (True, ""))
     monkeypatch.setattr(sd.QMessageBox, "information", lambda *a, **k: None)
     dialog._switch_pet()
 
@@ -137,3 +140,78 @@ def test_switch_pet_persists_and_no_dropdown(monkeypatch):
     assert saved.get("character") == "shizuku"
     assert saved.get("character_package") == "shizuku", "_switch_pet 应同步 character_package"
     assert not hasattr(dialog, "_pkg_select"), "基础 tab 无下拉框可同步"
+
+
+def test_resource_available_marks_missing_models():
+    """factory.resource_available 必须区分『有模型』与『占位缺模型』。
+    shizuku 声明 live2d 但无模型文件 → False；sample_live2d 有完整模型 → True。"""
+    from avatar.factory import resource_available
+    import os
+
+    ok_sh, reason = resource_available("shizuku")
+    assert ok_sh is False, "shizuku 声明 live2d 但模型未下载，应标记不可加载"
+    assert ("模型" in reason) or ("model" in reason.lower()), "原因应指向缺少模型文件"
+
+    ok_none, _ = resource_available("__no_such_character__")
+    assert ok_none is False, "不存在的角色应标记不可加载"
+
+    # sample_live2d 在本地有完整 Haru 模型；CI 若未分发模型文件则跳过强断言
+    ok_s, _ = resource_available("sample_live2d")
+    if os.path.isdir(os.path.join("characters", "sample_live2d", "live2d")):
+        assert ok_s is True, "sample_live2d 有完整模型，应可加载"
+
+
+def test_switch_pet_blocks_missing_resource(monkeypatch):
+    """缺模型资源（如 shizuku）不切换、不写盘，并弹警告。"""
+    config = _base_config()
+    dialog = _build_dialog(config)
+
+    import avatar.factory as fac
+    monkeypatch.setattr(fac, "resource_available", lambda cid: (False, "缺少模型文件"))
+
+    saved = {}
+    import ui.settings_dialog as sd
+    monkeypatch.setattr(sd, "save_config", lambda cfg: saved.update(cfg))
+    monkeypatch.setattr(sd.QMessageBox, "warning", lambda *a, **k: None)
+    monkeypatch.setattr(sd.QMessageBox, "information", lambda *a, **k: None)
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QListWidgetItem
+    item = QListWidgetItem("Shizuku（需下载模型）")
+    item.setData(Qt.UserRole, "shizuku")
+    dialog._pkg_list.addItem(item)
+    dialog._pkg_list.setCurrentRow(0)
+
+    dialog._switch_pet()
+
+    assert not saved, "缺资源时不应写盘"
+    by_id = {a["id"]: a for a in config["agents"]}
+    assert "shizuku" not in by_id, "缺资源角色不应被启用"
+
+
+def test_switch_pet_schedules_async_saver_on_success(monkeypatch):
+    """切换成功时刷新 async_config_saver pending，避免退出时被旧 config 覆盖回原角色。"""
+    config = _base_config()
+    dialog = _build_dialog(config)
+
+    import avatar.factory as fac
+    monkeypatch.setattr(fac, "resource_available", lambda cid: (True, ""))
+
+    import config as cfg_mod
+    scheduled = []
+    monkeypatch.setattr(cfg_mod.async_config_saver, "schedule", lambda c: scheduled.append(c))
+
+    import ui.settings_dialog as sd
+    monkeypatch.setattr(sd.QMessageBox, "information", lambda *a, **k: None)
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QListWidgetItem
+    item = QListWidgetItem("Sample Live2D (Haru)")
+    item.setData(Qt.UserRole, "sample_live2d")
+    dialog._pkg_list.addItem(item)
+    dialog._pkg_list.setCurrentRow(0)
+
+    dialog._switch_pet()
+
+    assert scheduled, "切换成功应刷新 async_config_saver pending"
+    assert scheduled[-1] is config, "pending 应为最新 config（含切换结果）"

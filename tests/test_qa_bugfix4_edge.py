@@ -236,8 +236,12 @@ def test_m5_switch_persists_enabled_after_dropdown_removed(monkeypatch):
 
     saved = {}
     import ui.settings_dialog as sd
+    import avatar.factory as fac
+    # 资源预校验在资源齐备时放行（本测试聚焦切换写盘逻辑，不校验资源）
+    monkeypatch.setattr(fac, "resource_available", lambda cid: (True, ""))
     monkeypatch.setattr(sd, "save_config", lambda cfg: saved.update(cfg))
     monkeypatch.setattr(sd.QMessageBox, "information", lambda *a, **k: None)
+    monkeypatch.setattr(sd.QMessageBox, "warning", lambda *a, **k: None)
 
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QListWidgetItem

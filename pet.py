@@ -2241,6 +2241,13 @@ class PetWindow(AudioMixin, GachaMixin, AnimationMixin, InteractionMixin, ChatMi
         if dialog.exec():
             self.config = dialog.get_config()
             save_config(self.config)
+            # 刷新防抖写盘 pending：避免退出时 async_config_saver 用旧 config 引用
+            # 把设置面板刚保存的切换结果覆盖回原角色。
+            try:
+                from config import async_config_saver
+                async_config_saver.schedule(self.config)
+            except Exception:
+                pass
             logger.info("配置已保存")
             # 应用即时生效的设置
             self._apply_settings()
@@ -2371,7 +2378,14 @@ class PetWindow(AudioMixin, GachaMixin, AnimationMixin, InteractionMixin, ChatMi
         self._current_char = char_id
 
         # 委托给渲染器加载帧序列，优先使用 sprite_dir
-        self._renderer.load(char_id, sprite_dir=self._sprite_dir)
+        try:
+            _loaded = self._renderer.load(char_id, sprite_dir=self._sprite_dir)
+        except Exception as _e:
+            logger.error("PetWindow: 渲染器加载异常 %s: %s", char_id, _e)
+            _loaded = False
+        if not _loaded:
+            logger.error("PetWindow: 渲染器加载失败（缺少模型文件）%s", char_id)
+            self._show_bubble(f"角色「{char_id}」缺少模型文件，无法加载", emotion="sad")
         # sprite 角色：帧尺寸已知，直接贴合窗口（Live2D 用 HitDrawable 测量，
         # 这里用帧尺寸×scale + 15% margin——窗口不再是 458x520 大热区包小图）
         if hasattr(self._renderer, "desired_window_size"):

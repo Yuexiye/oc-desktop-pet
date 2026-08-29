@@ -829,6 +829,14 @@ class SettingsDialog(QDialog):
                 version_tag = f" v{pkg.version}" if pkg.version and pkg.version != "?" else ""
                 desc_tag = f" - {pkg.description}" if pkg.description and pkg.description != "(无 manifest)" else ""
                 display_text = f"{pkg.name}{version_tag}{desc_tag}"
+                # 标注缺少模型资源的角色（如 shizuku 模型未下载），提示用户无法切换
+                try:
+                    from avatar.factory import resource_available
+                    _ok, _reason = resource_available(pkg.agent_id)
+                    if not _ok:
+                        display_text += "（需下载模型）"
+                except Exception:
+                    pass
                 item = QListWidgetItem(display_text)
                 item.setData(Qt.UserRole, pkg.agent_id)  # 存储 agent_id
                 self._pkg_list.addItem(item)
@@ -939,9 +947,32 @@ class SettingsDialog(QDialog):
             item_text = item.text()
             agent_id = item_text.split(" ")[0]
 
+        # 预校验：角色是否具备可加载资源（如 shizuku 声明 live2d 但模型未下载）。
+        # 缺资源则不切换，避免重启后白屏 / 静默加载失败。
+        try:
+            from avatar.factory import resource_available
+            _ok, _reason = resource_available(agent_id)
+        except Exception as _e:
+            logger.warning("资源预校验失败（放行）：%s", _e)
+            _ok, _reason = True, ""
+        if not _ok:
+            QMessageBox.warning(
+                self, "无法切换",
+                f"角色 '{agent_id}' 缺少可加载的模型资源：\n{_reason}\n\n"
+                f"请先放置模型文件后再切换。",
+            )
+            return
+
         # 统一应用切换：agents[].enabled + character + character_package
         self._apply_package_selection(agent_id)
         save_config(self._config)
+        # 刷新防抖写盘 pending：退出时 async_config_saver.shutdown() 写的是它手里持有的
+        # config 引用，若不刷新会用旧角色把本次切换结果覆盖回去（重启又变回原角色）。
+        try:
+            from config import async_config_saver
+            async_config_saver.schedule(self._config)
+        except Exception:
+            pass
         self._pkg_status_label.setText(f"已切换到: {agent_id}")
         QMessageBox.information(self, "切换成功", f"桌宠已切换为 '{agent_id}'，重启后生效")
 

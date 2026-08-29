@@ -122,3 +122,50 @@ def create_renderer(character_id: str, parent, override_format: str = None) -> A
     # Q6 原生帧精灵（默认路径，phoebe / yuexinmiao 等）
     from avatar.sprite_renderer import SpriteRenderer
     return SpriteRenderer(parent)
+
+
+def resource_available(character_id: str) -> tuple[bool, str]:
+    """判断角色是否具备可加载的模型/帧资源。
+
+    用于设置面板「切换桌宠」前的预校验，避免切到「声明 live2d 但模型未下载」
+    （如 shizuku，其 pet.json 明确说明模型本体不随仓库分发）这类角色时
+    静默白屏 / 加载失败。
+
+    Returns:
+        (True, "")                 资源齐备，可安全加载
+        (False, "<原因>")           缺失关键资源（不应作为可加载角色切换过去）
+    """
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    char_dir = os.path.join(base, "characters", character_id)
+    if not os.path.isdir(char_dir):
+        return False, f"角色目录不存在: {character_id}"
+
+    fmt = detect_format(character_id)
+    if fmt == "live2d":
+        live2d_dir = os.path.join(char_dir, "live2d")
+        if not os.path.isdir(live2d_dir):
+            return False, "缺少 live2d 模型目录（live2d/）"
+        has_model = any(
+            f.lower().endswith((".model3.json", ".model.json"))
+            for f in os.listdir(live2d_dir)
+        )
+        if not has_model:
+            return False, "缺少 Live2D 模型文件（*.model3.json，请按 README 下载放置）"
+        return True, ""
+    if fmt == "vrm":
+        return False, "VRM 格式尚未实现，暂不可加载"
+    # sprite / Q6 原生帧精灵
+    if os.path.isdir(os.path.join(char_dir, "frames")):
+        return True, ""
+    if os.path.isfile(os.path.join(char_dir, "spritesheet.webp")):
+        return True, ""
+    pet_json = os.path.join(char_dir, "pet.json")
+    if os.path.isfile(pet_json):
+        try:
+            with open(pet_json, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if data.get("frames") or data.get("atlas") or data.get("emotions"):
+                return True, ""
+        except Exception:
+            pass
+    return False, "缺少精灵帧资源（frames/ 目录或 spritesheet.webp）"
