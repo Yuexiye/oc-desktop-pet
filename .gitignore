@@ -15,6 +15,19 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_tmp/
+.pytest_cache/
+.venv/
+venv/
+env/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+
+# 系统 / IDE 垃圾（防手动 zip 误带）
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
 
 # 构建产物
 output/
@@ -22,6 +35,9 @@ import-pets/
 sandbox/
 sandbox_runner.py
 test-env/
+dist/
+build/
+node_modules/
 
 # characters 目录除了内置角色外忽略
 characters/*

@@ -12,6 +12,8 @@
 - Live2D 渲染器代码完整保留，但**模型需用户自行提供**——请使用有分发许可的模型（如 [Live2D 官方示例](https://www.live2d.com/en/learn/sample/)），或运行 `python tools/fetch_free_live2d_sample.py` 下载官方 Haru 示例模型。
 - 请勿将无再分发许可的模型（如游戏提取模型）放入仓库。
 
+> **占位角色（需自备模型）**：`miku` 与 `shizuku` 是**占位角色**——仓库仅含 `pet.json` 与 `README.md`，**不含任何模型素材**。切换前请先按对应角色目录的 `README.md` 自行下载/放置模型文件；**缺少模型时桌宠会提示「需下载模型」且不会加载**（不会白屏或崩溃）。默认桌宠为内置精灵图 **月薪喵 (yuexinmiao)**，开箱即用，无需额外下载。
+
 
 基于 PySide6 的 AI 桌面伴侣，深度集成 Hanako 生态。支持多桌宠并行运行，每个 Hanako agent 可独立拥有一个桌宠窗口。
 

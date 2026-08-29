@@ -2,7 +2,7 @@
   "agents": [
     {
       "id": "miku",
-      "enabled": true,
+      "enabled": false,
       "position": {
         "x": 1566,
         "y": 387
@@ -12,7 +12,7 @@
     },
     {
       "id": "yuexinmiao",
-      "enabled": false,
+      "enabled": true,
       "position": {
         "x": 1885,
         "y": 897
@@ -24,7 +24,7 @@
   "dialog": {
     "agent_id": "ophelia"
   },
-  "character": "miku",
+  "character": "yuexinmiao",
   "scale": 0.8,
   "opacity": 1.0,
   "behavior": "normal",
@@ -191,7 +191,8 @@
     "device": ""
   },
   "character_package": "default",
-  "render_format": "live2d",
+  "render_format": "sprite",
+  "_note": "miku / shizuku 为「需自备模型的占位角色」：仓库仅含 pet.json 与 README，不含任何模型素材。切换前请先按对应角色目录的 README 自行下载/放置模型文件；缺少模型时桌宠会提示「需下载模型」且不会加载（避免白屏或崩溃）。默认桌宠为内置精灵图 月薪喵(yuexinmiao)，开箱即用。",
   "greeting": {
     "enabled": true
   },
