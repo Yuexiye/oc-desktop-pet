@@ -411,6 +411,15 @@ class Live2DRenderer(AvatarRenderer):
         self._live2d = None
         self._motion_groups: dict = {}
         self._expression_names: list = []
+        # 渲染器运行状态（防御性初始化）：无论 load() 是否成功、模型是否存在，
+        # 这些属性都必须存在，使 set_emotion 等被 tick 无条件调用的方法成为安全 no-op。
+        # 否则 load() 提前 return False（如占位角色无 live2d/ 目录）时，_model 为 None，
+        # 但每帧 tick 仍调用 set_emotion → 访问未初始化属性抛 AttributeError → 崩溃重启循环。
+        self._emotion_motion_cooldown: dict[str, float] = {}
+        self._motion_is_idle: bool = True
+        self._motion_started_at: float = 0.0
+        self._last_gesture_at: float = 0.0
+        self._current_emotion: str = "neutral"
         # 表情超时重置（P4-1）：非中性表情（比心/葱/唱歌/前倾等贴图开关）设置后
         # 在 GESTURE_TIMEOUT 内若无新表情则自动 ResetExpressions——否则表情永远挂着，
         # 用户看到的"一直比心"就是这个（motion 有超时兜底，expression 之前没有）。
@@ -2253,6 +2262,11 @@ class Live2DRenderer(AvatarRenderer):
         # 若屏幕感知把 emotion 设为 happy，每秒都会触发 happy 调用，
         # 全局 cooling 3 秒挡不住这种"每秒一次"的节奏 → 比心永远切不回来。
         # 修：上次同 emotion 调用距今 < GESTURE_TIMEOUT 时，直接同步表情 return。
+        # 防御：load() 失败的渲染器（_model 为 None，如占位角色无 live2d/ 目录）
+        # 每帧仍被 tick 无条件调用本方法，必须在任何属性访问之前拦成安全 no-op，
+        # 否则访问未初始化属性（self._emotion_motion_cooldown 等）抛 AttributeError。
+        if not self._model:
+            return
         now = time.monotonic()
         last_same_at = self._emotion_motion_cooldown.get(f"_lastcall:{emotion}", 0.0)
         if emotion == getattr(self, "_current_emotion", None) and now - last_same_at < self.GESTURE_TIMEOUT:
@@ -2260,8 +2274,6 @@ class Live2DRenderer(AvatarRenderer):
             return
         self._current_emotion = emotion
         self._emotion_target = emotion
-        if not self._model:
-            return
 
         # 全局 gesture 冷却：任何非 idle motion 播放后，GESTURE_TIMEOUT 内不再播新 motion。
         # 这是防"比心/挥手持久卡死"的核心：屏幕感知、对话回复、鼠标交互可能高频推同一
