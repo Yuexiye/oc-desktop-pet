@@ -19,9 +19,6 @@ flowchart TB
         PW -->|气泡| BU[BubbleMixin\n气泡显示/节流/右键]
         PW -->|音频| AU[AudioMixin\nTTS 口型回调]
         PW -->|语音| VP[VoiceProviderMixin\nTTS/ASR 构建与热切换]
-        PW -->|养成| NU[NurturingMixin\n喂食/工作/状态]
-        PW -->|盲盒| GA[GachaMixin]
-        PW -->|HUD| ST[StatusHudMixin]
     end
 
     subgraph 渲染["🎨 渲染系统"]

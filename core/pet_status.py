@@ -14,8 +14,7 @@ _ANIM_TO_MOTION_KW / hanako mood 全保留）。
 - 绝不 import / 触碰渲染器内部实现（Live2D C 层 / 渲染线程）
 - 主线程调用，不新增线程
 
-注意：`core/pet_state.py` 的 PetStateManager 是**养成系统**（hunger/thirst/energy），
-与本模块完全无关；G 状态层不读养成属性。
+注意：本模块是桌宠状态映射层（映射 pets/ 角色状态词表），不读养成属性。
 """
 from __future__ import annotations
 

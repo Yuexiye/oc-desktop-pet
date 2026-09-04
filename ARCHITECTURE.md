@@ -36,13 +36,7 @@ oc-pet/
 │   ├── enhanced_environment.py # 增强环境扫描（窗口→结构化快照）
 │   ├── window_interaction.py   # 窗口互动（桌宠靠近当前窗口）
 │   ├── phone_activity.py       # 手机活动感知（MacroDroid HTTP 上报）
-│   ├── phone_receiver.py       # 手机数据 HTTP 接收器
-│   ├── pet_state.py            # 养成状态管理器（衰减/挂起池/模式）
-│   ├── work/                   # 工作系统（WorkTimer + 注册表）
-│   ├── items/                  # 物品系统
-│   ├── save/                   # 存档（PetSaveManager）
-│   ├── mission/                # 任务系统（池/追踪/生成/奖励/模板/编排）
-│   └── gacha/                  # 盲盒系统（奖池/引擎）
+│   └── phone_receiver.py       # 手机数据 HTTP 接收器
 │
 ├── pet_mixins/               # PetWindow 行为拆分（10 个 mixin，鸭子类型共享 self）
 │   ├── interaction_mixin.py    # 鼠标事件过滤（拖拽/摸头/双击）
@@ -51,10 +45,7 @@ oc-pet/
 │   ├── bubble_mixin.py         # 气泡显示/节流/右键菜单
 │   ├── chat_mixin.py           # 对话入口（输入框/语音/发送/持续监听 VAD）
 │   ├── behavior_mixin.py       # 行为模式（idle/proactive/拖拽跟随）
-│   ├── voice_provider_mixin.py # TTS/ASR provider 构建与热切换
-│   ├── nurturing_mixin.py      # 养成接入
-│   ├── gacha_mixin.py          # 盲盒接入
-│   └── status_hud_mixin.py     # 状态 HUD
+│   └── voice_provider_mixin.py # TTS/ASR provider 构建与热切换
 │
 ├── ui/                       # UI 组件
 │   ├── bubble.py               # 对话气泡（富文本/emoji/打字机/换行）
@@ -69,8 +60,7 @@ oc-pet/
 │   ├── crt_window.py           # CRT 特效窗口
 │   ├── crt_effects.py / crt_overlay.py / scene_background.py  # 视觉特效
 │   ├── heart_particles.py      # 爱心粒子
-│   ├── gacha_reveal.py / gacha_sound.py  # 盲盒动画/音效
-│   ├── ink_subtitle.py / sfx.py / amadeus_hud.py / collection_book.py # 其他 UI
+│   ├── ink_subtitle.py / sfx.py / amadeus_hud.py # 其他 UI
 │   └── theme/                  # 主题管理器
 │
 ├── avatar/                   # 渲染系统（AvatarRenderer 抽象）

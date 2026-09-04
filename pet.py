@@ -55,7 +55,6 @@ from core.conversation_engine import ConversationEngine
 from motion.mouse_tracker import MouseTracker
 from core.window_interaction import WindowInteraction
 from pet_mixins.audio_mixin import AudioMixin
-from pet_mixins.gacha_mixin import GachaMixin
 from pet_mixins.animation_mixin import AnimationMixin
 from pet_mixins.interaction_mixin import InteractionMixin
 from pet_mixins.chat_mixin import ChatMixin
@@ -76,7 +75,7 @@ except ImportError:
 
 # ─── 设置对话框 ─────────────────────────────────────────
 
-class PetWindow(AudioMixin, GachaMixin, AnimationMixin, InteractionMixin, ChatMixin, BehaviorMixin, VoiceProviderMixin, PlayMixin, BubbleMixin, QWidget):
+class PetWindow(AudioMixin, AnimationMixin, InteractionMixin, ChatMixin, BehaviorMixin, VoiceProviderMixin, PlayMixin, BubbleMixin, QWidget):
     """透明桌面宠物窗口"""
 
     # 跨线程信号：后台线程 -> 主线程
@@ -2836,8 +2835,6 @@ class PetWindow(AudioMixin, GachaMixin, AnimationMixin, InteractionMixin, ChatMi
         self._set_anim_seq(anim)
 
     # ── Hanako 状态回调 ──
-
-    # ── 状态指示器已迁移至 pet_mixins/status_hud_mixin.py（StatusHudMixin）──
 
     # ── 空闲时间追踪(idle 超时递进)──
 

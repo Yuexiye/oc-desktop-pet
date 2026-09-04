@@ -2,7 +2,7 @@
 
 为什么存在：
     之前每个自定义绘制控件（bubble / status_hud / emotion_face）各自维护一份
-    THEME_COLORS，未接主题的弹窗（collection_book / gacha_reveal / plugin_panel /
+    THEME_COLORS，未接主题的弹窗（plugin_panel /
     startup_screen）干脆写死颜色，导致深浅色模式不一致、甚至深色模式下也各用各的蓝。
 
 本模块是单一真相源，token 严格对齐 ui/theme/light.qss 与 dark.qss：
