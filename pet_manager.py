@@ -266,17 +266,25 @@ class PetManager:
         return discovered
 
     def _has_sprites(self, agent_id: str) -> bool:
-        """检查 agent 是否有精灵资源"""
+        """检查 agent 是否有精灵资源（包括 Live2D 模型）"""
         # 1. 检查 agent 自带的 pet/ 目录
-        agent_pet = AGENTS_DIR / agent_id / "pet" / "frames"
-        if agent_pet.exists() and any(agent_pet.iterdir()):
-            return True
+        agent_pet = AGENTS_DIR / agent_id / "pet"
+        if agent_pet.exists():
+            # 检查是否有 frames/ 或 live2d/
+            if (agent_pet / "frames").exists() and any((agent_pet / "frames").iterdir()):
+                return True
+            if (agent_pet / "live2d").exists():
+                return True
         # 2. 检查项目内置的 characters/ 目录
         char_dir = CHARACTERS_DIR / agent_id
         if char_dir.exists():
-            frames = char_dir / "frames"
-            pet_json = char_dir / "pet.json"
-            if frames.exists() or pet_json.exists():
+            # 检查是否有 frames/ 或 live2d/
+            if (char_dir / "frames").exists() and any((char_dir / "frames").iterdir()):
+                return True
+            if (char_dir / "live2d").exists():
+                return True
+            # 检查是否有 pet.json（可能配置了外部资源）
+            if (char_dir / "pet.json").exists():
                 return True
         return False
 
