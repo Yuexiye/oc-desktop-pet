@@ -34,7 +34,13 @@ from avatar.gl_char_widget import GLCharWidget
 from avatar.emote_presets import LIVE2D_PRESETS, get_live2d_preset as _get_live2d_preset, get_preset_names as _get_preset_names
 from avatar.model_profile import DEFAULT_PROFILE, load_profile_for_character
 from avatar.param_writer import ParamWriter
-from avatar.motion_mixer import MotionMixer, MotionRequest, Layer
+from avatar.motion_mixer import (
+    MotionMixer,
+    MotionRequest,
+    Layer,
+    easeOut,
+)
+from avatar.frame_pipeline import create_default_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +67,11 @@ class Live2DRenderer(AvatarRenderer):
     # 卡手势防御：非 idle motion 播满此秒数强制回 idle（模型 motion 全 Loop=true，
     # waving/touch 等手势 mp3.json 都是 2.667s 循环，播 1.5 圈后回位）
     GESTURE_TIMEOUT = 3.0
+    # 动作过渡（easing）：表达式（SetExpression）从上一个状态淡入到新状态的默认时长。
+    # Live2D motion 文件本身的跨 blend 目前受限于 live2d-py wrapper 未暴露
+    # motion weight API，无法在同一 motion 内部做淡入（仍为硬切）；但表情层
+    # SetExpression 支持 weight 参数，可以平滑。默认 0.3s、easeOut 曲线。
+    EXPRESSION_TRANSITION_S: float = 0.3
     # 情绪 -> motion 组名（模型有对应动作组时播放）
     _EMOTION_MOTION = {
         "happy": ("happy", "joy", "fun"),
@@ -321,6 +332,9 @@ class Live2DRenderer(AvatarRenderer):
         self._live2d = None
         self._motion_groups: dict = {}
         self._expression_names: list = []
+        # T2-1: 帧管线化 —— 每帧的 idle/手势超时/自动动作/表情超时/视线/口型/
+        # 程序化表情/待机摇摆/绘制 全部收敛到 FramePipeline，各处理器独立 try/except。
+        self._pipeline = create_default_pipeline()
         # 渲染器运行状态（防御性初始化）：无论 load() 是否成功、模型是否存在，
         # 这些属性都必须存在，使 set_emotion 等被 tick 无条件调用的方法成为安全 no-op。
         # 否则 load() 提前 return False（如占位角色无 live2d/ 目录）时，_model 为 None，
@@ -916,7 +930,7 @@ class Live2DRenderer(AvatarRenderer):
             logger.warning("Live2DRenderer: 缩放计算失败: %s", e)
 
     def draw(self) -> None:
-        """由 GLCharWidget.paintGL 调用：每帧更新并绘制模型。"""
+        """由 GLCharWidget.paintGL 调用：每帧更新并绘制模型。T2-1 管线化集成。"""
         if not self._live2d or not self._model:
             return
         # 诊断：确认 draw 是否被调用、模型是否就绪（仅首次打印）
@@ -941,7 +955,6 @@ class Live2DRenderer(AvatarRenderer):
                 # 离屏截图诊断（L2D_DEBUG=1 才启用）：保存 GL 内容，确认模型是否真的画出来
                 if getattr(self, "_debug", False):
                     try:
-                        from PySide6.QtWidgets import QApplication
                         self.char_label.grabFramebuffer().save(
                             os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                          "logs", "l2d_diag.png"))
@@ -957,46 +970,17 @@ class Live2DRenderer(AvatarRenderer):
         except Exception as e:
             logger.warning("Live2DRenderer.clearBuffer 异常: %s", e)
 
-        # 参数驱动每步独立 try：即使某个参数调用报错，也不阻塞模型绘制
-        if not self._debug_minimal:
-            # 每帧检测：待机动作播完则重新启动，实现持续循环
+        # L2D_DEBUG_MINIMAL=1 时保留最小路径（仅 _frame_update + Draw），用于二分定位 GL 问题。
+        if getattr(self, "_debug_minimal", False):
             try:
-                if self._model.IsMotionFinished():
-                    if getattr(self, "_debug", False):
-                        logger.info("Live2DRenderer: idle 动作播完，重新触发")
-                    self._start_idle()
+                self._frame_update()
             except Exception as e:
-                logger.warning("Live2DRenderer.idle 循环异常: %s", e)
-
-            # 卡手势防御：模型 motion 全是 Loop=True，非 idle 手势永不 finished，
-            # idle 永不重启 → 卡在最后手势（摸头/挥手等）。播满 GESTURE_TIMEOUT 秒强制回 idle。
+                logger.warning("Live2DRenderer._frame_update 异常: %s", e)
             try:
-                elapsed = time.monotonic() - self._motion_started_at
-                if not self._motion_is_idle and elapsed > self.GESTURE_TIMEOUT:
-                    logger.info(
-                        "Live2DRenderer: 非 idle motion 超时 %.1fs/%.1fs（%s），强制回 idle",
-                        elapsed, self.GESTURE_TIMEOUT,
-                        getattr(self, "_current_motion_idx", "?"),
-                    )
-                    self._force_idle()
+                self._model.Draw()
             except Exception as e:
-                logger.warning("Live2DRenderer.motion 超时检查异常: %s", e)
-
-# 自动随机动作：让 idle 不再"一直祈祷"。【2026-08-20 用户反馈】周期
-            # 30~80s 随机播一次非 idle motion（waving/happy/thinking/touch），
-            # 配合 GESTURE_TIMEOUT 自动回 idle 形成自然节奏。每次 emotion
-            # 切换也由 emotion_api 接口触发新 motion。
-            try:
-                self._tick_auto_motion()
-            except Exception as e:
-                logger.debug("Live2DRenderer: 自动动作调度异常: %s", e)
-
-            # P4-1 表情超时兜底：比心/葱/唱歌等贴图开关表情播满 GESTURE_TIMEOUT 自动重置，
-            # 与上方 motion 超时对称（之前只有 motion 有兜底，表情没有 → "一直比心"）。
-            try:
-                self._expire_expression_if_stale()
-            except Exception as e:
-                logger.warning("Live2DRenderer.expression 超时检查异常: %s", e)
+                logger.warning("Live2DRenderer.Draw 异常: %s", e)
+            return
 
         # 完整帧更新：绕过 live2d-py 0.7.0.4 wrapper 残缺的 Update()（motion/blink/呼吸全被注释），
         # 直接驱动 C++ Model 的完整更新序列（UpdateMotion → Blink → Breath → Physics → Pose）。
@@ -1005,32 +989,21 @@ class Live2DRenderer(AvatarRenderer):
         except Exception as e:
             logger.warning("Live2DRenderer._frame_update 异常: %s", e)
 
-        # 手动参数叠加（gaze/mouth）必须在 motion 更新之后、SaveParameters 之前设置，
-        # 否则会被 motion 曲线覆盖。weight<1 实现混合（motion 为主，手动为辅）。
-        if not self._debug_minimal:
-            try:
-                self._update_gaze_params()
-            except Exception as e:
-                logger.warning("Live2DRenderer.gaze 异常: %s", e)
-            try:
-                self._update_mouth()
-            except Exception as e:
-                logger.warning("Live2DRenderer.mouth 异常: %s", e)
-            # P4: 程序化自主动作层（情绪表情 + 头发微动）
-            try:
-                self._update_procedural_emotion()
-            except Exception as e:
-                logger.warning("Live2DRenderer.procedural 异常: %s", e)
-            # 动作优化：idle 微摆动（在 procedural 之后调用直接写参数，避免互相覆盖）
-            try:
-                self._update_idle_sway()
-            except Exception as e:
-                logger.debug("Live2DRenderer.idle_sway 异常: %s", e)
+        # T2-1: 每帧参数叠加 + 绘制全部收敛到 FramePipeline（各处理器独立 try/except）。
+        # 序列：idle 循环 → 手势超时 → 自动动作 → 表情超时 → 视线 → 口型 → 程序化表情 →
+        # idle 微摆 → 绘制。手动参数写入在 _frame_update 之后，避免被 motion 曲线覆盖；
+        # 新触发的 motion 从下一帧的 _frame_update 开始应用曲线（相比旧实现在本帧立即应用，
+        # 只差 1 帧延迟，视觉上无影响）。
+        self._pipeline.run(self._model, self)
 
-        try:
-            self._model.Draw()
-        except Exception as e:
-            logger.warning("Live2DRenderer.Draw 异常: %s", e)
+    def _draw_model(self, model) -> None:
+        """T2-1: 绘制模型（供 FramePipeline.DrawProcessor 调用）。
+
+        抽成单独方法以便管线化；内部仍用 try/except 降级，缺模型时透明不崩。
+        """
+        if model is None:
+            return
+        model.Draw()
 
     def _frame_update(self) -> None:
         """完整 Live2D 帧更新：直接驱动 C++ Model（绕过 wrapper 残缺 Update）。
