@@ -2182,10 +2182,11 @@ class PetWindow(AudioMixin, AnimationMixin, InteractionMixin, ChatMixin, Behavio
 
         # 行为模式子菜单
         self._behavior_submenu = self._interact_menu.addMenu("🚶 行为")
+        self._behavior_submenu.setStyleSheet(self._menu_qss())
         self._behavior_actions = {}
-        for mode in ["quiet", "normal", "active", "cling"]:
+        for mode, icon in [("quiet", "🤫"), ("normal", "🚶"), ("active", "🏃"), ("cling", "🤝")]:
             labels = {"quiet": "静默", "normal": "正常", "active": "活跃", "cling": "黏人"}
-            a = self._behavior_submenu.addAction(labels.get(mode, mode))
+            a = self._behavior_submenu.addAction(f"{icon} {labels.get(mode, mode)}")
             a.setCheckable(True)
             a.setChecked(mode == self._behavior_mode)
             a.triggered.connect(lambda checked, m=mode: self._switch_behavior_mode(m))
@@ -2221,9 +2222,10 @@ class PetWindow(AudioMixin, AnimationMixin, InteractionMixin, ChatMixin, Behavio
 
         # 主题子菜单
         self._theme_submenu = self._manage_menu.addMenu("🎨 主题")
+        self._theme_submenu.setStyleSheet(self._menu_qss())
         self._theme_actions = {}
-        for label, mode in [("自动（跟随时间）", "auto"), ("浅色", "light"), ("深色", "dark")]:
-            a = self._theme_submenu.addAction(label)
+        for label, mode, icon in [("自动（跟随时间）", "auto", "🌗"), ("浅色", "light", "☀️"), ("深色", "dark", "🌙")]:
+            a = self._theme_submenu.addAction(f"{icon} {label}")
             a.setCheckable(True)
             a.triggered.connect(lambda checked, m=mode: self._set_theme_mode(m))
             self._theme_actions[mode] = a
