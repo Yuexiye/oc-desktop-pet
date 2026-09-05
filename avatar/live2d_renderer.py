@@ -2166,7 +2166,26 @@ class Live2DRenderer(AvatarRenderer):
                 return
             # P1: SetExpression 前先 Reset，确保新表情独占总有贴图参数
             self._model.ResetExpressions()
-            self._model.SetExpression(expr)
+            # T2-2b: Blend 折算 — 检测模型是否支持 Blend 模式
+            try:
+                # 尝试获取 Blend 参数（Live2D SDK 可能不支持）
+                if hasattr(self._model, 'GetExpressionBlendMode'):
+                    blend_mode = self._model.GetExpressionBlendMode(expr)
+                    if blend_mode == 'Add':
+                        # Add 模式：叠加到当前表情
+                        self._model.SetExpression(expr, weight=0.5)
+                    elif blend_mode == 'Multiply':
+                        # Multiply 模式：乘法混合
+                        self._model.SetExpression(expr, weight=0.7)
+                    else:
+                        # Overwrite 模式（默认）：覆盖
+                        self._model.SetExpression(expr)
+                else:
+                    # 不支持 Blend 检测，使用默认覆盖
+                    self._model.SetExpression(expr)
+            except Exception:
+                # Blend 不支持，回退到默认覆盖
+                self._model.SetExpression(expr)
             self._expression_active = True
             self._expression_set_at = now
             self._last_expression = expr
