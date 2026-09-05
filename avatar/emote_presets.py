@@ -192,6 +192,81 @@ LIVE2D_PRESETS: dict[str, list[dict]] = {
         {"type": "blink", "times": 1, "interval": 0.15},
         {"type": "clear", "duration": 0.3},
     ],
+    # ── 微表情 ──
+    "eye_twinkle": [
+        {"type": "set", "duration": 1.0, "params": {"eye_smile": 0.5, "eye_open": 0.9, "brow_angle": 0.2}},
+        {"type": "clear", "duration": 0.4},
+    ],
+    "brow_raise": [
+        {"type": "set", "duration": 1.2, "params": {"brow_angle": 0.4, "brow_form": 0.3, "eye_open": 0.85}},
+        {"type": "clear", "duration": 0.5},
+    ],
+    "lip_pucker": [
+        {"type": "set", "duration": 1.4, "params": {"mouth_form": -0.3, "mouth_open": 0.05, "eye_smile": 0.15}},
+        {"type": "clear", "duration": 0.5},
+    ],
+    # ── 头部细节 ──
+    "head_bob": [
+        {"type": "set", "duration": 0.4, "params": {"head_angle_y": -0.25, "eye_ball_y": -0.05}},
+        {"type": "set", "duration": 0.4, "params": {"head_angle_y": 0.15, "eye_ball_y": 0.03}},
+        {"type": "clear", "duration": 0.4},
+    ],
+    "head_roll": [
+        {"type": "set", "duration": 1.0, "params": {"head_angle_x": 0.35, "eye_ball_x": -0.08}},
+        {"type": "set", "duration": 1.0, "params": {"head_angle_x": -0.3, "eye_ball_x": 0.06}},
+        {"type": "clear", "duration": 0.5},
+    ],
+    "head_tilt_left": [
+        {"type": "set", "duration": 1.2, "params": {"head_angle_x": -0.4, "eye_smile": 0.15}},
+        {"type": "clear", "duration": 0.5},
+    ],
+    "head_tilt_right": [
+        {"type": "set", "duration": 1.2, "params": {"head_angle_x": 0.4, "eye_smile": 0.15}},
+        {"type": "clear", "duration": 0.5},
+    ],
+    # ── 身体细节 ──
+    "body_sway": [
+        {"type": "set", "duration": 0.8, "params": {"body_angle_z": 0.1, "arm_angle_l": 0.12}},
+        {"type": "set", "duration": 0.8, "params": {"body_angle_z": -0.1, "arm_angle_r": 0.12}},
+        {"type": "clear", "duration": 0.5},
+    ],
+    "shoulder_shrug": [
+        {"type": "set", "duration": 0.6, "params": {"arm_angle_l": 0.3, "arm_angle_r": 0.3, "brow_angle": 0.2}},
+        {"type": "set", "duration": 0.4, "params": {"arm_angle_l": 0.25, "arm_angle_r": 0.25}},
+        {"type": "clear", "duration": 0.6},
+    ],
+    "arm_wave": [
+        {"type": "set", "duration": 0.5, "params": {"arm_angle_r": 0.4, "head_angle_x": 0.1}},
+        {"type": "set", "duration": 0.5, "params": {"arm_angle_r": 0.5, "head_angle_x": 0.1}},
+        {"type": "set", "duration": 0.5, "params": {"arm_angle_r": 0.35, "head_angle_x": 0.1}},
+        {"type": "clear", "duration": 0.5},
+    ],
+    # ── 嘴巴细节 ──
+    "mouth_smile": [
+        {"type": "set", "duration": 1.6, "params": {"mouth_form": 0.4, "eye_smile": 0.25, "brow_angle": 0.1}},
+        {"type": "clear", "duration": 0.5},
+    ],
+    "mouth_pursed": [
+        {"type": "set", "duration": 1.4, "params": {"mouth_form": -0.25, "mouth_open": 0.03, "eye_ball_y": 0.05}},
+        {"type": "clear", "duration": 0.5},
+    ],
+    "tongue_out": [
+        {"type": "set", "duration": 1.2, "params": {"mouth_form": 0.3, "mouth_open": 0.2, "eye_smile": 0.4, "eye_ball_y": 0.08}},
+        {"type": "clear", "duration": 0.5},
+    ],
+    # ── 眼神细节 ──
+    "eye_roll": [
+        {"type": "set", "duration": 1.0, "params": {"eye_ball_y": 0.3, "eye_ball_x": 0.1, "brow_angle": -0.2}},
+        {"type": "clear", "duration": 0.5},
+    ],
+    "eye_wide": [
+        {"type": "set", "duration": 1.4, "params": {"eye_open": 1.1, "brow_angle": 0.3, "brow_form": 0.25}},
+        {"type": "clear", "duration": 0.5},
+    ],
+    "eye_narrow": [
+        {"type": "set", "duration": 1.4, "params": {"eye_open": 0.6, "brow_angle": -0.3, "eye_smile": -0.2}},
+        {"type": "clear", "duration": 0.5},
+    ],
 }
 
 # ── Sprite 帧映射 ──
@@ -244,6 +319,27 @@ SPRITE_PRESET_MAP: dict[str, Optional[str]] = {
     "sit": "sit",
     "lie": "lie",
     "blink_quick": None,
+    # 微表情
+    "eye_twinkle": None,
+    "brow_raise": None,
+    "lip_pucker": None,
+    # 头部细节
+    "head_bob": None,
+    "head_roll": None,
+    "head_tilt_left": "head_tilt",
+    "head_tilt_right": "head_tilt",
+    # 身体细节
+    "body_sway": None,
+    "shoulder_shrug": None,
+    "arm_wave": "waving",
+    # 嘴巴细节
+    "mouth_smile": "smile",
+    "mouth_pursed": "pout",
+    "tongue_out": None,
+    # 眼神细节
+    "eye_roll": None,
+    "eye_wide": None,
+    "eye_narrow": None,
 }
 
 

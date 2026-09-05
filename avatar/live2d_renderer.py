@@ -239,6 +239,16 @@ class Live2DRenderer(AvatarRenderer):
         "giggle": 1.4, "sneeze": 0.4, "stretch_yawn": 0.5,
         # 身体动作（参数驱动）
         "stretch": 1.5, "dance": 0.8, "sit": 1.2, "lie": 0.5, "blink_quick": 2.0,
+        # 微表情
+        "eye_twinkle": 1.8, "brow_raise": 1.2, "lip_pucker": 1.0,
+        # 头部细节
+        "head_bob": 1.5, "head_roll": 1.2, "head_tilt_left": 1.4, "head_tilt_right": 1.4,
+        # 身体细节
+        "body_sway": 1.6, "shoulder_shrug": 1.0, "arm_wave": 1.4,
+        # 嘴巴细节
+        "mouth_smile": 2.0, "mouth_pursed": 1.0, "tongue_out": 0.6,
+        # 眼神细节
+        "eye_roll": 0.5, "eye_wide": 1.2, "eye_narrow": 0.8,
     }
 
     # 3) idle 微摆动（参数随机化）：正弦叠加，相位/幅度/频率随机，避免机械循环感。
