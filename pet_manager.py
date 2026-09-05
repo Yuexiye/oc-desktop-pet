@@ -416,6 +416,7 @@ class PetManager:
         """启动所有 enabled 的桌宠窗口（自动启动 bridge）"""
         # P2: 热重载配置（检查文件变更，自动更新缓存）
         self._reload_config()
+        logger.info("launch_all: config reloaded")
         
         # P2: 检查是否有可用的角色模型
         if not self._has_any_characters():
@@ -429,10 +430,15 @@ class PetManager:
             self._save_config()
             logger.info("Config updated: disabled agents without sprites")
         
+        # 记录要启动的 agents
+        enabled = self.enabled_agents
+        logger.info("launch_all: %d enabled agents: %s", len(enabled), [a['id'] for a in enabled])
+        
         # 确保 bridge 已启动
         if self._bridge_enabled and not self._bridge:
             self.start_bridge()
-        for agent in self.enabled_agents:
+        for agent in enabled:
+            logger.info("launch_all: launching agent %s", agent['id'])
             self.launch_window(agent["id"])
 
     def launch_window(self, agent_id: str):
