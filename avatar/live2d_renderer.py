@@ -67,11 +67,13 @@ class Live2DRenderer(AvatarRenderer):
     # 卡手势防御：非 idle motion 播满此秒数强制回 idle（模型 motion 全 Loop=true，
     # waving/touch 等手势 mp3.json 都是 2.667s 循环，播 1.5 圈后回位）
     GESTURE_TIMEOUT = 3.0
-    # 动作过渡（easing）：表达式（SetExpression）从上一个状态淡入到新状态的默认时长。
+    # 动作过渡（easing）：表情（SetExpression）从上一个状态淡入到新状态的默认时长。
     # Live2D motion 文件本身的跨 blend 目前受限于 live2d-py wrapper 未暴露
     # motion weight API，无法在同一 motion 内部做淡入（仍为硬切）；但表情层
     # SetExpression 支持 weight 参数，可以平滑。默认 0.3s、easeOut 曲线。
     EXPRESSION_TRANSITION_S: float = 0.3
+    # 默认缓动曲线：easeOut（快启慢收），适合“刚接上→自然放松”的表情接杆感。
+    EXPRESSION_TRANSITION_EASING: str = "easeOut"
     # 情绪 -> motion 组名（模型有对应动作组时播放）
     _EMOTION_MOTION = {
         "happy": ("happy", "joy", "fun"),
@@ -348,6 +350,15 @@ class Live2DRenderer(AvatarRenderer):
         # 在 GESTURE_TIMEOUT 内若无新表情则自动 ResetExpressions——否则表情永远挂着，
         # 用户看到的"一直比心"就是这个（motion 有超时兜底，expression 之前没有）。
         self._expression_set_at: float = 0.0
+        # 动作过渡（easing）：表情 SetExpression 的淡入状态
+        #   _expression_transition_expr: 当前正在淡入的表情名
+        #   _expression_transition_at:   淡入起始时刻
+        #   _expression_transition_w:    当前帧的平滑权重（0~1，经 easeOut）
+        # 每次 _apply_expression 切换新表情时重置；_update_expression_transition
+        # 每帧推进。transition_w 在 0~1 之间，传给 SetExpression(weight=...)。
+        self._expression_transition_expr: str = ""
+        self._expression_transition_at: float = 0.0
+        self._expression_transition_w: float = 0.0
         self._expression_active: bool = False
         self._last_expression: str = ""
 
