@@ -2165,18 +2165,41 @@ class PetWindow(AudioMixin, AnimationMixin, InteractionMixin, ChatMixin, Behavio
         self._menu = QMenu(self)
         self._menu.setStyleSheet(self._menu_qss())
         
-        # UI优化: 添加键盘快捷键
+        # UI优化: 添加键盘快捷键（从配置读取）
         from PySide6.QtGui import QKeySequence
+        
+        # 加载快捷键配置
+        shortcuts_cfg = self._config.get("shortcuts", {})
+        shortcuts_enabled = shortcuts_cfg.get("enabled", True)
+        shortcuts_keys = shortcuts_cfg.get("keys", {})
+        
+        # 默认快捷键
+        default_shortcuts = {
+            "toggle_input": "Ctrl+L",
+            "toggle_voice": "Ctrl+D",
+            "toggle_voice_continuous": "Ctrl+Shift+D",
+            "toggle_passthrough": "Ctrl+P",
+            "open_activity_feed": "Ctrl+H",
+            "open_settings": "Ctrl+S",
+            "open_plugin_panel": "Ctrl+Shift+P",
+        }
+        
+        def _get_shortcut(action_id: str) -> QKeySequence:
+            """获取快捷键（如果启用）"""
+            if not shortcuts_enabled:
+                return QKeySequence()
+            key = shortcuts_keys.get(action_id, default_shortcuts.get(action_id, ""))
+            return QKeySequence(key) if key else QKeySequence()
         
         # ── 互动组 ──
         self._interact_menu = self._menu.addMenu("🍙 互动")
         self._interact_menu.setStyleSheet(self._menu_qss())
         a_chat = self._interact_menu.addAction("💬 对话", self._toggle_input)
-        a_chat.setShortcut(QKeySequence("Ctrl+L"))
+        a_chat.setShortcut(_get_shortcut("toggle_input"))
         self._voice_action = self._interact_menu.addAction("🎤 说话", self._toggle_voice)
-        self._voice_action.setShortcut(QKeySequence("Ctrl+D"))
+        self._voice_action.setShortcut(_get_shortcut("toggle_voice"))
         self._voice_continuous_action = self._interact_menu.addAction("🎤 持续监听", self._toggle_voice_continuous)
-        self._voice_continuous_action.setShortcut(QKeySequence("Ctrl+Shift+D"))
+        self._voice_continuous_action.setShortcut(_get_shortcut("toggle_voice_continuous"))
         self._voice_continuous_action.setCheckable(True)
         self._voice_continuous_action.setChecked(False)
 
@@ -2206,11 +2229,11 @@ class PetWindow(AudioMixin, AnimationMixin, InteractionMixin, ChatMixin, Behavio
 
         # 穿透 / 活动流 / 新建对话
         self._passthrough_action = self._manage_menu.addAction("🔍 穿透", self._toggle_passthrough)
-        self._passthrough_action.setShortcut(QKeySequence("Ctrl+P"))
+        self._passthrough_action.setShortcut(_get_shortcut("toggle_passthrough"))
         self._passthrough_action.setCheckable(True)
         self._passthrough_action.setChecked(self._mousePassthrough)
         a_activity = self._manage_menu.addAction("📜 活动流", self._open_activity_feed)
-        a_activity.setShortcut(QKeySequence("Ctrl+H"))
+        a_activity.setShortcut(_get_shortcut("open_activity_feed"))
         # 多宠总览（依赖 pet_manager 注入；独立启动时隐藏）
         if getattr(self, "_pet_manager", None) is not None:
             self._manage_menu.addAction("🐾 桌宠总览", self._open_pet_overview)
@@ -2233,9 +2256,9 @@ class PetWindow(AudioMixin, AnimationMixin, InteractionMixin, ChatMixin, Behavio
 
         self._manage_menu.addAction("⚙️ 设置", self._open_settings)
         a_settings = self._manage_menu.actions()[-1]
-        a_settings.setShortcut(QKeySequence("Ctrl+S"))
+        a_settings.setShortcut(_get_shortcut("open_settings"))
         a_plugin = self._manage_menu.addAction("🔌 插件", self._open_plugin_panel)
-        a_plugin.setShortcut(QKeySequence("Ctrl+Shift+P"))
+        a_plugin.setShortcut(_get_shortcut("open_plugin_panel"))
 
         # FrameBaker 集成（管理组内）
         try:

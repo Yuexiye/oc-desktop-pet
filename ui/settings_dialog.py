@@ -40,6 +40,7 @@ class SettingsDialog(QDialog):
         self._pet_manager = pet_manager
         self.setWindowTitle("设置")
         self.setMinimumSize(380, 500)  # P2: 调小最小尺寸，减少空余空间
+        # UI优化: 允许纵向缩放（QDialog 默认可缩放）
         mgr = get_default()
         self._ui_theme = mgr.current if mgr else "dark"
         if mgr is not None:
@@ -592,6 +593,62 @@ class SettingsDialog(QDialog):
 
         func_layout.addWidget(self.func_sub_tabs)
         self._main_tabs.addTab(func_tab, "⚙️ 功能")
+        
+        # ── Tab 2.1: 快捷键设置 ──
+        shortcuts_tab = QWidget()
+        shortcuts_layout = QVBoxLayout(shortcuts_tab)
+        shortcuts_layout.setContentsMargins(12, 12, 12, 12)
+        shortcuts_layout.setSpacing(16)
+        
+        # 页面引导说明
+        shortcuts_hint = QLabel("配置右键菜单的键盘快捷键。禁用后快捷键不会响应。")
+        shortcuts_hint.setWordWrap(True)
+        shortcuts_hint.setStyleSheet("color: rgb(%s); font-size: 11px; margin-bottom: 2px;" % rgb(self._ui_theme, "text_muted"))
+        shortcuts_layout.addWidget(shortcuts_hint)
+        
+        # 快捷键开关
+        shortcuts_group = QGroupBox("快捷键")
+        shortcuts_group_layout = QVBoxLayout(shortcuts_group)
+        
+        self.shortcuts_enabled = QCheckBox("启用快捷键")
+        self.shortcuts_enabled.setChecked(self._config.get("shortcuts", {}).get("enabled", True))
+        shortcuts_group_layout.addWidget(self.shortcuts_enabled)
+        
+        # 快捷键列表
+        self._shortcuts_list = []
+        shortcuts_defaults = [
+            ("对话", "Ctrl+L", "toggle_input"),
+            ("说话", "Ctrl+D", "toggle_voice"),
+            ("持续监听", "Ctrl+Shift+D", "toggle_voice_continuous"),
+            ("穿透", "Ctrl+P", "toggle_passthrough"),
+            ("活动流", "Ctrl+H", "open_activity_feed"),
+            ("设置", "Ctrl+S", "open_settings"),
+            ("插件", "Ctrl+Shift+P", "open_plugin_panel"),
+        ]
+        
+        shortcuts_table = QFormLayout()
+        shortcuts_table.setSpacing(10)
+        
+        shortcuts_cfg = self._config.get("shortcuts", {}).get("keys", {})
+        for label, default_key, action_id in shortcuts_defaults:
+            # 加载当前配置或使用默认值
+            current_key = shortcuts_cfg.get(action_id, default_key)
+            # 创建快捷键输入框
+            key_input = QLineEdit(current_key)
+            key_input.setPlaceholderText(default_key)
+            key_input.setMinimumWidth(120)
+            # 连接信号
+            def _on_shortcut_changed(text, aid=action_id):
+                self._config.setdefault("shortcuts", {}).setdefault("keys", {})[aid] = text
+            key_input.textEdited.connect(_on_shortcut_changed)
+            shortcuts_table.addRow(f"{label}", key_input)
+            self._shortcuts_list.append((key_input, action_id))
+        
+        shortcuts_group_layout.addLayout(shortcuts_table)
+        shortcuts_layout.addWidget(shortcuts_group)
+        
+        shortcuts_layout.addStretch()
+        self._main_tabs.addTab(shortcuts_tab, "⌨️ 快捷键")
 
         # ── Tab 2.5: 角色包管理 (M5) ──
         pkg_tab = QWidget()
