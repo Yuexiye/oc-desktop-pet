@@ -416,7 +416,7 @@ class PetManager:
         """启动所有 enabled 的桌宠窗口（自动启动 bridge）"""
         # P2: 热重载配置（检查文件变更，自动更新缓存）
         self._reload_config()
-        logger.info("launch_all: config reloaded")
+        logger.info("launch_all: config reloaded, agents=%s", self._config.get('agents', []))
         
         # P2: 检查是否有可用的角色模型
         if not self._has_any_characters():
