@@ -1,36 +1,40 @@
-# 核心（版本锁定：~= 表示兼容同 minor 版本，避免大版本升级炸架构）
+# oc-pet 完整依赖（L1+L2+L3+L4）
+# 安装: pip install -r requirements.txt
+#
+# 分层安装（可选）：
+#   pip install -r requirements-core.txt    # L1 核心（最小运行集）
+#   pip install -r requirements-audio.txt   # L2 音频
+#   pip install -r requirements-live2d.txt  # L2 Live2D
+#   pip install -r requirements-tts.txt     # L3 TTS
+#   pip install -r requirements-asr.txt     # L3 ASR
+#   pip install -r requirements-optional.txt # L4 可选
+
+# === L1 核心 ===
 PySide6~=6.5          # 6.5.x，不升 6.6
 PySide6-Addons~=6.5
 requests~=2.28
 Pillow~=9.0
 PyYAML~=6.0
+websocket-client~=1.8
 
-# 音频（录音 + 播放）
+# === L2 音频 ===
 sounddevice~=0.4.6
 numpy~=1.24
 scipy~=1.10
 soundfile~=0.12
 
-# TTS（CosyVoice 间接依赖）
-tqdm~=4.65
-
-# 微软 Edge TTS（免费在线合成，可选引擎：设置→语音输出→微软 Edge）
-edge-tts~=6.1
-
-# M4: Hanako WebSocket 客户端（同步适配现有 threading + Qt Signal 架构）
-websocket-client~=1.8
-
-# Live2D 渲染（核心依赖，缺失时 live2d_renderer 无法工作）
+# === L2 Live2D ===
 live2d-py~=1.0
 
-# ASR（可选，不装也不会崩）
-# openai-whisper>=20230918
+# === L3 TTS ===
+edge-tts~=6.1
+tqdm~=4.65
+
+# === L3 ASR ===
+# openai-whisper~=20230918  # 可选，本地语音识别
 pydantic~=2.0
 
-# === P1 可选依赖（N.E.K.O. 移植预留，默认不安装，不装不影响运行）===
-# P1-1 记忆向量化（本地 ONNX EmbeddingService）：缺失/不可用时自动降级纯 BM25（fallback gate）
-# onnxruntime>=1.17.0
-# tokenizers>=0.15.0   # HuggingFace tokenizer，加载 embedding 模型的 tokenizer.json（与 onnxruntime 同属 P1-1 可选）
-# P1-2 事实库 FactStore 跨进程文件锁（预留）
-# portalocker>=2.8.0
-
+# === L4 可选（不装不影响运行） ===
+# onnxruntime>=1.17.0       # 记忆向量化
+# tokenizers>=0.15.0        # HuggingFace tokenizer
+# portalocker>=2.8.0        # 事实库跨进程锁

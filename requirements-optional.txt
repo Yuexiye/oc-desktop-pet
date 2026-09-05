@@ -1,0 +1,9 @@
+# L4 可选依赖（高级功能，不装不影响运行）
+# 安装: pip install -r requirements-optional.txt
+
+# P1-1 记忆向量化（本地 ONNX EmbeddingService）：缺失时自动降级纯 BM25
+onnxruntime>=1.17.0
+tokenizers>=0.15.0   # HuggingFace tokenizer，加载 embedding 模型的 tokenizer.json
+
+# P1-2 事实库 FactStore 跨进程文件锁
+portalocker>=2.8.0

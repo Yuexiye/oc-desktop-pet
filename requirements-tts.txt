@@ -1,0 +1,4 @@
+# L3 TTS 依赖（语音合成）
+# 安装: pip install -r requirements-tts.txt
+edge-tts~=6.1    # 微软 Edge TTS（免费在线，默认引擎）
+tqdm~=4.65       # CosyVoice 间接依赖

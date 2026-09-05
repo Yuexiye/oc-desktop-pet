@@ -1,0 +1,3 @@
+# L2 Live2D 渲染（Live2D 模型支持）
+# 安装: pip install -r requirements-live2d.txt
+live2d-py~=1.0

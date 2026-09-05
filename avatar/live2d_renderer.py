@@ -55,7 +55,9 @@ class Live2DRenderer(AvatarRenderer):
         "neutral": (),
     }
     # 自动排除的表情名关键词（作者水印/版权声明等，桌宠不展示）
-    _IGNORED_EXPRESSIONS = ("水印", "watermark", "版权", "author", "credit", "logo")
+    # T2-2a: 改为可配置，不再硬编码；默认值保持兼容
+    _IGNORED_EXPRESSIONS_DEFAULT = ("水印", "watermark", "版权", "author", "credit", "logo")
+    _IGNORED_EXPRESSIONS = _IGNORED_EXPRESSIONS_DEFAULT  # 可被 config.json 覆盖
     # 卡手势防御：非 idle motion 播满此秒数强制回 idle（模型 motion 全 Loop=true，
     # waving/touch 等手势 mp3.json 都是 2.667s 循环，播 1.5 圈后回位）
     GESTURE_TIMEOUT = 3.0
