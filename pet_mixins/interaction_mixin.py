@@ -349,6 +349,12 @@ class InteractionMixin:
     def _fire_pending_click(self):
         if self._pending_click:
             self._pending_click = False
+            # T1-3: 触摸分层冷却 — 单击冷却 5 秒，避免频繁触发 LLM 往返
+            now = time.perf_counter()
+            if hasattr(self, '_last_click_time') and now - self._last_click_time < 5.0:
+                logger.debug("触摸冷却中，跳过单击聊天: %.1fs", now - self._last_click_time)
+                return
+            self._last_click_time = now
             self._toggle_chat()
             self._motion_state = "idle"
 
