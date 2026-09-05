@@ -237,6 +237,8 @@ class Live2DRenderer(AvatarRenderer):
         "excited": 1.2, "grin": 1.0, "shy": 1.2, "proud": 1.0, "sleepy": 0.7,
         "nod": 2.0, "head_shake": 1.6, "head_tilt": 1.8,
         "giggle": 1.4, "sneeze": 0.4, "stretch_yawn": 0.5,
+        # 身体动作（参数驱动）
+        "stretch": 1.5, "dance": 0.8, "sit": 1.2, "lie": 0.5, "blink_quick": 2.0,
     }
 
     # 3) idle 微摆动（参数随机化）：正弦叠加，相位/幅度/频率随机，避免机械循环感。

@@ -167,6 +167,31 @@ LIVE2D_PRESETS: dict[str, list[dict]] = {
         {"type": "set", "duration": 0.8, "params": {"mouth_open": 0.2, "eye_open": 0.5, "breath_amp": 1.0, "breath_rate": 1.0}},
         {"type": "clear", "duration": 0.8},
     ],
+    # ── 身体动作（参数驱动）──
+    "stretch": [
+        {"type": "set", "duration": 1.0, "params": {"body_angle_y": 0.15, "body_angle_z": 0.1, "arm_angle_l": 0.2, "arm_angle_r": 0.2, "head_angle_y": 0.1}},
+        {"type": "set", "duration": 1.2, "params": {"body_angle_y": -0.1, "body_angle_z": -0.08, "arm_angle_l": 0.15, "arm_angle_r": 0.15, "head_angle_y": -0.1}},
+        {"type": "clear", "duration": 0.8},
+    ],
+    "dance": [
+        {"type": "set", "duration": 0.6, "params": {"body_angle_z": 0.12, "arm_angle_l": 0.25, "arm_angle_r": -0.25, "head_angle_x": 0.1}},
+        {"type": "set", "duration": 0.6, "params": {"body_angle_z": -0.12, "arm_angle_l": -0.25, "arm_angle_r": 0.25, "head_angle_x": -0.1}},
+        {"type": "set", "duration": 0.6, "params": {"body_angle_z": 0.12, "arm_angle_l": 0.25, "arm_angle_r": -0.25, "head_angle_x": 0.1}},
+        {"type": "clear", "duration": 0.5},
+    ],
+    "sit": [
+        {"type": "set", "duration": 1.5, "params": {"body_angle_y": -0.2, "body_angle_z": 0.05, "arm_angle_l": 0.1, "arm_angle_r": 0.1, "head_angle_y": 0.08}},
+        {"type": "clear", "duration": 0.8},
+    ],
+    "lie": [
+        {"type": "set", "duration": 2.0, "params": {"body_angle_z": -0.15, "body_angle_y": -0.1, "arm_angle_l": 0.15, "arm_angle_r": 0.15, "head_angle_x": 0.05}},
+        {"type": "clear", "duration": 1.0},
+    ],
+    "blink_quick": [
+        {"type": "blink", "times": 1, "interval": 0.15},
+        {"type": "blink", "times": 1, "interval": 0.15},
+        {"type": "clear", "duration": 0.3},
+    ],
 }
 
 # ── Sprite 帧映射 ──
@@ -213,6 +238,12 @@ SPRITE_PRESET_MAP: dict[str, Optional[str]] = {
     "giggle": "giggle",
     "sneeze": "sneeze",
     "stretch_yawn": "stretch",
+    # 身体动作（参数驱动）
+    "stretch": "stretch",
+    "dance": "dance",
+    "sit": "sit",
+    "lie": "lie",
+    "blink_quick": None,
 }
 
 
