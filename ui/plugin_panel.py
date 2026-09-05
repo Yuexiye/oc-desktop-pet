@@ -1,5 +1,7 @@
 """插件面板 - 浏览 Hanako 插件 + 快捷调用
 
+UI重构: 继承 PanelWindow 基类，统一标题栏、刷新按钮、关闭按钮
+
 扫描 ~/.hanako/plugins/ 目录，列出所有已安装插件及其工具。
 用户可以从桌宠右键菜单 -> "🔌 插件" 打开。
 
@@ -13,15 +15,15 @@ import logging
 from pathlib import Path
 
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem,
+    QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem,
     QPushButton, QLabel, QLineEdit, QHeaderView, QSplitter, QTextEdit,
-    QFrame, QApplication, QWidget
+    QWidget
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 
 from ui.theme import get_default, rgb, rgba, THEME_COLORS
-from ui.theme.design_system import apply_glass_shadow
+from ui.panel_window import PanelWindow
 
 logger = logging.getLogger(__name__)
 
@@ -64,96 +66,64 @@ QPushButton:disabled {{ background: rgb({rgb(theme, 'btn_disabled_bg')}); color:
 """
 
 
-class PluginPanel(QDialog):
-    """插件浏览面板"""
+class PluginPanel(PanelWindow):
+    """插件浏览面板
+    
+    继承 PanelWindow，统一标题栏、刷新按钮、关闭按钮。
+    """
 
     def __init__(self, on_send_command=None, parent=None):
-        super().__init__(parent)
+        super().__init__("插件", parent, show_refresh=True, min_size=(560, 480), max_size=(800, 800))
         self._on_send = on_send_command or (lambda text: None)
-        self.setWindowTitle("插件")
-        self.setMinimumSize(560, 480)
-        mgr = get_default()
-        self._ui_theme = mgr.current if mgr else "dark"
-
-        # 玻璃卡：无边框 + 透明窗 + 居中玻璃容器 + 软阴影
-        # P7: 显式 Qt.Window 标记顶级窗口（防止挂在特殊 parent 下不显示）
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Window)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setWindowOpacity(1.0)
-        self.setStyleSheet(_build_style(self._ui_theme))
-        if mgr is not None:
-            mgr.theme_changed.connect(self.set_theme)
-
-        # 外层透明布局（承载玻璃卡）
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-
-        self._card = QFrame(self)
-        self._card.setObjectName("glassPanel")
-        apply_glass_shadow(self._card, self._ui_theme)
-        outer.addWidget(self._card)
-
-        card_layout = QVBoxLayout(self._card)
-        card_layout.setContentsMargins(16, 14, 16, 16)
-        card_layout.setSpacing(8)
-
-        # ── 头部（拖动 + 标题 + 关闭） ──
-        self._header = QWidget(self._card)
-        hbox = QHBoxLayout(self._header)
-        hbox.setContentsMargins(4, 2, 4, 2)
-        title = QLabel("🔌 插件")
-        title.setFont(QFont("Microsoft YaHei UI", 13, QFont.Bold))
-        hbox.addWidget(title)
-        hbox.addStretch(1)
-        self._close = QPushButton("×")
-        self._close.setFixedSize(28, 28)
-        self._close.setFont(QFont("Microsoft YaHei UI", 13))
-        self._close.clicked.connect(self.reject)
-        hbox.addWidget(self._close)
-        card_layout.addWidget(self._header)
-
-        # ── 搜索 ──
+        
+        # 填充内容区域
+        self._build_content()
+        
+        # 加载数据
+        self._plugins = self._scan_plugins()
+        self._populate_tree()
+        
+        # 刷新按钮连接
+        self.refresh_requested.connect(self.refresh)
+    
+    def _build_content(self):
+        """构建内容区域（搜索 + 列表 + 详情 + 指令输入）"""
+        # 搜索
         search_row = QHBoxLayout()
         self._search = QLineEdit()
         self._search.setPlaceholderText("搜索插件...")
         self._search.textChanged.connect(self._filter)
         search_row.addWidget(self._search)
-        card_layout.addLayout(search_row)
-
-        # ── 插件列表 ──
+        self.content_layout.addLayout(search_row)
+        
+        # 插件列表
         self._tree = QTreeWidget()
         self._tree.setHeaderLabels(["插件", "工具数", "描述"])
         self._tree.header().resizeSection(0, 160)
         self._tree.header().resizeSection(1, 60)
         self._tree.header().setSectionResizeMode(2, QHeaderView.Stretch)
         self._tree.itemClicked.connect(self._on_select)
-        card_layout.addWidget(self._tree, stretch=1)
-
-        # ── 详情 ──
+        self.content_layout.addWidget(self._tree, stretch=1)
+        
+        # 详情
         self._detail = QTextEdit()
         self._detail.setReadOnly(True)
         self._detail.setMaximumHeight(120)
-        card_layout.addWidget(self._detail)
-
-        # ── 指令输入 ──
+        self.content_layout.addWidget(self._detail)
+        
+        # 指令输入
         cmd_row = QHBoxLayout()
         self._cmd_input = QLineEdit()
         self._cmd_input.setPlaceholderText("输入指令让桌宠调用插件（如：播放一首音乐）")
         self._cmd_input.returnPressed.connect(self._send_command)
         cmd_row.addWidget(self._cmd_input)
-
+        
         send_btn = QPushButton("发送")
         send_btn.setObjectName("send")
         send_btn.clicked.connect(self._send_command)
         cmd_row.addWidget(send_btn)
-
-        card_layout.addLayout(cmd_row)
-
-        # 加载数据
-        self._plugins = self._scan_plugins()
-        self._populate_tree()
-        self._center_on_screen()
+        
+        self.content_layout.addLayout(cmd_row)
 
     def set_theme(self, theme: str):
         """主题切换 — 由 ThemeManager.theme_changed 信号触发"""
