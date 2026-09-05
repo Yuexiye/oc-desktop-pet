@@ -1,83 +1,50 @@
-"""桌宠总览面板 — 多宠物并行时的统一控制入口"""
+"""桌宠总览面板 — 多宠物并行时的统一控制入口
+
+UI重构: 继承 PanelWindow 基类，统一标题栏、刷新按钮、关闭按钮
+"""
 from __future__ import annotations
 
 import logging
 
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QWidget,
+    QVBoxLayout, QHBoxLayout, QWidget,
     QPushButton, QLabel, QFrame,
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 
 from ui.theme import get_default, rgb, rgba
-from ui.theme.design_system import apply_glass_shadow
+from ui.panel_window import PanelWindow
 
 logger = logging.getLogger(__name__)
 
 
-class PetOverviewDialog(QDialog):
+class PetOverviewDialog(PanelWindow):
     """多桌宠总览面板。
 
-    界面要点（对齐项目风格）：
-    - 玻璃卡风格：透明窗 + QFrame 玻璃容器 + 软阴影
-    - 颜色走 ui/theme/palette 的 rgb(theme, key) 接口
+    继承 PanelWindow，统一标题栏、刷新按钮、关闭按钮。
+    
+    界面要点：
     - 每行一个 agent：左 agent_id + 状态徽标，右 4 个操作按钮
-    - 底部：全部隐藏 / 全部显示 + 关闭
+    - 底部：全部隐藏 / 全部显示
     """
 
     def __init__(self, overview_api, parent=None):
-        super().__init__(parent)
+        super().__init__("桌宠总览", parent, show_refresh=True, min_size=(360, 400), max_size=(520, 720))
         self._api = overview_api
-
-        mgr = get_default()
-        self._ui_theme = mgr.current if mgr else "dark"
-        if mgr is not None:
-            mgr.theme_changed.connect(self._on_theme_changed)
-
-        # 窗口外观
-        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setWindowTitle("桌宠总览")
-        self.setMinimumWidth(360)
-        self.setMaximumWidth(520)
-        self.setStyleSheet(self._build_qss())
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        # ── 玻璃卡 ──
-        self._card = QFrame(self)
-        self._card.setObjectName("glassPanel")
-        apply_glass_shadow(self._card, self._ui_theme)
-        layout.addWidget(self._card)
-
-        card_layout = QVBoxLayout(self._card)
-        card_layout.setContentsMargins(14, 12, 14, 14)
-        card_layout.setSpacing(8)
-
-        # ── 头部 ──
-        header = QHBoxLayout()
-        title = QLabel("桌宠总览")
-        title.setFont(QFont("Microsoft YaHei UI", 13, QFont.Bold))
-        header.addWidget(title)
-        header.addStretch(1)
-
-        refresh_btn = QPushButton("⟳ 刷新")
-        refresh_btn.setFixedSize(68, 26)
-        refresh_btn.clicked.connect(self.refresh)
-        refresh_btn.setStyleSheet(self._btn_style("refresh"))
-        header.addWidget(refresh_btn)
-
-        close_btn = QPushButton("×")
-        close_btn.setFixedSize(28, 28)
-        close_btn.clicked.connect(self.reject)
-        close_btn.setStyleSheet(self._btn_style("close"))
-        header.addWidget(close_btn)
-        card_layout.addLayout(header)
-
-        # ── 列表区域（带滚动）──
+        self._row_widgets: list[QWidget] = []
+        
+        # 填充内容区域
+        self._build_content()
+        
+        # 添加底部区域
+        self._build_footer()
+        
+        self.refresh()
+    
+    def _build_content(self):
+        """构建内容区域（列表）"""
+        # 列表区域（带滚动）
         self._list_frame = QFrame()
         self._list_frame.setObjectName("listFrame")
         self._list_frame.setStyleSheet(
@@ -88,35 +55,28 @@ class PetOverviewDialog(QDialog):
         self._list_layout = QVBoxLayout(self._list_frame)
         self._list_layout.setContentsMargins(6, 6, 6, 6)
         self._list_layout.setSpacing(4)
-        card_layout.addWidget(self._list_frame, stretch=1)
-
-        # ── 底部 ──
+        self.content_layout.addWidget(self._list_frame, stretch=1)
+    
+    def _build_footer(self):
+        """构建底部区域（全部隐藏/显示按钮）"""
         bottom = QHBoxLayout()
         bottom.setSpacing(8)
-
+        
         hide_all_btn = QPushButton("👁‍🗨 全部隐藏")
         hide_all_btn.clicked.connect(self._on_hide_all)
         hide_all_btn.setStyleSheet(self._btn_style("primary"))
         bottom.addWidget(hide_all_btn)
-
+        
         show_all_btn = QPushButton("👁 全部显示")
         show_all_btn.clicked.connect(self._on_show_all)
         show_all_btn.setStyleSheet(self._btn_style("primary"))
         bottom.addWidget(show_all_btn)
-
+        
         bottom.addStretch(1)
-
-        done_btn = QPushButton("关闭")
-        done_btn.setObjectName("done")
-        done_btn.setFixedWidth(72)
-        done_btn.clicked.connect(self.reject)
-        done_btn.setStyleSheet(self._btn_style("primary"))
-        bottom.addWidget(done_btn)
-
-        card_layout.addLayout(bottom)
-
-        self._row_widgets: list[QWidget] = []
-        self.refresh()
+        
+        footer_widget = QWidget()
+        footer_widget.setLayout(bottom)
+        self.add_footer(footer_widget)
 
     # ── 主题 ──
 
