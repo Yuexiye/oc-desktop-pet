@@ -16,14 +16,68 @@ _emote_seq_active / GESTURE_TIMEOUT 超时回 idle / b1f543c 非 idle 禁叠加�
     - 强制重置（force_reset）清除所有层，进入 3 秒防闪烁冷却
 
 线程安全：非线程安全；由 Live2DRenderer 在主线程 tick 中串行调用。
+
+动作过渡（easing）
+    Live2D 的 motion 切换默认硬切（StopAllMotions 后 StartMotion），视觉生硬。
+    mixer 层记录每次成功仲裁切换的「切换起始时间 + 前一活跃层」，配合
+    Live2DRenderer 里对 SetExpression/ProgramParam 的 weight ramp 实现
+    ~0.3s 的 easeOut 平滑过渡；motion 文件本身的 blend 目前受限于
+    live2d-py wrapper 未暴露 motion weight API，仍为硬切，但表情/参数层
+    已具备平滑基础（后续拿到 motion weight 接口可继续下沉）。
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from enum import IntEnum
-from typing import Optional
-
 import time as _time
+from dataclasses import dataclass
+from enum import IntEnum
+from typing import Optional, Callable
+
+
+# ── Easing 曲线（动作/表情过渡的缓动函数库）──
+#
+# 签名：(t: float in [0,1]) -> float in [0,1]。
+# 约定：t 为归一化时间（0=切换起点、1=过渡结束），返回值作为新旧状态的插值系数。
+# Live2DRenderer 在每帧 tick 中用 get_transition() 拿 t，再调下面任一曲线得到 w，
+# 用 w 做 SetExpression 权重/参数目标值插值，实现 0.3s 平滑过渡。
+
+def linear(t: float) -> float:
+    """线性：无缓动（保留给调试或强制硬过渡）。"""
+    return max(0.0, min(1.0, t))
+
+
+def easeIn(t: float) -> float:
+    """easeIn (t*t)：慢启动、快收尾。动作加速起势用。"""
+    t = max(0.0, min(1.0, t))
+    return t * t
+
+
+def easeOut(t: float) -> float:
+    """easeOut (1-(1-t)^2)：快启动、慢收尾。动作/表情默认曲线——手感最自然。"""
+    t = max(0.0, min(1.0, t))
+    return 1.0 - (1.0 - t) * (1.0 - t)
+
+
+def easeInOut(t: float) -> float:
+    """easeInOut（抛物线两段拼接）：中点最大速度，对称柔滑。适合大幅度动作。"""
+    t = max(0.0, min(1.0, t))
+    if t < 0.5:
+        return 2.0 * t * t
+    return 1.0 - (-2.0 * t + 2.0) ** 2 / 2.0
+
+
+_EASINGS: dict[str, Callable[[float], float]] = {
+    "linear": linear,
+    "easeIn": easeIn,
+    "easeOut": easeOut,
+    "easeInOut": easeInOut,
+}
+
+
+def get_easing(name: str) -> Callable[[float], float]:
+    """按名称取缓动函数；未知名称回退到 easeOut（永不抛异常）。"""
+    if not isinstance(name, str):
+        return easeOut
+    return _EASINGS.get(name, easeOut)
 
 
 # ── 层优先级 ──
@@ -86,6 +140,10 @@ class MotionMixer:
 
     # 强制重置后的防闪烁冷却秒数（沿用 3be390a）
     RESET_COOLDOWN_S: float = 3.0
+    # 动作/表情切换的默认过渡时长（秒）。0 表示硬切（旧行为）。
+    TRANSITION_S: float = 0.3
+    # 默认缓动曲线（easeOut）：起手快、收势柔——符合「刚接上→自然放松」的动作语义。
+    DEFAULT_EASING: str = "easeOut"
 
     def __init__(self) -> None:
         self._requests: list[MotionRequest] = []
@@ -93,6 +151,17 @@ class MotionMixer:
         self._active_since: float = 0.0
         self._last_reset_at: float = 0.0
         self._next_id: int = 0
+        # 动作过渡状态（easing 基础设施）：
+        #   _transition_started_at: 最近一次成功切换的起始时刻（monotonic）
+        #   _transition_from:       切换前的活跃请求（None=首次/刚 reset）
+        #   _transition_duration_s: 过渡总时长（<=0 表示硬切）
+        #   _transition_easing:     缓动曲线名称
+        # 供 Live2DRenderer 每帧查询 _transition_progress() 得到 0~1 缓动值，
+        # 用于对 SetExpression/程序化参数做 weight ramp（motion 文件本身仍硬切）。
+        self._transition_started_at: float = 0.0
+        self._transition_from: Optional[MotionRequest] = None
+        self._transition_duration_s: float = self.TRANSITION_S
+        self._transition_easing: str = self.DEFAULT_EASING
 
     # ── 提交 ──
 
@@ -113,6 +182,10 @@ class MotionMixer:
             self._requests.append(req)
             self._active_idx = len(self._requests) - 1
             self._active_since = now
+            # 首次进入活跃：从「无」过渡到 req，也记录一个切换起点
+            # （Live2D 首次播放也应有淡入感；无前一状态时 duration 由 renderer 侧兜底）。
+            self._transition_started_at = now
+            self._transition_from = None
             return True
 
         current = self._active()
@@ -120,6 +193,7 @@ class MotionMixer:
             self._active_idx = len(self._requests)
             self._requests.append(req)
             self._active_since = now
+            self._record_transition(current, req, now)
             return True
 
         if req.layer < current.layer:
@@ -130,8 +204,16 @@ class MotionMixer:
             self._active_idx = len(self._requests)
             self._requests.append(req)
             self._active_since = now
+            self._record_transition(current, req, now)
             return True
         return False
+
+    def _record_transition(
+        self, from_req: MotionRequest, to_req: MotionRequest, now: float
+    ) -> None:
+        """记录一次成功的层切换（供 Live2DRenderer 查询 easing 进度）。"""
+        self._transition_started_at = now
+        self._transition_from = from_req
 
     # ── 查询 ──
 
@@ -182,6 +264,48 @@ class MotionMixer:
         self._active_idx = -1
         self._active_since = 0.0
         self._last_reset_at = _time.monotonic()
+        # 强制重置 = 立即结束任何进行中的过渡（视觉硬回到 idle）
+        self._transition_started_at = 0.0
+        self._transition_from = None
+
+    # ── 动作过渡（easing）查询 ──
+
+    def get_transition(self) -> Optional[tuple["MotionRequest", float]]:
+        """返回 (前一活跃请求, 缓动进度 0.0~1.0)。无过渡时返回 None。
+
+        - 首次从 idle 进入活跃时，前一请求为 None，进度会正常推进。
+        - force_reset 后清空过渡起点，返回 None。
+        - _transition_duration_s <= 0 时视为关闭平滑（返回 None）。
+        """
+        if self._transition_duration_s is None or self._transition_duration_s <= 0:
+            return None
+        if self._transition_started_at <= 0.0:
+            return None
+        elapsed = _time.monotonic() - self._transition_started_at
+        if elapsed < 0:
+            elapsed = 0.0
+        t = elapsed / self._transition_duration_s
+        if t >= 1.0:
+            return None  # 过渡结束
+        eased = self._evaluate_easing(min(t, 1.0))
+        return (self._transition_from, eased)
+
+    def is_transition_active(self) -> bool:
+        """是否仍处于过渡窗口内（用于诊断/日志）。"""
+        return self.get_transition() is not None
+
+    def _evaluate_easing(self, t: float) -> float:
+        """按 _transition_easing 计算缓动值。未知曲线回退到 easeOut。"""
+        return _EASINGS.get(self._transition_easing, _EASINGS["easeOut"])(t)
+
+    def set_transition_config(self, duration_s: float, easing: str) -> None:
+        """设置过渡时长与缓动曲线。duration<=0 关闭平滑；easing 未知回退 easeOut。"""
+        if not isinstance(duration_s, (int, float)) or duration_s < 0:
+            return
+        if not isinstance(easing, str) or easing not in _EASINGS:
+            return
+        self._transition_duration_s = float(duration_s)
+        self._transition_easing = easing
 
     def is_in_reset_cooldown(self) -> bool:
         """是否在强制重置后的防闪烁冷却期内。"""
