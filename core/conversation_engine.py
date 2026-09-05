@@ -965,20 +965,16 @@ class ConversationEngine:
             reply = "（嗯…让我缓一下）"
             emotion = "neutral"
 
-        # P0: 格式纠正反标记 — 检查 AI 回复是否带 emotion/action 标签
-        # 如果不带，Poke 一条纠正消息（但纠正消息本身带 [回复格式纠正] 标记，防死循环）
+        # P0: 格式纠正 — AI 回复缺少 emotion/action 标签时，内部补默认标签
+        # 不再 poke 纠正消息给 LLM（避免 LLM 把纠正消息当用户输入回复，造成来源混淆）
         if not self._is_correction_message(tagged_text):
             has_emotion_tag = "[emotion:" in reply
             has_action_tag = "[action:" in reply
             if not has_emotion_tag and not has_action_tag:
-                # AI 回复没带任何标签，发一条纠正消息
-                correction = (
-                    f"[回复格式纠正] 你刚才的回复没有带情绪标签。"
-                    f"请在回复末尾加上 [emotion:情绪名] 或 [action:{{\"gesture\":\"动作\",\"intensity\":0.7}}]"
-                )
-                logger.debug("格式纠正: AI 回复缺少标签")
-                # 使用 poke 而不是 send，避免打断当前对话
-                self.poke(correction, character=character, source="system")
+                # 内部补默认 emotion 标签，不上送 LLM
+                if not reply.strip().startswith("（嗯"):
+                    reply = reply.strip() + " [emotion:neutral]"
+                    logger.debug("格式纠正: 内部补充 emotion:neutral 标签")
 
         # P1：LLM 调用后检查——若已打断（代际过期），不再继续 TTS/回调
         if self._is_stale(gen):

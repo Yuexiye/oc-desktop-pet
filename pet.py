@@ -2169,7 +2169,7 @@ class PetWindow(AudioMixin, AnimationMixin, InteractionMixin, ChatMixin, Behavio
         from PySide6.QtGui import QKeySequence
         
         # 加载快捷键配置
-        shortcuts_cfg = self._config.get("shortcuts", {})
+        shortcuts_cfg = self.config.get("shortcuts", {})
         shortcuts_enabled = shortcuts_cfg.get("enabled", True)
         shortcuts_keys = shortcuts_cfg.get("keys", {})
         

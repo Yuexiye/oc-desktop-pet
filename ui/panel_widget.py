@@ -173,7 +173,7 @@ class PanelWidget(QWidget):
             }}
             
             #panelWidgetRefreshBtn:hover, #panelWidgetCloseBtn:hover {{
-                background: rgba({rgba(t, 'hover')});
+                background: rgba({rgba(t, 'card_hover')});
                 color: rgba({rgba(t, 'text_primary')});
             }}
             

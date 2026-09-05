@@ -331,6 +331,8 @@ class Live2DRenderer(AvatarRenderer):
         # 在 GESTURE_TIMEOUT 内若无新表情则自动 ResetExpressions——否则表情永远挂着，
         # 用户看到的"一直比心"就是这个（motion 有超时兜底，expression 之前没有）。
         self._expression_set_at: float = 0.0
+        self._expression_active: bool = False
+        self._last_expression: str = ""
 
     @property
     def available_actions(self) -> list[dict]:
