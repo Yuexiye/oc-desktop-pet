@@ -248,12 +248,13 @@ class Live2DRenderer(AvatarRenderer):
         self._offset_scale: tuple[float, float] = (0.0, 0.0)
 
         # 自动随机动作：miku 只有 idle 一个默认 motion 看着"一直比心"。【2026-08-20
-        # 用户反馈"表情不生动"】启动后随机周期（默认 30~80s）播 waving/happy/
+        # 用户反馈"表情不生动"】启动后随机周期（默认 15~45s）播 waving/happy/
         # thinking 等非 idle 动作，结束后回到 idle，每次 emotion 切换也触发一次新
         # 动作（让表情/动作同步变化）。开关由 enable_auto_motion 控制（默认开）。
+        # 2026-09-05 优化：缩短周期（原 30~80s → 15~45s），让动作更灵活自主。
         self._auto_motion_enabled: bool = True
-        self._auto_motion_min_s: float = 30.0
-        self._auto_motion_max_s: float = 80.0
+        self._auto_motion_min_s: float = 15.0
+        self._auto_motion_max_s: float = 45.0
         self._auto_motion_next_at: float = 0.0  # 0 表示 ready 后立刻算第一个随机值
 
         # 视线/朝向目标（draw 中平滑插值）
