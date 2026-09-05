@@ -29,7 +29,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QScrollArea,
+    QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from ui.panel_widget import PanelWidget
@@ -343,7 +343,7 @@ class CharacterCard(PanelWidget):
         self._stat_boxes: dict[str, tuple[QLabel, QLabel]] = {}
         
         # 填充内容区域
-        self._build_content()
+        self._build_ui()
         
         # 刷新按钮连接
         self.refresh_requested.connect(self.reload)

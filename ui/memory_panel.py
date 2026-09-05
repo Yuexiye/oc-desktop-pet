@@ -262,6 +262,7 @@ class MemoryPanel(PanelWidget):
                         min_size=(400, 520), max_size=(600, 800))
         self._agent_id = agent_id or "default"
         self._memory_dir = Path(memory_dir) if memory_dir else DEFAULT_MEMORY_DIR
+        self._theme = theme
         self._cards: list[MemoryCard] = []
         
         # 填充内容区域
