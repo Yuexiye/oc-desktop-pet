@@ -338,6 +338,7 @@ class CharacterCard(PanelWidget):
         self._memory_dir = Path(memory_dir) if memory_dir else DEFAULT_MEMORY_DIR
         self._characters_dir = Path(characters_dir) if characters_dir else DEFAULT_CHARACTERS_DIR
         self._hanako_home = Path(hanako_home) if hanako_home else DEFAULT_HANAKO_HOME
+        self._theme = theme
         self._profile: dict = {}
         self._stats: dict = {"events": 0, "scenes": 0, "facts": 0, "reflections": 0}
         self._stat_boxes: dict[str, tuple[QLabel, QLabel]] = {}

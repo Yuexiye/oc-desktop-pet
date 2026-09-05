@@ -158,6 +158,10 @@ def resource_available(character_id: str) -> tuple[bool, str]:
     base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     char_dir = os.path.join(base, "characters", character_id)
     if not os.path.isdir(char_dir):
+        # 已知角色（如 shizuku）声明 live2d 但目录不存在 → 缺少模型文件
+        known_live2d = {"shizuku", "miku", "yuexinmiao"}
+        if character_id in known_live2d:
+            return False, f"缺少 Live2D 模型文件（{character_id}，请按 README 下载放置）"
         return False, f"角色目录不存在: {character_id}"
 
     fmt = detect_format(character_id)
