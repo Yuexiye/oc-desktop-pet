@@ -1,5 +1,7 @@
 """记忆展示面板 — 事件 / 场景 / 事实 / 反思 四类卡片（P0-8 + P1-2/P1-3）
 
+UI重构: 继承 PanelWidget 基类，统一标题栏、刷新按钮、关闭按钮
+
 数据来源：``~/.oc-pet/memory/`` 真实文件（与 core 层同一目录约定）：
 - 事件：``<agent_id>_events.jsonl``（每行一个 JSON 事件）
 - 场景：``<agent_id>_scenes.json``（``{"scenes": [...]}``）
@@ -20,12 +22,13 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QLabel, QScrollArea,
 )
 
 from ui.memory_card import (
     KIND_EVENT, KIND_SCENE, KIND_FACT, KIND_REFLECTION, MemoryCard,
 )
+from ui.panel_widget import PanelWidget
 
 logger = logging.getLogger(__name__)
 
@@ -247,48 +250,34 @@ def read_memory_data(agent_id: str, memory_dir: str | Path | None = None) -> dic
 
 # ── 面板 ──
 
-class MemoryPanel(QWidget):
-    """记忆展示面板：三个分区（事件/场景/事实）+ 占位文案 + 刷新按钮。"""
+class MemoryPanel(PanelWidget):
+    """记忆展示面板：三个分区（事件/场景/事实）+ 占位文案 + 刷新按钮。
+    
+    继承 PanelWidget，统一标题栏、刷新按钮、关闭按钮。
+    """
 
     def __init__(self, agent_id: str = "default", memory_dir: str | Path | None = None,
                  theme: str = "light", parent: QWidget | None = None):
-        super().__init__(parent)
+        super().__init__("记忆", parent, show_refresh=True, show_close=True,
+                        min_size=(400, 520), max_size=(600, 800))
         self._agent_id = agent_id or "default"
         self._memory_dir = Path(memory_dir) if memory_dir else DEFAULT_MEMORY_DIR
-        self._theme = theme if theme in ("light", "dark") else "light"
         self._cards: list[MemoryCard] = []
-
-        self.setObjectName("memoryPanel")
-        self.setProperty("data-theme", self._theme)
-
-        self._build_ui()
-        self._apply_qss()
+        
+        # 填充内容区域
+        self._build_content()
+        
+        # 刷新按钮连接
+        self.refresh_requested.connect(self.reload)
+        
+        # 加载数据
         self.reload()
 
     # ── UI 构建 ──
 
-    def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-
-        header = QFrame(self)
-        header.setObjectName("memoryHeader")
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(14, 8, 14, 8)
-        header_layout.setSpacing(8)
-        self._title_label = QLabel(self._title_text(), header)
-        self._title_label.setObjectName("memoryTitle")
-        self._refresh_button = QPushButton("刷新", header)
-        self._refresh_button.setObjectName("headerButton")
-        self._refresh_button.setCursor(Qt.PointingHandCursor)
-        self._refresh_button.clicked.connect(self.reload)
-        header_layout.addWidget(self._title_label)
-        header_layout.addStretch(1)
-        header_layout.addWidget(self._refresh_button)
-        root.addWidget(header)
-
-        self._scroll = QScrollArea(self)
+    def _build_content(self) -> None:
+        """构建内容区域（滚动列表）"""
+        self._scroll = QScrollArea()
         self._scroll.setObjectName("memoryScroll")
         self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -299,25 +288,17 @@ class MemoryPanel(QWidget):
         self._list_layout.setSpacing(8)
         self._list_layout.addStretch(1)
         self._scroll.setWidget(container)
-        root.addWidget(self._scroll, stretch=1)
+        self.content_layout.addWidget(self._scroll, stretch=1)
 
     def _title_text(self) -> str:
         return f"记忆 · {self._agent_id}"
-
-    def _apply_qss(self) -> None:
-        try:
-            from ui.chat_panel import NEKO_QSS_PATH
-            if NEKO_QSS_PATH.exists():
-                self.setStyleSheet(NEKO_QSS_PATH.read_text(encoding="utf-8"))
-        except Exception as exc:
-            logger.warning("记忆面板样式应用失败: %s", exc)
 
     # ── 数据加载 ──
 
     def set_agent(self, agent_id: str) -> None:
         """切换数据源 agent 并刷新。"""
         self._agent_id = agent_id or "default"
-        self._title_label.setText(self._title_text())
+        self.set_title(self._title_text())
         self.reload()
 
     def reload(self) -> None:

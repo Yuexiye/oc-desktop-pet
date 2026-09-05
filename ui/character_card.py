@@ -1,5 +1,7 @@
 """角色卡展示面板 — N.E.K.O. 设计语言（P1-7）
 
+UI重构: 继承 PanelWidget 基类，统一标题栏、刷新按钮、关闭按钮
+
 展示当前桌宠角色的「档案卡」：
 - 头像：优先角色目录下的 avatar/portrait 图片（圆形裁切），否则首字渐变圆
 - 名字：pet.json ``name`` → identity.md 标题 → agent_id
@@ -27,8 +29,10 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QLabel, QScrollArea,
 )
+
+from ui.panel_widget import PanelWidget
 
 logger = logging.getLogger(__name__)
 
@@ -312,9 +316,11 @@ def _clear_layout(layout) -> None:
 
 # ── 面板 ─────────────────────────────────────────────────
 
-class CharacterCard(QWidget):
+class CharacterCard(PanelWidget):
     """角色卡展示面板：头像 / 名字 / 简介 / 性格标签 / 记忆统计。
-
+    
+    继承 PanelWidget，统一标题栏、刷新按钮、关闭按钮。
+    
     - ``set_agent(agent_id, character_id=None)`` 切换数据源并刷新
     - ``reload()`` 重新读取档案与记忆统计
     - ``set_theme("light"|"dark")`` 切换主题
@@ -325,23 +331,24 @@ class CharacterCard(QWidget):
                  characters_dir: str | Path | None = None,
                  hanako_home: str | Path | None = None,
                  theme: str = "light", parent: QWidget | None = None):
-        super().__init__(parent)
+        super().__init__("角色卡", parent, show_refresh=True, show_close=True,
+                        min_size=(360, 460), max_size=(600, 800))
         self._agent_id = (agent_id or "default").strip()
         self._character_id = (character_id or agent_id or "default").strip()
         self._memory_dir = Path(memory_dir) if memory_dir else DEFAULT_MEMORY_DIR
         self._characters_dir = Path(characters_dir) if characters_dir else DEFAULT_CHARACTERS_DIR
         self._hanako_home = Path(hanako_home) if hanako_home else DEFAULT_HANAKO_HOME
-        self._theme = theme if theme in ("light", "dark") else "light"
         self._profile: dict = {}
         self._stats: dict = {"events": 0, "scenes": 0, "facts": 0, "reflections": 0}
         self._stat_boxes: dict[str, tuple[QLabel, QLabel]] = {}
-
-        self.setObjectName("characterCard")
-        self.setProperty("data-theme", self._theme)
-
-        self._build_ui()
-        self._apply_qss()
-        self._connect_theme_manager()
+        
+        # 填充内容区域
+        self._build_content()
+        
+        # 刷新按钮连接
+        self.refresh_requested.connect(self.reload)
+        
+        # 加载数据
         self.reload()
 
     # ── UI 构建 ──
