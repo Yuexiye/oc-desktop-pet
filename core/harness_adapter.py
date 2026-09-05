@@ -87,6 +87,9 @@ class HanakoPetAdapter:
 
         # 构建 system prompt
         self._system_prompt = self._context.build_prompt()
+        
+        # UI优化: 注入桌宠视觉形象信息（让 AI 知道自己是桌宠）
+        self._system_prompt += self._build_appearance_prompt()
 
         # 会话历史(内存)——有界 deque(maxlen=40)：append 原子（GIL），
         # 消除原 list + 读改写裁剪（self._history = self._history[-40:]）在
@@ -760,7 +763,49 @@ class HanakoPetAdapter:
                 }
             })
         return tool_calls
-
+    
+    def _build_appearance_prompt(self) -> str:
+        """UI优化: 注入桌宠视觉形象信息，让 AI 知道自己是桌宠
+        
+        包含：
+        - 角色名称
+        - 模型类型（Live2D/精灵）
+        - 外观描述
+        - 能力说明
+        """
+        try:
+            # 获取角色配置
+            from pathlib import Path
+            char_dir = Path(__file__).parent.parent / "characters" / self._agent_id
+            
+            appearance_info = []
+            
+            # 1. 角色名称
+            appearance_info.append(f"【桌宠形象】你是桌宠「{self._agent_id}」。")
+            
+            # 2. 模型类型
+            if (char_dir / "live2d").exists():
+                appearance_info.append("- 模型类型：Live2D 动态模型")
+                appearance_info.append("- 你可以做出丰富的表情和动作")
+            elif (char_dir / "frames").exists():
+                appearance_info.append("- 模型类型：精灵图序列")
+                appearance_info.append("- 你可以做出基本的表情和动作")
+            
+            # 3. 能力说明
+            appearance_info.append("- 你可以看到用户的屏幕内容")
+            appearance_info.append("- 你可以在桌面上移动、被拖拽")
+            appearance_info.append("- 你可以弹出气泡说话、播放语音")
+            appearance_info.append("- 你可以做出各种动作（眨眼、挥手、跳跃等）")
+            
+            # 4. 提醒 AI 不要把自己当成普通 AI
+            appearance_info.append("- 注意：你是桌宠角色，不是普通聊天 AI。用角色的语气说话。")
+            appearance_info.append("- 当用户提到「动漫形象」「角色」「模型」时，你就是那个形象本身。")
+            
+            return "\n".join(appearance_info)
+        except Exception as e:
+            logger.debug("Failed to build appearance prompt: %s", e)
+            return ""
+    
     def _build_action_prompt(self) -> str:
         """构建动作列表 prompt（注入到 system prompt 输出规则）。
 
