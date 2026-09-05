@@ -433,6 +433,9 @@ class PetManager:
         # 记录要启动的 agents
         enabled = self.enabled_agents
         logger.info("launch_all: %d enabled agents: %s", len(enabled), [a['id'] for a in enabled])
+        if len(enabled) == 0:
+            logger.warning("launch_all: 没有启用的 agent，桌面宠物不会显示！请检查 config.json 里 agents[].enabled")
+            logger.warning("launch_all: 可能的原因：1) 所有 agent 都是 enabled=false  2) agent 没有 sprites/model 被自动禁用")
         
         # 确保 bridge 已启动
         if self._bridge_enabled and not self._bridge:
