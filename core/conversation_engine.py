@@ -1027,7 +1027,10 @@ class ConversationEngine:
         #  先显示文字（audio_path=""），TTS 完成后同文本再回调只会续期
         #  气泡时长并播放音频，不重复闪烁。）
         try:
-            _call_reply_cb(self.on_reply, reply, emotion, anim, "", action_intent)
+            # BugFix: 剥离 [emotion:xxx] 标签，回调时只显示纯文本
+            import re
+            clean_reply = re.sub(r'\s*\[\s*emotion\s*:\s*\w+\s*\]\s*', ' ', reply, flags=re.IGNORECASE).strip()
+            _call_reply_cb(self.on_reply, clean_reply, emotion, anim, "", action_intent)
         except Exception:
             pass
 

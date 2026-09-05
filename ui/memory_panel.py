@@ -22,7 +22,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QScrollArea,
+    QFrame, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from ui.memory_card import (
