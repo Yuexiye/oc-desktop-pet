@@ -21,6 +21,7 @@ def _setup_file_logging():
     """将完整日志同时写入 logs/oc_pet.log（UTF-8 滚动），便于回看。
 
     控制台照常输出；文件日志让完整运行记录可留存，出问题能直接翻文件。
+    日志级别从 config.json 读取（默认 INFO），支持 DEBUG/INFO/WARN。
     """
     try:
         from logging.handlers import RotatingFileHandler
@@ -30,13 +31,30 @@ def _setup_file_logging():
         fh = RotatingFileHandler(
             log_path, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8"
         )
-        fh.setLevel(logging.INFO)
+        # 日志级别：从 config.json 读取，默认 INFO
+        log_level = logging.INFO
+        try:
+            import json
+            config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+            if os.path.exists(config_path):
+                with open(config_path, encoding="utf-8") as f:
+                    config = json.load(f)
+                level_str = str(config.get("log_level", "INFO").upper())
+                if level_str == "DEBUG":
+                    log_level = logging.DEBUG
+                elif level_str == "WARN" or level_str == "WARNING":
+                    log_level = logging.WARNING
+        except Exception:
+            pass  # 配置读取失败，用默认 INFO
+        fh.setLevel(log_level)
         fh.setFormatter(logging.Formatter(
             '[%(asctime)s] [%(levelname)s] %(name)s: %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S',
         ))
         logging.getLogger().addHandler(fh)
-        logging.getLogger(__name__).info("日志文件：%s", log_path)
+        # 设置根日志级别
+        logging.getLogger().setLevel(log_level)
+        logging.getLogger(__name__).info("日志文件：%s（级别：%s）", log_path, logging.getLevelName(log_level))
     except Exception as _e:  # 日志文件不可用绝不影响主程序
         logging.getLogger(__name__).warning("无法初始化日志文件：%s", _e)
 
