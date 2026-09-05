@@ -66,7 +66,7 @@ class MimoTtsProvider(TTSProvider):
             logger.warning("MIMO TTS config missing (need base_url + api_key)")
 
     def synthesize(self, text: str, character_id: str = "", instruct: str = "",
-                   voice: str = "") -> Optional[str]:
+                   voice: str = "", emotion: str = "") -> Optional[str]:
         if not text or not text.strip() or not self._ready or self._auth_error:
             return None
 

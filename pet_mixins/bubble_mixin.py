@@ -55,10 +55,40 @@ class BubbleMixin:
         """气泡实现体（仅限主线程调用；相同内容不重复刷新，高优先级不被低优先级覆盖）
 
         duration_ms > 0 时覆盖默认时长（如缩放提示短气泡）。
+        
+        P2: 自动解析文本中的 [emotion:xxx] 和 [action:{...}] 标签，
+        解析后清除标签显示，并触发动作。
         """
         if not text or not hasattr(self, 'bubble'):
             return
-        # P0-2: 去重逻辑——2 秒内相同文本只打印一次日志
+        
+        # P2: 解析 [emotion:xxx] 和 [action:{...}] 标签
+        import re
+        import json
+        
+        # 解析 emotion 标签
+        m = re.search(r'\[emotion:([a-z_]+)\]', text, re.IGNORECASE)
+        if m:
+            emotion = m.group(1).lower()
+            text = re.sub(r'\[emotion:[a-z_]+\]', '', text).strip()
+        
+        # 解析 action 标签
+        m = re.search(r'\[action:(\{.*?\})\]', text, re.DOTALL)
+        if m:
+            try:
+                action_intent = json.loads(m.group(1))
+                text = re.sub(r'\[action:\{.*?\}\]', '', text, flags=re.DOTALL).strip()
+                # 触发动作
+                r = getattr(self, "_renderer", None)
+                if r is not None and hasattr(r, "apply_action_intent"):
+                    try:
+                        r.apply_action_intent(action_intent)
+                    except Exception as e:
+                        logger.debug("Action from bubble failed: %s", e)
+            except Exception:
+                pass
+        
+        # 原始逻辑
         now = time.time()
         if text == getattr(self, '_last_bubble_text', '') and (now - getattr(self, '_last_bubble_time', 0)) < 2.0:
             logger.debug("Bubble dedupe: same text within 2s, skipping log")
@@ -89,6 +119,42 @@ class BubbleMixin:
             self._bubble_timer.start(duration_ms if duration_ms > 0 else self._bubble_duration(text))
         except Exception:
             logger.exception("Show bubble failed")
+
+    def _show_bubble_stream(self, initial_text: str = "", emotion: str = "neutral", priority: int = 0):
+        """P1: 流式气泡开始 — 显示初始文本（空或"思考中"），准备接收后续 chunk"""
+        self._is_streaming_bubble = True
+        self._stream_bubble_emotion = emotion
+        self._stream_bubble_priority = priority
+        self._stream_bubble_text = initial_text
+        self._show_bubble_impl(initial_text or "…", emotion, priority)
+        
+    def _append_bubble_text(self, chunk: str):
+        """P1: 流式气泡追加 — 追加 chunk 到当前气泡，模拟打字机效果"""
+        if not hasattr(self, '_is_streaming_bubble') or not self._is_streaming_bubble:
+            return
+        self._stream_bubble_text += chunk
+        # 节流：每 50ms 最多刷新一次，避免频繁 set_text 卡顿
+        now = time.time()
+        if now - getattr(self, '_last_stream_update', 0) < 0.05:
+            return
+        self._last_stream_update = now
+        try:
+            self._bubble_message = self._stream_bubble_text
+            self.bubble.set_text(self._stream_bubble_text, bright=(self._stream_bubble_emotion == "happy"))
+            self._reposition_bubble()
+            self._bubble_timer.stop()  # 流式期间不自动隐藏
+        except Exception:
+            logger.debug("Append bubble text failed: %s", chunk[:20])
+    
+    def _finish_bubble_stream(self):
+        """P1: 流式气泡结束 — 停止追加，恢复自动隐藏计时器"""
+        if not hasattr(self, '_is_streaming_bubble') or not self._is_streaming_bubble:
+            return
+        self._is_streaming_bubble = False
+        if self._stream_bubble_text:
+            duration = self._bubble_duration(self._stream_bubble_text)
+            self._bubble_timer.start(duration)
+            logger.debug("Stream bubble finished: %d chars", len(self._stream_bubble_text))
 
     # ── 右键菜单 ──
 
@@ -200,8 +266,8 @@ class BubbleMixin:
         try:
             if state == "idle":
                 renderer = getattr(self, "_renderer", None)
-                if renderer is not None and hasattr(renderer, "_force_idle"):
-                    renderer._force_idle()
+                if renderer is not None and hasattr(renderer, "force_idle"):
+                    renderer.force_idle()
                 self._current_anim = "idle"
             else:
                 # P2-9: emotion 为 neutral 时，即使 anim==_current_anim 也要显式清渲染器表情

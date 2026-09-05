@@ -33,7 +33,7 @@ class TTSProvider(ABC):
 
     @abstractmethod
     def synthesize(self, text: str, character_id: str = "", instruct: str = "",
-                   voice: str = "") -> Optional[str]:
+                   voice: str = "", emotion: str = "") -> Optional[str]:
         """合成语音
 
         Args:
@@ -41,6 +41,7 @@ class TTSProvider(ABC):
             character_id: 角色 ID（用于音色选择）
             instruct: 情感指令（如"开心"、"温柔"）
             voice: 音色名（P2-7 可选覆盖；空 = 使用 provider 默认音色）
+            emotion: 情绪标签（P0 情感 TTS 参数，如 happy/sad/angry 等）
 
         Returns:
             音频文件路径，失败返回 None

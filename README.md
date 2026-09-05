@@ -7,12 +7,13 @@
 
 本项目**不随仓库分发任何 Live2D 模型文件**（`characters/*/live2d/` 已在 `.gitignore` 中排除）。
 
-- 内置角色「月薪喵」使用**帧精灵素材**（`frames/`），可随项目分发。
 - 内置 **Shizuku** 角色包（Live2D 默认模型，骨架含 pet.json + 下载说明）——模型本体不随仓库分发，按 `characters/shizuku/README.md` 下载官方 Cubism SDK 示例模型即可开箱使用。
 - Live2D 渲染器代码完整保留，但**模型需用户自行提供**——请使用有分发许可的模型（如 [Live2D 官方示例](https://www.live2d.com/en/learn/sample/)），或运行 `python tools/fetch_free_live2d_sample.py` 下载官方 Haru 示例模型。
 - 请勿将无再分发许可的模型（如游戏提取模型）放入仓库。
 
-> **占位角色（需自备模型）**：`miku` 与 `shizuku` 是**占位角色**——仓库仅含 `pet.json` 与 `README.md`，**不含任何模型素材**。切换前请先按对应角色目录的 `README.md` 自行下载/放置模型文件；**缺少模型时桌宠会提示「需下载模型」且不会加载**（不会白屏或崩溃）。默认桌宠为内置精灵图 **月薪喵 (yuexinmiao)**，开箱即用，无需额外下载。
+> **占位角色（需自备模型）**：`miku` 与 `shizuku` 是**占位角色**——仓库仅含 `pet.json` 与 `README.md`，**不含任何模型素材**。切换前请先按对应角色目录的 `README.md` 自行下载/放置模型文件；**缺少模型时桌宠会提示「需下载模型」且不会加载**（不会白屏或崩溃）。
+>
+> **无默认角色**：首次启动由引导流程选择角色包；仓库不含内置精灵图角色。
 
 
 基于 PySide6 的 AI 桌面伴侣，深度集成 Hanako 生态。支持多桌宠并行运行，每个 Hanako agent 可独立拥有一个桌宠窗口。
@@ -157,8 +158,8 @@ python main.py
 
 或双击 `start_pet.bat`。
 
-首次运行默认桌宠为精灵图 **月薪喵 (yuexinmiao)**。内置 **Shizuku**（Live2D 默认模型角色包）：
-按 `characters/shizuku/README.md` 下载官方模型后，把 config.json 的 `character` 改为 `shizuku` 即切换为 Live2D 桌宠（默认角色可直接改这里）。
+首次启动由引导流程选择角色包。内置 **Shizuku**（Live2D 角色包）：
+按 `characters/shizuku/README.md` 下载官方模型后，把 config.json 的 `character` 改为 `shizuku` 即切换为 Live2D 桌宠。
 
 ## 本地 CosyVoice TTS 部署（从零）
 
@@ -317,7 +318,7 @@ LINJIAN_TOKEN=your-linjian-token
 
 ```
 PetManager（多桌宠管理器）
-  ├─ PetWindow[yuexinmiao] ── ConversationEngine ── HanakoPetAdapter (LLM)
+  ├─ PetWindow[<character>] ── ConversationEngine ── HanakoPetAdapter (LLM)
   │    ├─ SpriteRenderer (精灵渲染)
   │    ├─ MouseTracker (鼠标交互)
   │    ├─ PerceptionController (感知)
@@ -373,8 +374,9 @@ oc-pet/
 ├── tts_provider/           # TTS 引擎
 ├── asr_provider/           # ASR 引擎
 ├── characters/             # 内置角色
-│   ├── yuexinmiao/             # 月薪喵（默认，精灵图）
-│   └── shizuku/                # Shizuku（默认 Live2D，模型按 README 下载）
+│   ├── miku/                 # Miku（占位，模型自备）
+│   ├── shizuku/              # Shizuku（默认 Live2D，模型按 README 下载）
+│   └── sample_live2d/        # 免费示例模型（Haru 等）
 └── requirements.txt        # 依赖列表
 ```
 
@@ -394,6 +396,18 @@ A: 在设置面板的"角色包"中添加，或在 `~/.hanako/agents/` 下创建
 
 ### Q: ntfy 通知怎么用？
 A: 1) 手机安装 ntfy app（Android/iOS）；2) 订阅一个 topic；3) 在 `.env` 中配置 `NTFY_TOPIC=your-topic`。
+
+## 致谢与参考来源
+
+本项目在架构设计与技术方案上参考了以下开源项目：
+
+- **[Code-Amadeus / Amadeus](https://github.com/Code-Amadeus/Amadeus)** — 实时多模态桌面 Agent。oc-pet 的 Live2D 渲染架构、HUD 设计语言、情感驱动参数体系均以此为参照。
+- **[Soullink Emotion SDK](https://github.com/nanlingyin/soullink-emotion-sdk)** — TypeScript / MIT。Embody 层（情绪→参数映射抽象）的设计思想来源，未集成 SDK 本体，以 Python 独立重写。
+- **[Live2D CubismWebSamples](https://github.com/Live2D/CubismWebSamples)** — Live2D 官方免费示例模型（Haru / Hiyori 等），可直接下载使用。
+- **[Hanako](https://github.com/liliMozi/openhanako)** — AI 助手框架。桌宠的对话、记忆、工具调用、多助手协作均复用 Hanako 配置。
+- **[N.E.K.O.](https://github.com/Project-N-E-K.O/N.E.K.O)** — Apache 2.0。主动对话决策管线、情绪状态机设计语言等参考来源。
+
+感谢以上项目的开源贡献。
 
 ## 许可
 

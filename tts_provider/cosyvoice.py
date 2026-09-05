@@ -488,7 +488,7 @@ class CosyVoiceProvider(TTSProvider):
         return {}, "default"
 
     def synthesize(self, text: str, character_id: str = "", instruct: str = "",
-                   voice: str = "") -> Optional[str]:
+                   voice: str = "", emotion: str = "") -> Optional[str]:
         if not text or not text.strip():
             return None
 

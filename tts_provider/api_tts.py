@@ -51,7 +51,7 @@ class ApiTtsProvider(TTSProvider):
             logger.warning("API TTS config missing (need base_url + api_key in data/api_config.json)")
 
     def synthesize(self, text: str, character_id: str = "", instruct: str = "",
-                   voice: str = "") -> Optional[str]:
+                   voice: str = "", emotion: str = "") -> Optional[str]:
         if not text or not text.strip() or not self._ready:
             return None
 

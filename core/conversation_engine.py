@@ -69,7 +69,48 @@ class ConversationEngine:
     """对话引擎 - LLM + TTS 一体化，后台线程处理
 
     生命周期：随 pet 启动而启动，随 pet 关闭而关闭。
+    
+    P2: 事件总线驱动，消息处理、流式解析、TTS 通过事件通信。
     """
+
+    # ── 事件类型 ──
+    EVT_MESSAGE_RECEIVED = "message_received"  # 消息入队
+    EVT_LLM_START = "llm_start"  # LLM 开始调用
+    EVT_LLM_CHUNK = "llm_chunk"  # LLM 流式 chunk
+    EVT_LLM_COMPLETE = "llm_complete"  # LLM 完成
+    EVT_TTS_START = "tts_start"  # TTS 开始合成
+    EVT_TTS_COMPLETE = "tts_complete"  # TTS 完成
+    EVT_REPLY = "reply"  # 回复（气泡）
+    EVT_TOOL_CALL = "tool_call"  # 工具调用
+    EVT_ERROR = "error"  # 错误
+
+    # ── 事件处理器（类级别，所有实例共享）──
+    _handlers: dict[str, list] = None
+
+    @classmethod
+    def on(cls, event_type: str, callback: callable):
+        """P2: 注册事件处理器"""
+        if cls._handlers is None:
+            cls._handlers = {}
+        if event_type not in cls._handlers:
+            cls._handlers[event_type] = []
+        cls._handlers[event_type].append(callback)
+
+    @classmethod
+    def off(cls, event_type: str, callback: callable):
+        """P2: 移除事件处理器"""
+        if cls._handlers and event_type in cls._handlers:
+            cls._handlers[event_type].remove(callback)
+
+    @classmethod
+    def emit(cls, event_type: str, **kwargs):
+        """P2: 触发事件（通知所有处理器）"""
+        if cls._handlers and event_type in cls._handlers:
+            for callback in cls._handlers[event_type]:
+                try:
+                    callback(**kwargs)
+                except Exception as e:
+                    logger.debug("事件处理器异常 [%s]: %s", event_type, e)
 
     def __init__(self, character_id: str = "yuexinmiao", perception: PerceptionController = None, tts_provider=None, builtin: bool = False, session_manager=None, agent_id: str = None):
         self._character_id = character_id
@@ -88,6 +129,17 @@ class ConversationEngine:
         self._queue: "collections.deque[dict]" = collections.deque(maxlen=200)
         self._lock = threading.Lock()
         self._running = False
+
+        # ── P0: Poke 系统耳语缓存（去重 + 防抖 500ms）──
+        self._poke_cache: list[dict] = []
+        self._poke_timer: threading.Thread | None = None
+
+        # ── P2: 生命周期钩子（OnAwake/Start/Update/Destroy）──
+        self._on_awake: callable | None = None  # 初始化后、start() 前
+        self._on_start: callable | None = None  # start() 开始时
+        self._on_update: callable | None = None  # 每次消息处理时（心跳）
+        self._on_destroy: callable | None = None  # stop() 时
+        self._last_update_time: float = 0.0  # 上次 update 时间（防频繁调用）
 
         # ── P1 打断状态机：消息代际（generation）机制 ──
         # 每次 send/interrupt 递增 generation，消息处理时校验代际是否过期：
@@ -112,6 +164,8 @@ class ConversationEngine:
         self._tts_in_use = 0
         # P2-7: 语音音色解析器（由 PetWindow 注入）：(agent_id, emotion) -> voice。
         # 返回空字符串表示使用 provider 默认音色（向后兼容，未配置时行为不变）。
+        # P2: 情绪历史追踪（最近 100 次对话情绪分布统计）
+        self._emotion_history: collections.deque = collections.deque(maxlen=100)
         self._voice_resolver = None
         # B2: 工具进度节流（参考小蕾米插件日志节流）——同 工具+phase 在窗口内合并
         self._tool_progress_throttle: dict[str, float] = {}
@@ -148,6 +202,8 @@ class ConversationEngine:
         self.on_status: callable = lambda msg: None  # 状态提示
         self.on_progress: callable = lambda msg: None  # 长任务进度提示
         self.on_tts_ready: callable = lambda: None  # TTS 加载完成
+        # P1: 流式 chunk 回调（边生成边显示气泡）
+        self.on_llm_chunk: callable = lambda chunk, accumulated, emotion, gen: None
         # M4: 工具进度回调（Hanako WS 模式下，工具调用由服务端执行，这里只展示进度）
         # 参数: tool_name, phase ("start"/"progress"/"end"), display_text, success
         self.on_tool_progress: callable = lambda tool_name, phase, display_text, success: None
@@ -228,7 +284,21 @@ class ConversationEngine:
 
     def start(self):
         """启动引擎（后台线程）"""
+        # P2: 触发 OnAwake（初始化后、start 前）
+        if self._on_awake:
+            try:
+                self._on_awake()
+            except Exception as e:
+                logger.debug("OnAwake 钩子异常: %s", e)
+        
         self._running = True
+        
+        # P2: 触发 OnStart（start 开始时）
+        if self._on_start:
+            try:
+                self._on_start()
+            except Exception as e:
+                logger.debug("OnStart 钩子异常: %s", e)
         # P0-1: 记录主线程 ID，用于线程安全回调
         from PySide6.QtCore import QThread
         self._main_thread = QThread.currentThread()
@@ -337,6 +407,14 @@ class ConversationEngine:
     def stop(self):
         """停止引擎"""
         self._running = False
+        
+        # P2: 触发 OnDestroy（stop 时）
+        if self._on_destroy:
+            try:
+                self._on_destroy()
+            except Exception as e:
+                logger.debug("OnDestroy 钩子异常: %s", e)
+        
         # P0-1: 清理派发器
         if hasattr(self, '_dispatcher') and self._dispatcher is not None:
             try:
@@ -423,6 +501,102 @@ class ConversationEngine:
                 self._queue.appendleft(item)
             else:
                 self._queue.append(item)
+            
+            # P2: 触发消息入队事件
+            self.emit(self.EVT_MESSAGE_RECEIVED, text=text, character=character, source=source, gen=self._generation)
+
+    def poke(self, text: str, character: str = "", source: str = "system"):
+        """P0: 系统耳语 — 去重 + 防抖 500ms，空闲时才合并发送。
+
+        用于结果回传、状态提示等非对话消息。与 send() 的区别：
+        - 不推进代际（不打断当前对话）
+        - 500ms 防抖合并（多条 poke 合并为一条）
+        - 去重（相同文本不重复发送）
+        - 空闲时才发送（不占用 LLM 队列）
+
+        借鉴 Alife 的 Interactor.Poke 机制。
+        """
+        if not text or not text.strip():
+            return
+        with self._lock:
+            # 去重：相同文本已在缓存中则跳过
+            if any(m.get("text") == text for m in self._poke_cache):
+                return
+            self._poke_cache.append({
+                "text": text,
+                "character": character or self._character_id,
+                "time": time.time(),
+                "source": source,
+            })
+            # 防抖：500ms 后合并发送
+            if self._poke_timer is None or not self._poke_timer.is_alive():
+                self._poke_timer = threading.Thread(
+                    target=self._flush_poke, daemon=True, name="poke-flush"
+                )
+                self._poke_timer.start()
+
+    def _flush_poke(self):
+        """P0: 合并发送缓存的 poke 消息（500ms 防抖后调用）"""
+        time.sleep(0.5)
+        with self._lock:
+            if not self._poke_cache:
+                return
+            texts = [m["text"] for m in self._poke_cache]
+            self._poke_cache.clear()
+        # 合并为一条消息，带来源标记
+        merged = "\n".join(f"[系统推送] {t}" for t in texts)
+        self.send(merged, source="system")
+
+    def _is_correction_message(self, text: str) -> bool:
+        """P0: 检查消息是否为格式纠正消息（防死循环）"""
+        return "[回复格式纠正]" in text
+    
+    def _record_emotion(self, emotion: str) -> None:
+        """P2: 记录情绪到历史（用于分布统计）"""
+        if emotion:
+            # 延迟初始化（测试可能用 object.__new__ 跳过 __init__）
+            if not hasattr(self, '_emotion_history'):
+                import collections
+                self._emotion_history = collections.deque(maxlen=100)
+            self._emotion_history.append(emotion)
+    
+    def get_emotion_distribution(self, last_n: int = 100) -> dict:
+        """P2: 获取最近 N 次对话的情绪分布
+        
+        Returns:
+            {emotion: count} 字典，按 count 降序排列
+        """
+        from collections import Counter
+        recent = list(self._emotion_history)[-last_n:]
+        if not recent:
+            return {}
+        counter = Counter(recent)
+        # 按 count 降序排列
+        return dict(counter.most_common())
+    
+    def get_emotion_stats(self) -> dict:
+        """P2: 获取情绪统计摘要（供 UI 显示）
+        
+        Returns:
+            {
+                "total": 100,
+                "distribution": {"happy": 30, "sad": 20, ...},
+                "percentages": {"happy": "30%", "sad": "20%", ...},
+                "dominant": "happy",
+            }
+        """
+        dist = self.get_emotion_distribution()
+        total = sum(dist.values())
+        if total == 0:
+            return {"total": 0, "distribution": {}, "percentages": {}, "dominant": None}
+        percentages = {k: f"{v * 100 // total}%" for k, v in dist.items()}
+        dominant = max(dist, key=dist.get) if dist else None
+        return {
+            "total": total,
+            "distribution": dist,
+            "percentages": percentages,
+            "dominant": dominant,
+        }
 
     def interrupt(self, reason: str = "user_interrupt") -> str:
         """主动打断当前对话（用户点停止 / 语音输入开始 / 发新消息）。
@@ -553,6 +727,15 @@ class ConversationEngine:
                         msg = self._queue.popleft()
 
                 if msg:
+                    # P2: 触发 OnUpdate（每次消息处理时，限频 1 秒）
+                    now = time.time()
+                    if self._on_update and (now - self._last_update_time) >= 1.0:
+                        try:
+                            self._on_update()
+                            self._last_update_time = now
+                        except Exception as e:
+                            logger.debug("OnUpdate 钩子异常: %s", e)
+                    
                     self._process_message(msg)
                 else:
                     time.sleep(0.2)
@@ -585,12 +768,82 @@ class ConversationEngine:
         with self._lock:
             return gen < self._generation
 
+    def _chat_stream_wrapper(self, message: str, extra_context: str, source: str, gen: int) -> tuple:
+        """P2: 流式调用包装器 — 边生成边解析 emotion/action。
+
+        调用 adapter.chat_stream() 收集 chunks，同时解析标签。
+        返回 (完整回复, emotion) 供后续逻辑使用。
+
+        优势：
+        - 用户更早看到气泡（边生成边显示）
+        - 情绪/动作在生成过程中就能触发（不用等完整回复）
+        """
+        accumulated = ""
+        emotion = "neutral"
+        
+        try:
+            for chunk in self._adapter.chat_stream(
+                message=message, inject_memory=True,
+                extra_context=extra_context,
+                tools=self._tools if self._tools else None,
+                source=source,
+            ):
+                # 解包 (chunk_text, accumulated_text, emotion, action_intent)
+                if isinstance(chunk, tuple) and len(chunk) == 4:
+                    chunk_text, acc_text, stream_emotion, action_intent = chunk
+                    accumulated = acc_text
+                    emotion = stream_emotion or "neutral"
+                    
+                    # P1: 流式 chunk 事件 — 通知 UI 边生成边显示
+                    if chunk_text and not self._is_stale(gen):
+                        self.emit(self.EVT_LLM_CHUNK, chunk=chunk_text, accumulated=accumulated, emotion=emotion, gen=gen)
+                        # 直接调用回调（线程安全：pet 会通过信号切主线程）
+                        if self.on_llm_chunk:
+                            try:
+                                self.on_llm_chunk(chunk_text, accumulated, emotion, gen)
+                            except Exception:
+                                pass
+                    
+                    # P2: 边生成边触发情绪（如果已解析到标签）
+                    if action_intent and not self._is_stale(gen):
+                        logger.debug("流式检测到动作: %s", action_intent)
+                else:
+                    # 兼容非流式返回
+                    accumulated = chunk or ""
+                    self.emit(self.EVT_LLM_CHUNK, chunk=chunk, accumulated=accumulated, emotion=emotion, gen=gen)
+        except Exception as e:
+            logger.error("流式调用失败: %s", e)
+            accumulated = "（嗯…让我缓一下）"
+            emotion = "neutral"
+        
+        # 最终解析 emotion（如果流式没有解析到）
+        if emotion == "neutral" and accumulated:
+            try:
+                parsed_text, parsed_emotion = self._adapter.parse_emotion(accumulated)
+                if parsed_emotion:
+                    emotion = parsed_emotion
+                    accumulated = parsed_text or accumulated
+            except Exception:
+                pass
+        
+        return accumulated, emotion
+
     def _process_message(self, msg: dict):
         """处理一条消息：LLM -> 工具调用（可选）-> 回调文字 -> TTS"""
         text = msg["text"]
         character = msg["character"]
         source = msg.get("source", "user")
         gen = msg.get("gen", self._generation)
+
+        # P0: 消息来源 Tag — 让 LLM 知道消息从哪来
+        source_tags = {
+            "user": "[消息来源(user)]",
+            "proactive": "[消息来源(proactive)]",
+            "idle": "[消息来源(idle)]",
+            "system": "[系统推送]",
+        }
+        source_tag = source_tags.get(source, f"[消息来源({source})]")
+        tagged_text = f"{source_tag} {text}"
 
         # P1：若消息在入队后被新消息打断（代际过期），直接跳过
         if self._is_stale(gen):
@@ -649,12 +902,26 @@ class ConversationEngine:
         try:
             try:
                 perception_ctx = self._perception.build_context()
-                reply, emotion = self._adapter.chat(
-                    message=text, inject_memory=True,
-                    extra_context=perception_ctx,
-                    tools=self._tools if self._tools else None,
-                    source=source,
-                )
+                
+                # P2: 触发 LLM 开始事件
+                self.emit(self.EVT_LLM_START, text=tagged_text, source=source, gen=gen)
+                
+                # P2: 检查是否支持流式 — 边生成边解析 emotion/action
+                if hasattr(self._adapter, 'chat_stream'):
+                    reply, emotion = self._chat_stream_wrapper(
+                        tagged_text, perception_ctx, source, gen
+                    )
+                else:
+                    # 回退到非流式
+                    reply, emotion = self._adapter.chat(
+                        message=tagged_text, inject_memory=True,
+                        extra_context=perception_ctx,
+                        tools=self._tools if self._tools else None,
+                        source=source,
+                    )
+                
+                # P2: 触发 LLM 完成事件
+                self.emit(self.EVT_LLM_COMPLETE, reply=reply, emotion=emotion, gen=gen)
             finally:
                 # chat 返回（或异常）即停心跳，避免 "还在想..." 覆盖后续回复气泡
                 _progress_stop.set()
@@ -686,10 +953,32 @@ class ConversationEngine:
             if not reply:
                 reply = "…"
             logger.info("LLM 回复: %s [emotion:%s]", reply, emotion)
+            
+            # BugFix: 确保剥离 [emotion:xxx] 标签（chat_direct 已解析，但 chat_via_hanako 等路径可能漏）
+            if "[emotion:" in reply or "[emotion:" in reply:
+                reply = self._adapter.parse_emotion(reply)[0]
+            
+            # P2: 记录情绪到历史（用于分布统计）
+            self._record_emotion(emotion)
         except Exception as e:
             logger.error("LLM 失败: %s", e)
             reply = "（嗯…让我缓一下）"
             emotion = "neutral"
+
+        # P0: 格式纠正反标记 — 检查 AI 回复是否带 emotion/action 标签
+        # 如果不带，Poke 一条纠正消息（但纠正消息本身带 [回复格式纠正] 标记，防死循环）
+        if not self._is_correction_message(tagged_text):
+            has_emotion_tag = "[emotion:" in reply
+            has_action_tag = "[action:" in reply
+            if not has_emotion_tag and not has_action_tag:
+                # AI 回复没带任何标签，发一条纠正消息
+                correction = (
+                    f"[回复格式纠正] 你刚才的回复没有带情绪标签。"
+                    f"请在回复末尾加上 [emotion:情绪名] 或 [action:{{\"gesture\":\"动作\",\"intensity\":0.7}}]"
+                )
+                logger.debug("格式纠正: AI 回复缺少标签")
+                # 使用 poke 而不是 send，避免打断当前对话
+                self.poke(correction, character=character, source="system")
 
         # P1：LLM 调用后检查——若已打断（代际过期），不再继续 TTS/回调
         if self._is_stale(gen):
@@ -720,6 +1009,18 @@ class ConversationEngine:
                 anim = _act_anim or anim
         except Exception:
             pass
+
+        # P2: 桌宠输出分析 — AI 回复内容自动匹配动作（不用显式标签）
+        # 如果上面没有解析到动作标签，尝试语义分析回复内容
+        if action_intent is None and anim == map_emotion_to_anim(emotion):
+            try:
+                _semantic_action = self._analyze_reply_content(reply, emotion)
+                if _semantic_action:
+                    action_intent = _semantic_action
+                    anim = _semantic_action.get("anim", anim)
+                    logger.debug("语义分析触发动作: %s", _semantic_action)
+            except Exception:
+                pass
 
         # P1-6: 文字先行——LLM 回复立即上气泡，不等 TTS 合成
         # （本地 CosyVoice 合成需数秒；若等音频做好才回调，用户看到的是
@@ -994,6 +1295,80 @@ class ConversationEngine:
             return cleaned, None
         return cleaned, intent
 
+    def _analyze_reply_content(self, reply: str, emotion: str) -> dict | None:
+        """P2: 桌宠输出分析 — AI 回复内容自动匹配动作（不用显式标签）。
+
+        如果 AI 回复中没有 [action:{...}] 标签，尝试语义分析回复内容，
+        根据关键词/短语触发对应动作。
+
+        Args:
+            reply: AI 回复文本
+            emotion: 当前情绪
+
+        Returns:
+            动作意图字典（如果匹配到），否则 None
+            格式: {"gesture": str, "intensity": float, "anim": str}
+        """
+        if not reply:
+            return None
+
+        # 定义语义分析规则（短语 → 动作映射）
+        # 格式: (关键词列表, 动作ID, 强度)
+        semantic_rules = [
+            # 摸头/互动类
+            (["摸摸", "揉揉", "顺毛", "拍头"], "touch", 0.7),
+            (["抱", "拥抱", "抱一个"], "happy", 0.8),
+            (["击掌", "give me five"], "waving", 0.9),
+            
+            # 工作/学习类
+            (["工作", "学习", "写代码", "coding"], "thinking", 0.6),
+            (["思考", "想想", "考虑"], "thinking", 0.5),
+            
+            # 休息/睡眠类
+            (["睡觉", "休息", "困了"], "sleep", 0.5),
+            (["累", "疲惫", "困"], "sleep", 0.4),
+            
+            # 情绪类
+            (["开心", "快乐", "高兴"], "happy", 0.8),
+            (["难过", "伤心", "哭"], "sad", 0.6),
+            (["生气", "愤怒", "气死"], "angry", 0.7),
+            (["害羞", "脸红", "不好意思"], "cute", 0.7),
+            
+            # 活动类
+            (["散步", "走走", "出门"], "walk", 0.6),
+            (["游戏", "开黑", "打游戏"], "happy", 0.7),
+            (["喝茶", "咖啡"], "thinking", 0.6),
+            
+            # 特殊动作
+            (["跳舞", "dance"], "special", 0.8),
+            (["变身", "transform"], "special", 0.9),
+        ]
+
+        reply_lower = reply.lower()
+        for keywords, action_id, intensity in semantic_rules:
+            if any(kw.lower() in reply_lower for kw in keywords):
+                # 映射到 renderer 可用的动作名
+                anim_map = {
+                    "touch": "touch",
+                    "happy": "happy",
+                    "waving": "waving",
+                    "thinking": "thinking",
+                    "sleep": "sleep",
+                    "sad": "sad",
+                    "angry": "angry",
+                    "cute": "cute",
+                    "walk": "walk",
+                    "special": "special",
+                }
+                anim = anim_map.get(action_id, "idle")
+                return {
+                    "gesture": action_id,
+                    "intensity": intensity,
+                    "anim": anim,
+                }
+
+        return None
+
     def _synth_and_reply(self, reply, emotion, anim, character, instruct, source, gen):
         """在 TTS 线程池中执行：合成 + 回调（on_reply 仍带 audio_path，口型链路不变）。"""
         # synth 前检查：已打断则不浪费算力
@@ -1038,6 +1413,7 @@ class ConversationEngine:
                     # self.on_status("\U0001f50a 语音生成中…")
                     audio_path = tts.synthesize(
                         reply, character_id=character, instruct=instruct, voice=voice,
+                        emotion=emotion,
                     ) or ""
                     if audio_path:
                         logger.info("TTS done: %s", os.path.basename(audio_path))

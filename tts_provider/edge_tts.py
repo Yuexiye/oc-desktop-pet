@@ -101,7 +101,7 @@ class EdgeTtsProvider(TTSProvider):
             logger.warning("Edge TTS preload 失败: %s", self._last_error)
 
     def synthesize(self, text: str, character_id: str = "", instruct: str = "",
-                   voice: str = "") -> Optional[str]:
+                   voice: str = "", emotion: str = "") -> Optional[str]:
         if not text or not text.strip():
             return None
         text = text.strip()[:500]
@@ -122,8 +122,26 @@ class EdgeTtsProvider(TTSProvider):
 
         # P2-7: 显式 voice 参数优先（角色/情绪音色映射），未提供则用本 provider 默认
         eff_voice = voice or self._voice
-        # 缓存：同文本+音色+语速复用（instruct 情感不参与，edge 不支持精细情感）
-        cache_key = f"edge:{eff_voice}:{self._rate}:{text}"
+        
+        # P0: 情感 TTS 参数（emotion → rate/pitch 调整）
+        # 默认：+0% / +0Hz
+        eff_rate = self._rate
+        eff_pitch = self._pitch
+        if emotion:
+            emotion_tts_map = {
+                "happy": ("+15%", "+10Hz"),    # 快一点，音调高一点
+                "sad": ("-20%", "-10Hz"),      # 慢一点，音调低一点
+                "angry": ("+25%", "+15Hz"),    # 很快，音调很高
+                "surprised": ("+30%", "+20Hz"), # 最快，音调最高
+                "thinking": ("-10%", "+0Hz"),  # 稍慢，音调不变
+                "cute": ("+10%", "+20Hz"),     # 稍快，音调高
+            }
+            if emotion in emotion_tts_map:
+                eff_rate, eff_pitch = emotion_tts_map[emotion]
+                logger.debug("情感 TTS 参数: emotion=%s rate=%s pitch=%s", emotion, eff_rate, eff_pitch)
+        
+        # 缓存：同文本+音色+语速+情感复用
+        cache_key = f"edge:{eff_voice}:{eff_rate}:{eff_pitch}:{text}"
         text_hash = hashlib.md5(cache_key.encode()).hexdigest()[:12]
         output_path = OUTPUT_DIR / f"edge_{text_hash}.mp3"
 
@@ -134,7 +152,7 @@ class EdgeTtsProvider(TTSProvider):
         try:
             # 异步接口：放入新事件循环执行（worker 线程无 Qt 循环，asyncio.run 安全）
             async def _synth():
-                comm = edge_tts.Communicate(text, eff_voice, rate=self._rate, pitch=self._pitch)
+                comm = edge_tts.Communicate(text, eff_voice, rate=eff_rate, pitch=eff_pitch)
                 await comm.save(str(output_path))
 
             asyncio.run(_synth())

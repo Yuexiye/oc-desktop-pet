@@ -121,8 +121,22 @@ class BehaviorMixin:
             logger.debug("Discarded stale idle chatter")
             return
 
-        emotion = emotion or "neutral"
-        self._show_bubble(text, emotion=emotion)
+        # P2: 解析 [emotion:xxx] 和 [action:{...}] 标签
+        parsed_text, parsed_emotion = self._parse_emotion_tag(text)
+        action_intent = self._parse_action_tag(text)
+        
+        emotion = parsed_emotion or emotion or "neutral"
+        self._show_bubble(parsed_text, emotion=emotion)
+        
+        # P2: 触发动作（如果有 action 标签）
+        if action_intent is not None:
+            r = getattr(self, "_renderer", None)
+            if r is not None and hasattr(r, "apply_action_intent"):
+                try:
+                    r.apply_action_intent(action_intent)
+                except Exception as e:
+                    logger.debug("Idle chatter action failed: %s", e)
+        
         anim = EXPRESSION_MAP.get(emotion, EXPRESSION_MAP["neutral"])[0]
         # 收窄：surprised/angry 不切瞪眼帧，避免空闲自言自语高频瞪眼
         if emotion in ("surprised", "angry"):
@@ -135,6 +149,30 @@ class BehaviorMixin:
         else:
             self._emotion_expiry_timer.stop()
         logger.info("Idle chatter: %s [emotion:%s]", text, emotion)
+    
+    @staticmethod
+    def _parse_emotion_tag(text: str) -> tuple:
+        """P2: 从文本解析 [emotion:xxx] 标签，返回 (cleaned_text, emotion)"""
+        import re
+        m = re.search(r'\[emotion:([a-z_]+)\]', text, re.IGNORECASE)
+        if m:
+            emotion = m.group(1).lower()
+            cleaned = re.sub(r'\[emotion:[a-z_]+\]', '', text).strip()
+            return cleaned, emotion
+        return text, None
+    
+    @staticmethod
+    def _parse_action_tag(text: str) -> dict | None:
+        """P2: 从文本解析 [action:{...}] 标签，返回 action_intent 字典"""
+        import re
+        import json
+        m = re.search(r'\[action:(\{.*?\})\]', text, re.DOTALL)
+        if m:
+            try:
+                return json.loads(m.group(1))
+            except Exception:
+                pass
+        return None
 
     # ── 闲置检测 + 关怀提醒 ──
 
@@ -272,27 +310,22 @@ class BehaviorMixin:
         try:
             renderer = getattr(self, "_renderer", None)
             if renderer is not None:
-                # 清掉当前 gesture（不调用 _force_idle，避免和 emotion 冷却打架）
-                if hasattr(renderer, "_model") and renderer._model is not None:
-                    try:
-                        if hasattr(renderer._model, "StopAllMotions"):
-                            renderer._model.StopAllMotions()
-                    except Exception:
-                        pass
-                # 重置 emotion 冷却记录，让 _play_motion_kw 内部能正常触发
-                if hasattr(renderer, "_emotion_motion_cooldown"):
-                    renderer._emotion_motion_cooldown.clear()
-                if hasattr(renderer, "_last_gesture_at"):
-                    renderer._last_gesture_at = 0.0
-                # 强制播放 waving（绕过 _set_anim_seq 的情绪同步路径，避免再触发表情 → 表情同步是次要的）
-                if hasattr(renderer, "_play_motion_kw"):
-                    # miku 的 motion 有 waving.motion3.json；其它模型走 happy 兜底
+                # T08: 通过 MotionMixer 提交 user_initiated 层请求，
+                # 替代旧版「清空冷却表 + 伪造时间戳」的私有状态越界 bypass。
+                if hasattr(renderer, "submit_motion_request"):
+                    from avatar.motion_mixer import MotionRequest, Layer
+                    renderer.submit_motion_request(
+                        MotionRequest(
+                            layer=Layer.USER_INITIATED,
+                            motion_group="waving",
+                            can_interrupt=True,
+                            name="proactive_waving",
+                        ),
+                        fallback_motion="happy",
+                    )
+                elif hasattr(renderer, "_play_motion_kw"):
                     if not renderer._play_motion_kw("waving"):
                         renderer._play_motion_kw("happy")
-                # 触发"动作正在播"超时计时（3s 后自动回 idle）
-                if hasattr(renderer, "_note_motion_started"):
-                    renderer._note_motion_started("proactive", is_idle=False)
-                # 标记表情同步（让人物表情也跟着场景情绪变化）
                 if hasattr(renderer, "set_emotion_expression_only"):
                     renderer.set_emotion_expression_only(emotion)
         except Exception as e:

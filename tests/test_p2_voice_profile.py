@@ -289,10 +289,10 @@ class _FakeTTS:
     def __init__(self):
         self.calls: list[dict] = []
 
-    def synthesize(self, text, character_id="", instruct="", voice=""):
+    def synthesize(self, text, character_id="", instruct="", voice="", emotion=""):
         self.calls.append({
             "text": text, "character_id": character_id,
-            "instruct": instruct, "voice": voice,
+            "instruct": instruct, "voice": voice, "emotion": emotion,
         })
         return "/tmp/fake_voice.wav"
 

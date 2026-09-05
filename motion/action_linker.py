@@ -53,6 +53,26 @@ DEFAULT_ACTIONS: list[Action] = [
 ]
 
 
+# 默认即时反应规则（当 pet.json 没有 immediate_reactions 字段时使用）
+DEFAULT_IMMEDIATE_REACTIONS: list[dict] = [
+    {"keywords": ["克里斯蒂娜", "kurisu", "红莉栖"], "action": "touch", "emotion": "cute", "intensity": 0.7},
+    {"keywords": ["喜欢", "爱你", "想你"], "action": "happy", "emotion": "happy", "intensity": 0.8},
+    {"keywords": ["讨厌", "烦死", "讨厌你"], "action": "angry", "emotion": "angry", "intensity": 0.6},
+    {"keywords": ["晚安", "睡觉", "困了"], "action": "sleep", "emotion": "sad", "intensity": 0.5},
+    {"keywords": ["摸摸", "摸头", "揉揉", "顺毛"], "action": "touch", "emotion": "cute", "intensity": 0.8},
+    {"keywords": ["击掌", "give me five"], "action": "waving", "emotion": "happy", "intensity": 0.9},
+    {"keywords": ["抱抱", "拥抱", "抱一个"], "action": "happy", "emotion": "happy", "intensity": 0.8},
+    {"keywords": ["喝茶", "咖啡", "喝一杯"], "action": "thinking", "emotion": "thinking", "intensity": 0.6},
+    {"keywords": ["游戏", "开黑", "打游戏"], "action": "happy", "emotion": "happy", "intensity": 0.7},
+    {"keywords": ["散步", "走走", "出门"], "action": "walk", "emotion": "happy", "intensity": 0.6},
+    {"keywords": ["难过", "伤心", "哭"], "action": "sad", "emotion": "sad", "intensity": 0.5},
+    {"keywords": ["生气", "愤怒", "气死"], "action": "angry", "emotion": "angry", "intensity": 0.7},
+    {"keywords": ["开心", "快乐", "高兴"], "action": "happy", "emotion": "happy", "intensity": 0.8},
+    {"keywords": ["工作", "学习", "写代码"], "action": "thinking", "emotion": "thinking", "intensity": 0.5},
+    {"keywords": ["累", "疲惫", "困"], "action": "sleep", "emotion": "sad", "intensity": 0.4},
+]
+
+
 # ── ActionLinker ──────────────────────────────────────────
 
 @dataclass
@@ -68,6 +88,8 @@ class ActionLinker:
 
     actions: list[Action] = field(default_factory=lambda: list(DEFAULT_ACTIONS))
     _highlighted: dict[str, float] = field(default_factory=dict)  # action_id → 高亮过期时间戳
+    _last_reaction_time: dict[str, float] = field(default_factory=dict)  # action_id → 最后触发时间戳（冷却用）
+    _immediate_reactions: list[dict] | None = field(default=None, repr=False)  # 缓存即时反应规则
 
     # ── 公开接口 ──
 
@@ -114,6 +136,87 @@ class ActionLinker:
                     break  # 一个动作最多匹配一次
 
         return activated
+
+    def check_user_input(self, user_text: str) -> list[dict]:
+        """分析用户输入，返回即时反应列表。
+
+        与 check() 不同：
+        - check() 高亮菜单项（等用户点击）
+        - check_user_input() 返回即时反应（桌宠立刻执行）
+
+        规则从 pet.json 的 immediate_reactions 字段读取（可配置）。
+        内置冷却机制：同一动作 2 秒内不重复触发。
+
+        Args:
+            user_text: 用户输入的文本
+
+        Returns:
+            即时反应列表，每个反应包含：
+            - action: 动作 ID
+            - emotion: 情绪
+            - intensity: 强度 (0.5-1.0)
+        """
+        if not self.enabled or not user_text:
+            return []
+
+        reactions: list[dict] = []
+        text_lower = user_text.lower()
+
+        # 从 pet.json 加载即时反应规则（可配置，缓存）
+        if not hasattr(self, '_immediate_reactions') or self._immediate_reactions is None:
+            self._immediate_reactions = self._load_immediate_reactions()
+
+        for rule in self._immediate_reactions:
+            keywords = rule.get("keywords", [])
+            action_id = rule.get("action", "touch")
+            emotion = rule.get("emotion", "happy")
+            intensity = rule.get("intensity", 0.7)
+            
+            # 检查是否有任何关键词匹配
+            if any(kw.lower() in text_lower for kw in keywords):
+                # P2: 冷却检查 — 同一动作 2 秒内不重复触发
+                if self._is_in_cooldown(action_id):
+                    logger.debug("即时反应冷却中: %s (跳过)", action_id)
+                    continue
+                
+                reactions.append({
+                    "action": action_id,
+                    "emotion": emotion,
+                    "intensity": intensity,
+                })
+                # 记录触发时间
+                self._last_reaction_time[action_id] = time.time()
+                logger.debug("即时反应: %s ← '%s' (emotion=%s)", 
+                           action_id, user_text[:20], emotion)
+                break  # 只取第一个匹配的反应
+
+        return reactions
+
+    def _is_in_cooldown(self, action_id: str, cooldown: float = 2.0) -> bool:
+        """P2: 检查动作是否在冷却期内（防频繁触发）"""
+        last_time = self._last_reaction_time.get(action_id, 0)
+        return (time.time() - last_time) < cooldown
+
+    def _load_immediate_reactions(self) -> list[dict]:
+        """从 pet.json 加载即时反应规则（可配置）。
+
+        如果 pet.json 没有 immediate_reactions 字段，使用默认规则。
+        """
+        try:
+            # 查找 pet.json
+            char_dir = Path(__file__).parent.parent / "characters" / self.character_id
+            pet_json = char_dir / "pet.json"
+            if pet_json.exists():
+                data = json.loads(pet_json.read_text("utf-8"))
+                reactions = data.get("immediate_reactions", [])
+                if reactions:
+                    logger.info("加载即时反应规则: %d 条 (from pet.json)", len(reactions))
+                    return reactions
+        except Exception as e:
+            logger.debug("加载即时反应规则失败: %s", e)
+        
+        # 默认规则（向后兼容）
+        return DEFAULT_IMMEDIATE_REACTIONS
 
     def get_action(self, action_id: str) -> Action | None:
         """根据 ID 获取动作定义"""

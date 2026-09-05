@@ -31,6 +31,10 @@ from PySide6.QtCore import Qt, QPoint
 
 from avatar.base import AvatarRenderer
 from avatar.gl_char_widget import GLCharWidget
+from avatar.emote_presets import LIVE2D_PRESETS, get_live2d_preset as _get_live2d_preset, get_preset_names as _get_preset_names
+from avatar.model_profile import DEFAULT_PROFILE, load_profile_for_character
+from avatar.param_writer import ParamWriter
+from avatar.motion_mixer import MotionMixer, MotionRequest, Layer
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +123,52 @@ class Live2DRenderer(AvatarRenderer):
         },
     }
 
+    # ── T10: V/A (valence-arousal) 坐标 ──
+    # 每种情绪映射到 2D 情感空间，情绪切换变成 V/A 空间路径插值。
+    # valence: -1(消极) → +1(积极), arousal: -1(平静) → +1(兴奋)
+    _EMOTION_VA: dict[str, tuple[float, float]] = {
+        "neutral":   (0.0,  0.0),
+        "happy":     (0.8,  0.7),
+        "cute":      (0.7,  0.5),
+        "surprised": (0.3,  0.9),
+        "thinking":  (0.2,  0.2),
+        "sad":       (-0.7, -0.3),
+        "angry":     (-0.6,  0.8),
+    }
+
+    # V/A → 参数插值用的情绪集合（按 V/A 坐标排序，用于 bilinear 查找）
+    _VA_EMOTIONS = ["neutral", "happy", "cute", "surprised", "thinking", "sad", "angry"]
+
+    def _va_interpolate_targets(self, va_cur: tuple[float, float]) -> dict[str, float]:
+        """T10: 从 V/A 坐标插值参数目标值。
+
+        在 V/A 空间找最近的情绪对，bilinear 插值参数。
+        返回与 _EMOTION_FACIAL_TARGETS 同结构的 dict。
+        """
+        v_cur, a_cur = va_cur
+        # 找最近的两个情绪（按欧氏距离）
+        distances = []
+        for emo_name in self._VA_EMOTIONS:
+            v_e, a_e = self._EMOTION_VA[emo_name]
+            dist = math.sqrt((v_cur - v_e) ** 2 + (a_cur - a_e) ** 2)
+            distances.append((dist, emo_name))
+        distances.sort()
+        # 取最近的两个情绪做插值
+        (d0, e0), (d1, e1) = distances[0], distances[1]
+        if d0 < 0.01:
+            return dict(self._EMOTION_FACIAL_TARGETS[e0])
+        if d1 < 0.01:
+            return dict(self._EMOTION_FACIAL_TARGETS[e1])
+        # 在两个情绪之间线性插值
+        t = d0 / (d0 + d1) if (d0 + d1) > 0 else 0.5
+        t = max(0.0, min(1.0, t))
+        tgt0 = self._EMOTION_FACIAL_TARGETS[e0]
+        tgt1 = self._EMOTION_FACIAL_TARGETS[e1]
+        result = {}
+        for k in tgt0:
+            result[k] = tgt0[k] * (1.0 - t) + tgt1.get(k, 0.0) * t
+        return result
+
     # ── 动作优化层（纯参数驱动，不依赖新 motion 文件）──
     #
     # 1) 动作 + 表情叠加：motion 文件名关键词 → 叠加参数。
@@ -156,158 +206,8 @@ class Live2DRenderer(AvatarRenderer):
     #      brow_form +弯 -八字 / mouth_form +笑 -撇嘴 / mouth_open 0..1 /
     #      eye_ball_x/y 眼神偏移 / head_angle_x/y 头部（仅序列播放时生效，见下）/
     #      breath_amp/rate 呼吸 / blush 脸红。约束：miku moc3 无肢体参数。
-    _EMOTE_PRESETS: dict[str, list[dict]] = {
-        # ── 眨眼系 ──
-        "blink3": [
-            {"type": "blink", "times": 3, "interval": 0.7},
-        ],
-        "wink": [
-            {"type": "set", "duration": 0.5, "params": {"eye_smile": 0.25, "mouth_form": 0.2}},
-            {"type": "blink", "times": 1, "interval": 0.6, "side": "right"},
-            {"type": "clear", "duration": 0.4},
-        ],
-        "blink_slow": [
-            {"type": "blink", "times": 2, "interval": 1.2},
-        ],
-        # ── 脸红系 ──
-        "blush": [
-            {"type": "set", "duration": 2.0, "params": {"blush": 0.6, "eye_smile": 0.3, "eye_open": 0.75}},
-            {"type": "clear", "duration": 0.6},
-        ],
-        "blush_shy": [
-            {"type": "set", "duration": 1.6, "params": {"blush": 0.7, "eye_smile": 0.35, "eye_open": 0.7, "eye_ball_y": -0.16, "head_angle_y": -0.25, "mouth_form": 0.15}},
-            {"type": "clear", "duration": 0.6},
-        ],
-        "blush_deny": [
-            {"type": "set", "duration": 1.2, "params": {"blush": 0.6, "eye_smile": 0.2, "head_angle_x": -0.3}},
-            {"type": "set", "duration": 0.5, "params": {"blush": 0.6, "eye_smile": 0.2, "head_angle_x": 0.3}},
-            {"type": "set", "duration": 0.5, "params": {"blush": 0.6, "eye_smile": 0.2, "head_angle_x": -0.2}},
-            {"type": "clear", "duration": 0.5},
-        ],
-        # ── 视线系 ──
-        "gaze_shift": [
-            {"type": "set", "duration": 1.0, "params": {"eye_ball_x": 0.22, "eye_ball_y": 0.12}},
-            {"type": "set", "duration": 1.0, "params": {"eye_ball_x": -0.2, "eye_ball_y": -0.06}},
-            {"type": "set", "duration": 1.0, "params": {"eye_ball_x": 0.04, "eye_ball_y": 0.0}},
-            {"type": "clear", "duration": 0.3},
-        ],
-        "gaze_up": [
-            {"type": "set", "duration": 1.2, "params": {"eye_ball_y": 0.2, "head_angle_y": 0.15, "brow_angle": 0.15}},
-            {"type": "clear", "duration": 0.5},
-        ],
-        "gaze_down": [
-            {"type": "set", "duration": 1.2, "params": {"eye_ball_y": -0.22, "head_angle_y": -0.2}},
-            {"type": "clear", "duration": 0.5},
-        ],
-        "gaze_side": [
-            {"type": "set", "duration": 1.0, "params": {"eye_ball_x": 0.28, "head_angle_x": 0.15}},
-            {"type": "clear", "duration": 0.5},
-        ],
-        "sneak_peek": [
-            {"type": "set", "duration": 0.7, "params": {"eye_ball_x": 0.3, "eye_open": 0.7, "head_angle_x": 0.1}},
-            {"type": "set", "duration": 0.8, "params": {"eye_ball_x": 0.02, "eye_open": 0.85}},
-            {"type": "clear", "duration": 0.3},
-        ],
-        # ── 微表情 ──
-        "smile_soft": [
-            {"type": "set", "duration": 1.8, "params": {"eye_smile": 0.45, "mouth_form": 0.3, "brow_angle": 0.15, "brow_form": 0.15}},
-            {"type": "clear", "duration": 0.5},
-        ],
-        "smile_bright": [
-            {"type": "set", "duration": 1.6, "params": {"eye_smile": 0.75, "eye_open": 0.9, "mouth_form": 0.5, "mouth_open": 0.12, "brow_angle": 0.3}},
-            {"type": "clear", "duration": 0.5},
-        ],
-        "pout": [
-            {"type": "set", "duration": 1.6, "params": {"mouth_form": -0.5, "brow_form": -0.2, "eye_ball_y": 0.08, "eye_open": 0.8}},
-            {"type": "clear", "duration": 0.5},
-        ],
-        "angry_glare": [
-            {"type": "set", "duration": 1.4, "params": {"brow_angle": -0.7, "brow_form": -0.5, "eye_smile": -0.35, "eye_open": 0.72, "mouth_form": -0.3}},
-            {"type": "clear", "duration": 0.5},
-        ],
-        "sad_droop": [
-            {"type": "set", "duration": 1.6, "params": {"brow_angle": -0.5, "brow_form": -0.45, "eye_smile": -0.3, "eye_open": 0.7, "eye_ball_y": -0.12, "mouth_form": -0.4}},
-            {"type": "clear", "duration": 0.5},
-        ],
-        "surprise_gasp": [
-            {"type": "set", "duration": 1.2, "params": {"eye_open": 1.1, "brow_angle": 0.6, "brow_form": 0.45, "mouth_open": 0.6, "eye_ball_y": 0.12, "breath_amp": 1.3, "breath_rate": 1.5}},
-            {"type": "clear", "duration": 0.6},
-        ],
-        "think_look": [
-            {"type": "set", "duration": 1.8, "params": {"eye_ball_x": 0.16, "eye_ball_y": 0.16, "head_angle_x": 0.1, "mouth_form": -0.18, "brow_angle": 0.2}},
-            {"type": "clear", "duration": 0.5},
-        ],
-        "doubt": [
-            {"type": "set", "duration": 1.6, "params": {"head_angle_x": 0.38, "brow_angle": 0.22, "brow_form": 0.15, "eye_ball_x": -0.12, "mouth_form": -0.1}},
-            {"type": "clear", "duration": 0.5},
-        ],
-        "sigh": [
-            {"type": "set", "duration": 1.6, "params": {"breath_amp": 1.7, "breath_rate": 0.55, "mouth_open": 0.18, "eye_ball_y": -0.06, "eye_open": 0.75}},
-            {"type": "clear", "duration": 0.6},
-        ],
-        "yawn": [
-            {"type": "set", "duration": 0.6, "params": {"eye_open": 0.3, "mouth_open": 0.35, "brow_form": -0.15}},
-            {"type": "set", "duration": 1.2, "params": {"eye_open": 0.15, "mouth_open": 0.7, "brow_form": -0.2, "eye_smile": -0.1}},
-            {"type": "clear", "duration": 0.8},
-        ],
-        "excited": [
-            {"type": "set", "duration": 0.8, "params": {"eye_open": 1.05, "eye_smile": 0.4, "mouth_form": 0.5, "mouth_open": 0.15, "breath_amp": 1.35, "breath_rate": 1.6}},
-            {"type": "set", "duration": 0.9, "params": {"eye_smile": 0.8, "eye_open": 0.85, "mouth_form": 0.55, "brow_angle": 0.3}},
-            {"type": "clear", "duration": 0.5},
-        ],
-        "grin": [
-            {"type": "set", "duration": 1.6, "params": {"mouth_form": 0.5, "brow_angle": 0.3, "eye_smile": -0.12, "head_angle_x": 0.12, "eye_open": 0.85}},
-            {"type": "clear", "duration": 0.5},
-        ],
-        "shy": [
-            {"type": "set", "duration": 1.4, "params": {"blush": 0.65, "eye_open": 0.62, "eye_ball_y": -0.12, "head_angle_y": -0.3, "eye_smile": 0.2}},
-            {"type": "clear", "duration": 0.5},
-        ],
-        "proud": [
-            {"type": "set", "duration": 1.6, "params": {"brow_angle": 0.5, "brow_form": 0.3, "eye_smile": 0.3, "mouth_form": 0.3, "head_angle_y": 0.22, "eye_ball_y": 0.08}},
-            {"type": "clear", "duration": 0.5},
-        ],
-        "sleepy": [
-            {"type": "set", "duration": 2.0, "params": {"eye_open": 0.4, "eye_ball_y": -0.06, "brow_form": -0.1, "breath_amp": 0.85, "breath_rate": 0.7}},
-            {"type": "blink", "times": 1, "interval": 0.9},
-            {"type": "clear", "duration": 0.6},
-        ],
-        # ── 头部 ──
-        "nod": [
-            {"type": "set", "duration": 0.5, "params": {"head_angle_y": -0.35, "eye_ball_y": -0.08}},
-            {"type": "set", "duration": 0.4, "params": {"head_angle_y": 0.15, "eye_ball_y": 0.02}},
-            {"type": "set", "duration": 0.5, "params": {"head_angle_y": -0.3, "eye_ball_y": -0.06}},
-            {"type": "set", "duration": 0.4, "params": {"head_angle_y": 0.1}},
-            {"type": "clear", "duration": 0.5},
-        ],
-        "head_shake": [
-            {"type": "set", "duration": 0.4, "params": {"head_angle_x": -0.4, "eye_ball_x": -0.1}},
-            {"type": "set", "duration": 0.4, "params": {"head_angle_x": 0.4, "eye_ball_x": 0.1}},
-            {"type": "set", "duration": 0.4, "params": {"head_angle_x": -0.35, "eye_ball_x": -0.08}},
-            {"type": "set", "duration": 0.4, "params": {"head_angle_x": 0.3, "eye_ball_x": 0.06}},
-            {"type": "clear", "duration": 0.5},
-        ],
-        "head_tilt": [
-            {"type": "set", "duration": 1.0, "params": {"head_angle_x": 0.42, "eye_smile": 0.2, "eye_ball_x": -0.08}},
-            {"type": "clear", "duration": 0.5},
-        ],
-        # ── 组合 ──
-        "giggle": [
-            {"type": "set", "duration": 1.4, "params": {"eye_smile": 0.7, "eye_open": 0.62, "mouth_form": 0.45, "breath_amp": 1.3, "breath_rate": 1.7, "head_angle_x": 0.12}},
-            {"type": "set", "duration": 0.4, "params": {"eye_smile": 0.7, "eye_open": 0.62, "mouth_form": 0.45, "breath_amp": 1.3, "breath_rate": 1.7, "head_angle_x": -0.12}},
-            {"type": "clear", "duration": 0.5},
-        ],
-        "sneeze": [
-            {"type": "set", "duration": 0.35, "params": {"eye_open": 0.08, "brow_form": -0.35, "mouth_open": 0.25}},
-            {"type": "set", "duration": 0.5, "params": {"eye_open": 0.05, "brow_form": -0.4, "mouth_open": 0.65, "head_angle_y": -0.35, "breath_amp": 1.2}},
-            {"type": "clear", "duration": 0.8},
-        ],
-        "stretch_yawn": [
-            {"type": "set", "duration": 1.8, "params": {"breath_amp": 1.9, "breath_rate": 0.45, "mouth_open": 0.55, "eye_open": 0.28, "eye_smile": -0.1, "head_angle_y": 0.2}},
-            {"type": "set", "duration": 0.8, "params": {"mouth_open": 0.2, "eye_open": 0.5, "breath_amp": 1.0, "breath_rate": 1.0}},
-            {"type": "clear", "duration": 0.5},
-        ],
-    }
+    # T09: 预设已外置到 avatar/emote_presets.py
+    _EMOTE_PRESETS: dict[str, list[dict]] = LIVE2D_PRESETS
 
     # 自动表情序列的加权随机权重（_tick_auto_motion 25% 分支用）。
     # 值越大越常出现；0 表示不参与自动播放。戏剧性/长时间表情给低权重，
@@ -380,6 +280,13 @@ class Live2DRenderer(AvatarRenderer):
         }
         self._proc_smooth_tau: float = float(self.PROCEDURAL_SMOOTH_TAU)
         self._proc_last_t: float = time.monotonic()
+        # T10: V/A 中间表示（valence-arousal 情感空间）
+        self._va_cur: tuple[float, float] = (0.0, 0.0)  # 当前 V/A 坐标
+        self._va_target: tuple[float, float] = (0.0, 0.0)  # 目标 V/A 坐标
+        self._emotion_intensity: float = 1.0  # 情绪强度（缩放参数幅度）
+
+        # P0: 动作配置（pet.json "actions" 字段）——供右键菜单/LLM prompt 使用
+        self._pet_actions: dict[str, dict] = {}
 
         # 兼容属性（避免 pet.py 直接访问崩溃）
         self._base_label_pos: QPoint = QPoint(10, 0)
@@ -424,28 +331,22 @@ class Live2DRenderer(AvatarRenderer):
         # 在 GESTURE_TIMEOUT 内若无新表情则自动 ResetExpressions——否则表情永远挂着，
         # 用户看到的"一直比心"就是这个（motion 有超时兜底，expression 之前没有）。
         self._expression_set_at: float = 0.0
-        self._expression_active: bool = False
-        self._last_expression: str = ""
-        self._expression_suppress_until: float = 0.0
 
-        # ── 动作优化层状态（纯参数驱动，不依赖 motion 文件）──
-        # idle 微摆动（正弦叠加；_motion_is_idle 时生效）
-        self._idle_sway_enabled: bool = True
-        self._idle_sway_phase: dict[str, float] = {}
-        self._idle_sway_next_random_at: float = 0.0
-        # 动作叠加（motion 文件名关键词 → 叠加参数；非 idle 播放时设置，回 idle 清除）
-        self._action_overlay: dict[str, float] = {}
-        # 表情序列（play_emote_sequence 状态机）
-        self._emote_seq: list[dict] = []
-        self._emote_seq_idx: int = 0
-        self._emote_seq_active: bool = False
-        self._emote_seq_step_started: float = 0.0
-        self._emote_seq_name: str = ""
-        self._emote_seq_fast: dict[str, float] = {}  # 跳过平滑直接写的参数（如眨眼脉冲）
-        # 结构化动作意图（[action:{...}] 注入）直接参数目标：每帧平滑过渡到目标，
-        # 不跳变。params 为 Live2D 标准参数名（如 ParamAngleX / ParamMouthOpenY）→ 目标值。
-        self._param_intent: dict[str, float] = {}
-        self._param_cur: dict[str, float] = {}
+    @property
+    def available_actions(self) -> list[dict]:
+        """返回可用动作列表（供 LLM prompt 注入和右键菜单使用）。
+
+        每个动作：{ "name": str, "label": str, "motion": str, "intensity": float }
+        """
+        result = []
+        for name, cfg in self._pet_actions.items():
+            result.append({
+                "name": name,
+                "label": cfg.get("label", name),
+                "motion": cfg.get("motion", name),
+                "intensity": cfg.get("intensity", 0.7),
+            })
+        return result
 
     # ── 生命周期 ──
 
@@ -464,6 +365,8 @@ class Live2DRenderer(AvatarRenderer):
                 self._model_path = os.path.join(live2d_dir, f)
                 # 可选：pet.json 里的 live2d 缩放/偏移覆盖
                 self._apply_live2d_meta(char_dir)
+                # T09: 加载模型 profile（characters/<id>/live2d/profile.json）
+                self._model_profile = load_profile_for_character(character_id, base)
                 logger.info("Live2DRenderer: 模型路径已记录 %s", self._model_path)
                 return True
         logger.warning("Live2DRenderer: live2d/ 下无 .model3.json/.model.json: %s", live2d_dir)
@@ -515,6 +418,18 @@ class Live2DRenderer(AvatarRenderer):
                         pass
             if self._motion_weights:
                 logger.info("Live2DRenderer: pet.json 动作权重已加载 %s", self._motion_weights)
+            # P0: 动作配置（pet.json "actions" 字段）——供右键菜单/LLM prompt 使用
+            self._pet_actions: dict[str, dict] = {}
+            _actions_cfg = meta.get("actions", {}) or {}
+            for _an, _ac in _actions_cfg.items():
+                if isinstance(_ac, dict):
+                    self._pet_actions[str(_an).lower()] = {
+                        "label": _ac.get("label", _an),
+                        "motion": _ac.get("motion", _an),
+                        "intensity": float(_ac.get("intensity", 0.7)),
+                    }
+            if self._pet_actions:
+                logger.info("Live2DRenderer: pet.json 动作列表已加载 %s", list(self._pet_actions.keys()))
         except Exception as e:
             logger.warning("读取 live2d meta 失败: %s", e)
 
@@ -1286,6 +1201,8 @@ class Live2DRenderer(AvatarRenderer):
         程序化表情层据此做面部参数平滑过渡。
         """
         emotion = emotion or "neutral"
+        # T10: 同步 V/A 目标坐标（与 set_emotion 保持一致）
+        self._va_target = self._EMOTION_VA.get(emotion, (0.0, 0.0))
         self._current_emotion = emotion
         self._emotion_target = emotion
         if self._model:
@@ -1327,9 +1244,30 @@ class Live2DRenderer(AvatarRenderer):
         # 手动演示锁定机制已随「动作/表情展示」面板移除；面部参数始终由情绪驱动。
         _override = False
         try:
-            # 目标值（未知情绪回退 neutral；neutral = 全 0 + 常态呼吸）
-            emo = self.master_emotion
-            targets = self._EMOTION_FACIAL_TARGETS.get(emo) or self._EMOTION_FACIAL_TARGETS["neutral"]
+            # T10: V/A 空间路径插值（离散情绪名 → V/A 坐标 → 参数目标值）
+            # 1) 平滑过渡 V/A 坐标
+            now = time.monotonic()
+            dt = min(max(now - getattr(self, "_proc_last_t", now), 0.0), 0.1)
+            self._proc_last_t = now
+            tau = getattr(self, "_proc_smooth_tau", self.PROCEDURAL_SMOOTH_TAU) or self.PROCEDURAL_SMOOTH_TAU
+            alpha = 1.0 - math.exp(-dt / tau) if dt > 0.0 else 1.0
+            va_cur = getattr(self, "_va_cur", (0.0, 0.0))
+            va_target = getattr(self, "_va_target", (0.0, 0.0))
+            va_cur = (va_cur[0] + (va_target[0] - va_cur[0]) * alpha,
+                      va_cur[1] + (va_target[1] - va_cur[1]) * alpha)
+            self._va_cur = va_cur
+            # 2) 从 V/A 坐标插值参数目标
+            intensity = getattr(self, "_emotion_intensity", 1.0)
+            targets = self._va_interpolate_targets(va_cur)
+            # 3) intensity 缩放（只缩放非基准参数，breath_amp/rate 不受影响）
+            if intensity != 1.0:
+                scaled = {}
+                for k, v in targets.items():
+                    if k in ("breath_amp", "breath_rate"):
+                        scaled[k] = v  # 呼吸不受强度影响
+                    else:
+                        scaled[k] = v * intensity
+                targets = scaled
             # 动作叠加（motion 文件名关键词 → 叠加参数，如 waving→眯眼+脸红）。
             # 在情绪目标之上叠加（clamp 由各参数写入处负责），weight<1 混合不打架。
             overlay = getattr(self, "_action_overlay", None) or {}
@@ -1373,87 +1311,24 @@ class Live2DRenderer(AvatarRenderer):
             # 手动演示锁定期间：跳过眼/眉/嘴/脸红等会与手动表情/动作冲突的面部参数，
             # 只保留呼吸/眼神/头部/头发等底层自然律动，让手动选择完整显示不被冲淡。
             if not _override:
-                # 眼睛开合（0=闭 1=全开；surprised 超 1 截断）
-                try:
-                    eye_open = max(0.0, min(1.0, cur["eye_open"]))
-                    self._model.SetParameterValue(P.ParamEyeLOpen, eye_open, 0.5)
-                    self._model.SetParameterValue(P.ParamEyeROpen, eye_open, 0.5)
-                except Exception:
-                    pass
-                # 眯眼（微笑时眼睛变细 / 瞪眼）
-                try:
-                    self._model.SetParameterValue(P.ParamEyeLSmile, cur["eye_smile"], 0.6)
-                    self._model.SetParameterValue(P.ParamEyeRSmile, cur["eye_smile"], 0.6)
-                except Exception:
-                    pass
-                # 眉毛角度/形态（生气皱眉负 / 惊讶挑眉正）
-                try:
-                    self._model.SetParameterValue(P.ParamBrowLAngle, cur["brow_angle"], 0.6)
-                    self._model.SetParameterValue(P.ParamBrowRAngle, cur["brow_angle"], 0.6)
-                    self._model.SetParameterValue(P.ParamBrowLForm, cur["brow_form"], 0.6)
-                    self._model.SetParameterValue(P.ParamBrowRForm, cur["brow_form"], 0.6)
-                except Exception:
-                    pass
-                # 嘴型（笑 / 撇嘴）
-                try:
-                    self._model.SetParameterValue(P.ParamMouthForm, cur["mouth_form"], 0.6)
-                except Exception:
-                    pass
-                # 嘴张开：说话时让位给 _update_mouth（口型由 TTS 驱动），不叠加
-                if not getattr(self, "_speaking", False):
-                    try:
-                        mouth_open = max(0.0, min(1.0, cur["mouth_open"]))
-                        self._model.SetParameterValue(P.ParamMouthOpenY, mouth_open, 0.5)
-                    except Exception:
-                        pass
-            # 眼神方向：情绪偏移低权重叠加在视线跟随之上（不打架）
-            try:
-                self._model.SetParameterValue(P.ParamEyeBallX, cur["eye_ball_x"], 0.3)
-                self._model.SetParameterValue(P.ParamEyeBallY, cur["eye_ball_y"], 0.3)
-            except Exception:
-                pass
-            # 头部轻微转向（思考/斜视）：仅视线跟随关闭时生效，避免覆盖 gaze。
-            # 例外：显式播放的表情序列当前步带 head_angle_* 时（nod/head_shake/
-            # head_tilt 等头部预设），序列是明确指令，优先于鼠标视线跟随。
-            _apply_head = not getattr(self, "_gaze_enabled", True)
-            if not _apply_head and getattr(self, "_emote_seq_active", False):
-                try:
-                    _step = self._emote_seq[self._emote_seq_idx]
-                    _sp = _step.get("params") or {}
-                    if "head_angle_x" in _sp or "head_angle_y" in _sp:
-                        _apply_head = True
-                except Exception:
-                    pass
-            if _apply_head:
-                try:
-                    self._model.SetParameterValue(P.ParamAngleX, cur["head_angle_x"] * 15.0, 0.35)
-                    self._model.SetParameterValue(P.ParamAngleY, cur["head_angle_y"] * 12.0, 0.35)
-                except Exception:
-                    pass
-            # 呼吸节律：ParamBreath 慢正弦，幅度/频率随情绪变化
-            # （惊讶急促、悲伤深缓；程序化值在 UpdateBreath 之后写入，覆盖自动呼吸）
-            try:
-                amp = max(0.0, min(2.0, cur["breath_amp"]))
-                rate = max(0.5, min(2.5, cur["breath_rate"]))
-                breath = (0.5 + 0.5 * math.sin(now * 1.6 * rate)) * 0.5 * amp
-                self._model.SetParameterValue(P.ParamBreath, breath, 1.0)
-            except Exception:
-                pass
-            # 头发微动：慢正弦（轻盈呼吸感，P4 已有行为保留）
-            try:
-                hair = math.sin(now * 0.8) * 3.0
-                self._model.SetParameterValue(P.ParamHairFront, hair * 0.6, 0.5)
-                self._model.SetParameterValue(P.ParamHairSide, hair * 0.4, 0.5)
-            except Exception:
-                pass
-            # 脸红（动作叠加/表情序列专用）：手动演示锁定期跳过，避免与手动表情冲突
-            if not _override:
-                try:
-                    blush_val = max(0.0, min(1.0, cur.get("blush", 0.0) or 0.0))
-                    if blush_val > 0.01:
-                        self._apply_blush(blush_val)
-                except Exception:
-                    pass
+                # D1-lite 委托写入（T07）
+                writer = getattr(self, "_param_writer", None) or ParamWriter(self._model, getattr(self, "_model_profile", DEFAULT_PROFILE))
+                self._param_writer = writer
+                writer.write_group("eyes_open", cur, gate=True)
+                writer.write_group("eyes_smile", cur, gate=True)
+                writer.write_group("eyebrows", cur, gate=True)
+                writer.write_group("mouth_form", cur, gate=True)
+                writer.write_group("mouth_open", cur, gate=not getattr(self, "_speaking", False))
+                writer.write_group("gaze", cur, gate=True)
+                _apply_head = (not getattr(self, "_gaze_enabled", True)) or (getattr(self, "_emote_seq_active", False) and (("head_angle_x", "head_angle_y") & (self._emote_seq[self._emote_seq_idx].get("params") or {}).keys()))
+                writer.write_group("head_angle", cur, gate=_apply_head)
+                breath_val = (0.5 + 0.5 * math.sin(now * 1.6 * max(0.5, min(2.5, cur.get("breath_rate", 1.0))))) * 0.5 * max(0.0, min(2.0, cur.get("breath_amp", 1.0)))
+                writer.write_derived("breath", {"ParamBreath": breath_val}, gate=True)
+                hair_raw = math.sin(now * 0.8) * 3.0
+                writer.write_derived("hair", {"ParamHairFront": hair_raw, "ParamHairSide": hair_raw}, gate=True)
+                blush_val = max(0.0, min(1.0, cur.get("blush", 0.0) or 0.0))
+                if blush_val > 0.01:
+                    self._apply_blush(blush_val)
             # 表情序列快速参数（如眨眼脉冲）：跳过平滑直接写，保证眨眼节奏。
             # 眨眼脉冲 = eye_open 交替 0.1/1.0，若走指数平滑会被拉成"软眨眼"看不清。
             _fast = getattr(self, "_emote_seq_fast", None) or {}
@@ -1976,6 +1851,55 @@ class Live2DRenderer(AvatarRenderer):
         except Exception:
             self._auto_motion_next_at = time.monotonic() + 45.0
 
+    # ── T08: MotionMixer 接口实现 ──
+
+    def submit_motion_request(self, req: MotionRequest, fallback_motion: str = "") -> bool:
+        """T08: 提交动作请求（经层优先级仲裁）。
+
+        仲裁通过 → 播放 motion / expression / params；
+        仲裁拒绝 → 返回 False。
+        fallback_motion 非空时，motion_group 播放失败则自动回退。
+        """
+        if not self._mixer.submit(req):
+            return False
+        # 仲裁通过：播放
+        played = False
+        if req.motion_group:
+            played = self._play_motion_kw(req.motion_group)
+            if not played and fallback_motion:
+                played = self._play_motion_kw(fallback_motion)
+        if req.expression_name:
+            self._apply_expression(req.expression_name)
+            played = True
+        if req.params:
+            self._param_intent.update(req.params)
+            played = True
+        if not played:
+            # 无 motion/expression/params 可播 → 仲裁回滚
+            return False
+        self._note_motion_started(
+            req.motion_group or req.expression_name or req.name or "mixer",
+            is_idle=(req.layer == Layer.IDLE),
+        )
+        return True
+
+    def force_idle(self) -> None:
+        """T08: 强制重置到 idle（替代外部直调 _force_idle）。
+
+        先调 mixer.force_reset() 清除所有层 + 进入 3 秒冷却，
+        再调 _force_idle() 做底层清场（三重 ResetExpressions + 双重 StopAllMotions）。
+        """
+        self._mixer.force_reset()
+        self._force_idle()
+
+    def get_motion_layer(self) -> Layer:
+        """T08: 获取当前活跃动作层。"""
+        return self._mixer.get_active_layer()
+
+    def is_motion_idle(self) -> bool:
+        """T08: 是否处于 idle 层。"""
+        return self._mixer.is_idle()
+
     def _start_idle(self) -> None:
         if not self._model:
             return
@@ -2257,6 +2181,9 @@ class Live2DRenderer(AvatarRenderer):
                         self.GESTURE_TIMEOUT, self.GESTURE_TIMEOUT)
 
     def set_emotion(self, emotion: str, intensity: float = 1.0) -> None:
+        # T10: 同步 V/A 目标坐标（情绪切换变成 V/A 空间路径插值）
+        self._va_target = self._EMOTION_VA.get(emotion, (0.0, 0.0))
+        self._emotion_intensity = max(0.0, min(1.0, intensity))
         # 同一 emotion 短时间内重复调用：直接同步表情，不重播 motion。
         # 真实场景：_unified_tick 每秒检查 emotion 并 set_emotion，
         # 若屏幕感知把 emotion 设为 happy，每秒都会触发 happy 调用，
@@ -2348,6 +2275,57 @@ class Live2DRenderer(AvatarRenderer):
         self._apply_expression(emotion)
 
     # ── 结构化动作意图（[action:{...}]）─────────────────────
+
+    def hit_detect(self, screen_x: int, screen_y: int) -> str | None:
+        """P2: 双击部位检测 — 返回命中的区域名（head/body/touch 等）。
+
+        使用 live2d-py 的 HitPart API 检测点击位置对应的模型部分。
+        坐标需要转换为模型画布坐标（考虑缩放和偏移）。
+        """
+        if not self._model or not self._ready:
+            return None
+        try:
+            # 获取模型画布尺寸和像素/单位比例
+            canvas_w, canvas_h = self._model.GetCanvasSize()
+            ppu = self._model.GetPixelsPerUnit()
+            if canvas_w <= 0 or ppu <= 0:
+                return None
+            # 获取当前缩放和偏移
+            fit = getattr(self, '_fit_scale', 1.0)
+            offx = getattr(self, '_center_offset_x', 0.0)
+            offy = getattr(self, '_offset_scale', (0.0, 0.0))[1]
+            # 窗口像素 → 模型画布坐标
+            win_w, win_h = self.char_label.size().width(), self.char_label.size().height()
+            # 相对窗口位置（0-1）
+            rx = screen_x / win_w if win_w > 0 else 0.5
+            ry = screen_y / win_h if win_h > 0 else 0.5
+            # 画布坐标（考虑居中偏移）
+            cx = (rx - 0.5) * canvas_w * fit + canvas_w / 2 + offx
+            cy = (ry - 0.5) * canvas_h * fit + canvas_h / 2 - offy
+            # HitPart 返回命中的 part 列表
+            parts = self._model.HitPart(cx, cy, topOnly=False)
+            if not parts:
+                return None
+            # 尝试匹配常见部位名
+            for p in parts:
+                pname = p.lower() if isinstance(p, str) else str(p).lower()
+                if 'head' in pname or 'face' in pname:
+                    return 'head'
+                elif 'body' in pname or 'torso' in pname:
+                    return 'body'
+                elif 'hair' in pname:
+                    return 'hair'
+                elif 'arm' in pname or 'hand' in pname:
+                    return 'hand'
+                elif 'leg' in pname or 'foot' in pname:
+                    return 'foot'
+                elif 'eye' in pname:
+                    return 'eye'
+            # 无匹配区域名，返回第一个 part 名作为 fallback
+            return str(parts[0])[:20] if parts else None
+        except Exception as e:
+            logger.debug("hit_detect 失败: %s", e)
+            return None
 
     def apply_action_intent(self, intent: dict) -> None:
         """应用结构化动作意图（任意动作；向后兼容 [emotion:xxx] 标签路径）。

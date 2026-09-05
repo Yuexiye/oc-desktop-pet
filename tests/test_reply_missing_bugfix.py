@@ -85,6 +85,11 @@ def _make_engine(adapter=None):
     engine._tts_executor = _FakeExecutor()
     engine._synth_and_reply = lambda *a, **k: None
     engine.replies: list = []
+    
+    # P0: Poke 缓存 + character_id（跳过 __init__ 副作用，需手动初始化）
+    engine._poke_cache: list[dict] = []
+    engine._poke_timer = None
+    engine._character_id = "miku"
 
     def _on_reply(reply, emotion, anim, audio_path):
         engine.replies.append((reply, emotion, anim, audio_path))
@@ -110,9 +115,9 @@ def test_interrupt_then_new_message_llm_ok_triggers_on_reply():
 
     engine._process_message(msg)
 
-    # LLM 被调用，且消息原文透传
+    # LLM 被调用，且消息带来源 Tag（P0: 消息来源标记）
     assert len(engine._adapter.calls) == 1
-    assert engine._adapter.calls[0]["message"] == "你好"
+    assert engine._adapter.calls[0]["message"] == "[消息来源(user)] 你好"
     assert engine._adapter.calls[0]["source"] == "user"
     # 气泡回调（文字先行，audio_path=""；TTS 由线程池后续回调）
     assert len(engine.replies) == 1, "LLM OK 后必须触发 on_reply（气泡）"

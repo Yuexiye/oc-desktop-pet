@@ -17,6 +17,7 @@ from PySide6.QtGui import QPixmap, QPainter, QTransform, QColor, QImage
 from PySide6.QtWidgets import QLabel, QWidget, QGraphicsOpacityEffect
 
 from avatar.base import AvatarRenderer
+from avatar.emote_presets import get_sprite_anim, SPRITE_PRESET_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +161,9 @@ class SpriteRenderer(AvatarRenderer):
             import json
             with open(json_path, encoding='utf-8') as _f:
                 meta = json.loads(_f.read())
+
+            # T09: 读取角色级 emote 映射覆盖
+            self._emote_map = meta.get('emote_map', None)
 
             ss = meta.get('spritesheet', {})
             src = ss.get('src', 'spritesheet.png')
@@ -552,6 +556,18 @@ class SpriteRenderer(AvatarRenderer):
             self.play_anim(gesture)
         except Exception:
             pass
+
+    def play_emote_sequence(self, preset_name: str) -> bool:
+        """T09: 播放 emote 预设（精灵图：预设名 → 动画序列映射）。
+
+        通过 get_sprite_anim() 查询映射，无对应帧时返回 False。
+        角色可在 pet.json 的 "emote_map" 中覆盖默认映射。
+        """
+        anim = get_sprite_anim(preset_name, getattr(self, "_emote_map", None))
+        if anim and anim in self._frames:
+            self.play_anim(anim)
+            return True
+        return False
 
     # ── 内部动画 ──
 

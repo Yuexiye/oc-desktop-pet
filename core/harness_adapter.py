@@ -182,7 +182,7 @@ class HanakoPetAdapter:
         if source in ("proactive", "idle"):
             user_content = f"[{source}] {user_content}"
 
-        messages = [{"role": "system", "content": self._system_prompt + "\n\n[输出规则] 1. 回复简短自然，不超过 2 句话。2. 在回复中嵌入情绪标签，格式 [emotion:xxx]，可选值：happy/sad/angry/surprised/thinking/neutral/cute/missing。可以在句末或句中。例如：'你回来啦！[emotion:happy]' 或 '[emotion:thinking]让我想想……'"}]
+        messages = [{"role": "system", "content": self._system_prompt + "\n\n[输出规则] 1. 回复简短自然，不超过 2 句话。2. 在回复中嵌入情绪标签，格式 [emotion:xxx]，可选值：happy/sad/angry/surprised/thinking/neutral/cute/missing。可以在句末或句中。例如：'你回来啦！[emotion:happy]' 或 '[emotion:thinking]让我想想……'" + self._build_action_prompt()}]
 
         # 注入记忆
         if inject_memory:
@@ -209,7 +209,22 @@ class HanakoPetAdapter:
         try:
             import time as _t
             _t0 = _t.monotonic()
-            resp = self._call_api(messages, tools=tools)
+            # P0: LLM 失败重试（指数退避 1s→2s→4s，最多 3 次）
+            _max_retries = 3
+            _retry_delay = 1.0
+            resp = None
+            for _attempt in range(_max_retries):
+                try:
+                    resp = self._call_api(messages, tools=tools)
+                    break  # 成功，跳出重试
+                except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as _retry_e:
+                    if _attempt < _max_retries - 1:
+                        logger.warning("LLM 调用失败 (attempt %d/%d): %s, %.1fs 后重试",
+                                      _attempt + 1, _max_retries, type(_retry_e).__name__, _retry_delay)
+                        _t.sleep(_retry_delay)
+                        _retry_delay *= 2  # 指数退避
+                    else:
+                        raise  # 最后一次失败，抛出异常走 except 块
             _elapsed = _t.monotonic() - _t0
             # BugFix #4：显式记录慢 LLM 调用（>8s），便于区分"模型 inference 慢"
             # 与"prompt/build_context 拖慢"（用户体感"思考中卡 27s"的根因排查）。
@@ -300,6 +315,8 @@ class HanakoPetAdapter:
     def chat(self, message: str, inject_memory: bool = True, extra_context: str = "", tools: list = None, source: str = "user") -> tuple:
         """入口路由 - 根据 transport_mode 和 source 选择路径
 
+        P2: 返回完整回复（向后兼容）。如需流式，用 chat_stream()。
+
         - user 消息：走 Hanako session（工具、记忆、多轮）
         - 内部来源（proactive/idle/memory_extract/memory_reflect/screen_enrich）：
           直接走 LLM API（轻量快速，不占 session、不写本地 _history）
@@ -319,6 +336,7 @@ class HanakoPetAdapter:
             return self.chat_direct(message, inject_memory, extra_context, tools)
 
         # Hanako 模式：先尝试 Hanako，失败再考虑 fallback
+        logger.debug("chat() 路由: source=%s transport_mode=%s session_mgr=%s", source, self.transport_mode, self._session_manager is not None)
         try:
             return self.chat_via_hanako(message, inject_memory, extra_context, tools)
         except HanakoUnavailableBeforeSend as e:
@@ -332,6 +350,133 @@ class HanakoPetAdapter:
             # 已交给 Hanako，绝不 fallback - 避免双执行
             logger.error("Hanako 已接收但未完成，不能 fallback: %s", e)
             return "…", "neutral"
+
+    def chat_stream(self, message: str, inject_memory: bool = True, extra_context: str = "", tools: list = None, source: str = "user"):
+        """P2: 流式调用 LLM API — 边生成边 yield chunks。
+
+        返回 generator，每次 yield (chunk_text, emotion, action_intent)。
+        emotion/action_intent 在解析到完整标签时更新（None = 尚未检测到）。
+
+        用于 _process_message 边生成边触发情绪/动作，用户更早看到反应。
+        """
+        if not self._base_url or not self._api_key:
+            yield "...(模型未配置,请在设置中配置模型)", "neutral", None
+            return
+
+        # 构建 messages（同 chat_direct）
+        user_content = message.strip()
+        if source in ("proactive", "idle"):
+            user_content = f"[{source}] {user_content}"
+
+        messages = [{"role": "system", "content": self._system_prompt + "\n\n[输出规则] 1. 回复简短自然，不超过 2 句话。2. 在回复中嵌入情绪标签，格式 [emotion:xxx]，可选值：happy/sad/angry/surprised/thinking/neutral/cute/missing。可以在句末或句中。例如：'你回来啦！[emotion:happy]' 或 '[emotion:thinking]让我想想……'" + self._build_action_prompt()}]
+
+        if inject_memory:
+            memory_text = self._context.build_memory_context(max_chars=self._memory_budget)
+            if memory_text:
+                messages.append({"role": "system", "content": f"[以下是你当前的记忆和状态,请自然参考--不要逐字复述,可以作为话题延续的线索]\n{memory_text}"})
+
+        if extra_context:
+            messages.append({"role": "system", "content": extra_context})
+
+        for turn in list(self._history)[-10:]:
+            messages.append(turn)
+
+        messages.append({"role": "user", "content": user_content})
+
+        # 流式调用 API
+        try:
+            for chunk in self._call_api_stream(messages, tools=tools):
+                yield chunk
+        except Exception as e:
+            logger.error("流式 API 调用失败: %s", e)
+            yield f"（嗯…让我缓一下）", "neutral", None
+
+    def _call_api_stream(self, messages: list[dict], tools: list = None):
+        """P2: 流式调用 OpenAI 兼容 API — yield chunks。
+
+        返回 generator，每次 yield (chunk_text, accumulated_text, emotion, action_intent)。
+        """
+        base = self._base_url.rstrip('/')
+        if not base.endswith('/v1') and '/v1/' not in base:
+            base += '/v1'
+        url = f"{base}/chat/completions"
+
+        payload = {
+            "model": self._model,
+            "messages": messages,
+            "temperature": 0.7,
+            "stream": True,
+            **({"tools": tools} if tools else {}),
+        }
+
+        resp = requests.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            stream=True,
+            timeout=60,
+        )
+        resp.raise_for_status()
+
+        accumulated = ""
+        emotion = "neutral"
+        action_intent = None
+
+        import json as _json
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            # SSE 格式: data: {...}
+            line_str = line.decode('utf-8')
+            if not line_str.startswith('data:'):
+                continue
+            data_str = line_str[5:].strip()
+            if data_str == '[DONE]':
+                break
+            try:
+                data = _json.loads(data_str)
+            except Exception:
+                continue
+            
+            choices = data.get('choices', [])
+            if not choices:
+                continue
+            delta = choices[0].get('delta', {})
+            chunk_text = delta.get('content', '')
+            
+            if chunk_text:
+                accumulated += chunk_text
+                # 解析 emotion/action 标签
+                emotion = self._parse_emotion_from_text(accumulated)
+                action_intent = self._parse_action_from_text(accumulated)
+                yield chunk_text, accumulated, emotion, action_intent
+
+        # 完成
+        yield '', accumulated, emotion, action_intent
+
+    def _parse_emotion_from_text(self, text: str) -> str:
+        """P2: 从流式文本中解析 emotion 标签"""
+        import re
+        m = re.search(r'\[emotion:([a-z]+)\]', text)
+        if m:
+            return m.group(1)
+        return "neutral"
+
+    def _parse_action_from_text(self, text: str) -> dict | None:
+        """P2: 从流式文本中解析 action 标签"""
+        import re
+        import json as _json
+        # 找最后一个完整的 [action:{...}]
+        m = re.search(r'\[action:(\{[^}]*\})\]', text)
+        if m:
+            try:
+                return _json.loads(m.group(1))
+            except Exception:
+                pass
+        return None
 
     def chat_via_hanako(
         self,
@@ -584,6 +729,7 @@ class HanakoPetAdapter:
     def set_session_manager(self, manager) -> None:
         """注入 SessionManager 实例（覆盖延迟导入的类引用）"""
         self._session_manager = manager
+        logger.info("SessionManager 已注入 adapter (agent=%s)", self.agent_id)
 
     def _parse_function_in_content(self, text: str) -> list:
         """从 content 文本中解析 <function> 标签格式的工具调用
@@ -614,6 +760,55 @@ class HanakoPetAdapter:
                 }
             })
         return tool_calls
+
+    def _build_action_prompt(self) -> str:
+        """构建动作列表 prompt（注入到 system prompt 输出规则）。
+
+        让 LLM 知道有哪些动作可以调用，格式：
+        [action:{"gesture":"touch","intensity":0.6}]
+        
+        P1: 隐式文档按需注入 — 只放简短列表，AI 用了才 Poke 完整文档。
+        省 token 且渐进式学习。
+        """
+        try:
+            renderer = getattr(self, '_renderer', None) or getattr(self, '_pet_renderer', None)
+            if not renderer or not hasattr(renderer, 'available_actions'):
+                return ""
+            actions = renderer.available_actions
+            if not actions:
+                return ""
+            # 简短列表：只放动作名（省 token）
+            action_names = [a['name'] for a in actions]
+            return (
+                "\n3. 可在回复中嵌入动作标签触发桌宠动作，格式 [action:{...}]"
+                "\n可用动作：" + "/".join(action_names) +
+                "\n提示：当用户描述场景或情绪时，主动配合动作让互动更生动。"
+            )
+        except Exception:
+            return ""
+
+    def get_action_documentation(self, action_name: str) -> str:
+        """P1: 获取单个动作的完整文档（按需注入）。
+
+        当 AI 使用了某个动作标签时，返回该动作的完整说明。
+        """
+        try:
+            renderer = getattr(self, '_renderer', None) or getattr(self, '_pet_renderer', None)
+            if not renderer or not hasattr(renderer, 'available_actions'):
+                return ""
+            actions = renderer.available_actions
+            for a in actions:
+                if a['name'] == action_name:
+                    example = f'[action:{{"gesture":"{action_name}","intensity":0.7}}]'
+                    return (
+                        f"动作: {a['name']} ({a['label']})\n"
+                        f"说明: {a.get('description', '无')}\n"
+                        f"强度范围: 0.0-1.0（默认 0.7）\n"
+                        f"示例: {example}"
+                    )
+            return ""
+        except Exception:
+            return ""
 
     def _call_api(self, messages: list[dict], tools: list = None):
         """调用 LLM API

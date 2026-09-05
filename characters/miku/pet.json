@@ -67,5 +67,111 @@
       "expression": "脸红"
     }
   },
+  "actions": {
+    "idle": { "label": "待机", "motion": "idle", "intensity": 0.5 },
+    "waving": { "label": "挥手", "motion": "waving", "intensity": 0.8 },
+    "happy": { "label": "开心", "motion": "happy", "intensity": 0.8 },
+    "touch": { "label": "摸头", "motion": "touch", "intensity": 0.6 },
+    "thinking": { "label": "思考", "motion": "thinking", "intensity": 0.5 },
+    "sad": { "label": "难过", "motion": "sad", "intensity": 0.6 },
+    "angry": { "label": "生气", "motion": "angry", "intensity": 0.8 },
+    "walk": { "label": "走动", "motion": "walk", "intensity": 0.7 },
+    "sleep": { "label": "睡觉", "motion": "sleep", "intensity": 0.3 },
+    "working": { "label": "工作", "motion": "working", "intensity": 0.6 },
+    "pat": { "label": "拍头", "motion": "touch", "intensity": 0.5 },
+    "stroke": { "label": "顺毛", "motion": "touch", "intensity": 0.4 }
+  },
+  "immediate_reactions": [
+    {
+      "keywords": ["克里斯蒂娜", "kurisu", "红莉栖"],
+      "action": "touch",
+      "emotion": "cute",
+      "intensity": 0.7
+    },
+    {
+      "keywords": ["喜欢", "爱你", "想你"],
+      "action": "happy",
+      "emotion": "happy",
+      "intensity": 0.8
+    },
+    {
+      "keywords": ["讨厌", "烦死", "讨厌你"],
+      "action": "angry",
+      "emotion": "angry",
+      "intensity": 0.6
+    },
+    {
+      "keywords": ["晚安", "睡觉", "困了"],
+      "action": "sleep",
+      "emotion": "sad",
+      "intensity": 0.5
+    },
+    {
+      "keywords": ["摸摸", "摸头", "揉揉", "顺毛"],
+      "action": "touch",
+      "emotion": "cute",
+      "intensity": 0.8
+    },
+    {
+      "keywords": ["击掌", "give me five"],
+      "action": "waving",
+      "emotion": "happy",
+      "intensity": 0.9
+    },
+    {
+      "keywords": ["抱抱", "拥抱", "抱一个"],
+      "action": "happy",
+      "emotion": "happy",
+      "intensity": 0.8
+    },
+    {
+      "keywords": ["喝茶", "咖啡", "喝一杯"],
+      "action": "thinking",
+      "emotion": "thinking",
+      "intensity": 0.6
+    },
+    {
+      "keywords": ["游戏", "开黑", "打游戏"],
+      "action": "happy",
+      "emotion": "happy",
+      "intensity": 0.7
+    },
+    {
+      "keywords": ["散步", "走走", "出门"],
+      "action": "walk",
+      "emotion": "happy",
+      "intensity": 0.6
+    },
+    {
+      "keywords": ["难过", "伤心", "哭"],
+      "action": "sad",
+      "emotion": "sad",
+      "intensity": 0.5
+    },
+    {
+      "keywords": ["生气", "愤怒", "气死"],
+      "action": "angry",
+      "emotion": "angry",
+      "intensity": 0.7
+    },
+    {
+      "keywords": ["开心", "快乐", "高兴"],
+      "action": "happy",
+      "emotion": "happy",
+      "intensity": 0.8
+    },
+    {
+      "keywords": ["工作", "学习", "写代码"],
+      "action": "thinking",
+      "emotion": "thinking",
+      "intensity": 0.5
+    },
+    {
+      "keywords": ["累", "疲惫", "困"],
+      "action": "sleep",
+      "emotion": "sad",
+      "intensity": 0.4
+    }
+  ],
   "scale": 1.0
 }

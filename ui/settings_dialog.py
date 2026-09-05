@@ -39,7 +39,7 @@ class SettingsDialog(QDialog):
         self._config = config or load_config()
         self._pet_manager = pet_manager
         self.setWindowTitle("设置")
-        self.setMinimumSize(460, 600)
+        self.setMinimumSize(380, 500)  # P2: 调小最小尺寸，减少空余空间
         mgr = get_default()
         self._ui_theme = mgr.current if mgr else "dark"
         if mgr is not None:
@@ -965,14 +965,18 @@ class SettingsDialog(QDialog):
 
         # 统一应用切换：agents[].enabled + character + character_package
         self._apply_package_selection(agent_id)
-        save_config(self._config)
-        # 刷新防抖写盘 pending：退出时 async_config_saver.shutdown() 写的是它手里持有的
-        # config 引用，若不刷新会用旧角色把本次切换结果覆盖回去（重启又变回原角色）。
+        
+        # P2 Fix: 刷新防抖写盘 pending，确保旧配置不会覆盖本次切换结果。
+        # 原顺序（save → schedule）有竞态：若后台线程正在写旧角色配置，
+        # schedule 的新配置会被覆盖。改为先 flush 旧配置，再保存新配置。
         try:
             from config import async_config_saver
-            async_config_saver.schedule(self._config)
+            async_config_saver.shutdown()  # 立即写盘 pending（若有）
+            async_config_saver.schedule(self._config)  # 登记新配置
         except Exception:
             pass
+        
+        save_config(self._config)
         self._pkg_status_label.setText(f"已切换到: {agent_id}")
         QMessageBox.information(self, "切换成功", f"桌宠已切换为 '{agent_id}'，重启后生效")
 

@@ -91,9 +91,29 @@ def detect_format(character_id: str) -> str:
 
 
 def create_renderer(character_id: str, parent, override_format: str = None) -> AvatarRenderer:
-    """为角色创建合适的渲染器实例（不调用 load）。"""
-    fmt = detect_format(character_id)
-    logger.info("create_renderer('%s') -> format=%s", character_id, fmt)
+    """为角色创建合适的渲染器实例（不调用 load）。
+
+    渲染格式优先级：
+    1. 角色有 live2d 资源 → live2d（最高优先级，避免用户 override 导致 Live2D 角色白屏）
+    2. override_format（用户手动指定，非 "auto"）
+    3. pet.json "format" 字段（角色显式声明）
+    4. 目录结构推断（live2d/ → live2d, 其他 → sprite）
+    """
+    # P2 Fix: 如果角色有 live2d 资源，优先使用 live2d（避免 sprite override 导致白屏）
+    auto_fmt = detect_format(character_id)
+    if auto_fmt == "live2d":
+        fmt = "live2d"
+        if override_format and override_format != "auto" and override_format != "live2d":
+            logger.warning(
+                "create_renderer('%s'): 用户指定 %s，但角色有 live2d 资源，强制使用 live2d",
+                character_id, override_format,
+            )
+    elif override_format and override_format != "auto":
+        fmt = override_format
+        logger.info("create_renderer('%s') -> format=%s (user override)", character_id, fmt)
+    else:
+        fmt = auto_fmt
+        logger.info("create_renderer('%s') -> format=%s (auto)", character_id, fmt)
 
     # P0 调试：OC_DISABLE_LIVE2D=1 时强制走 Q6 精灵渲染器，
     # 完全不 import live2d-py，用于二分法隔离"live2d C 层是否引发 0x8001010d"。

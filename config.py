@@ -7,7 +7,7 @@ import time
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
 
 DEFAULT_CONFIG = {
-    "character": "yuexinmiao",
+    "character": "",  # 默认角色已取消（2026-09-04）；首次启动由引导流程选择
     "dialog": {
         "agent_id": "",  # 对话后端绑定的 Hanako agent（空=未绑定，首次启动引导选择；不硬编码默认）
         # 每个桌宠实例可自定义绑定；多桌宠各自独立
@@ -237,10 +237,6 @@ CHARACTER_INFO = {
     "default": {
         "name": "幽灵团子",
         "path": "characters/default",
-    },
-    "yuexinmiao": {
-        "name": "月薪喵",
-        "path": "characters/yuexinmiao",
     },
     "phoebe": {
         "name": "菲比",

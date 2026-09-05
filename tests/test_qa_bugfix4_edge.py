@@ -153,6 +153,10 @@ def _make_engine(adapter=None):
     engine._tts_executor = _FakeExecutor()
     engine._synth_and_reply = lambda *a, **k: None
     engine.replies = []
+    
+    # P0: Poke 缓存（跳过 __init__ 副作用，需手动初始化）
+    engine._poke_cache: list[dict] = []
+    engine._poke_timer = None
 
     def _on_reply(reply, emotion, anim, audio_path):
         engine.replies.append((reply, emotion, anim, audio_path))

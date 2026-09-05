@@ -1,0 +1,73 @@
+{
+  "_comment": "Live2D 模型 profile（T09 Phase 3）。参考 Soullink Emotion SDK 的 standardParamTable 设计。",
+  "_usage": "放在 characters/<id>/live2d/profile.json，缺省走 model_profile.py 的 DEFAULT_PROFILE。",
+  "_fields": {
+    "model_id": "模型标识（日志用）",
+    "groups": "参数组映射，key 为语义组名（eyes_open/eyes_smile/...）",
+    "groups.<name>.channels": "参数通道列表，每项含 id（Live2D 参数名）、weight、min/max（可选 clamp）、scale（可选倍率）",
+    "groups.<name>.priority": "T08 仲裁优先级（默认 0）",
+    "special_params": "自定义参数映射（如水印/贴图开关），key 为语义名、value 为 Live2D 参数 ID",
+    "emotion_facial_targets": "情绪→面部参数目标值（可选，覆盖内置表）"
+  },
+  "model_id": "miku_default",
+  "groups": {
+    "eyes_open": {
+      "channels": [
+        {"id": "ParamEyeLOpen", "weight": 0.5, "min": 0.0, "max": 1.0},
+        {"id": "ParamEyeROpen", "weight": 0.5, "min": 0.0, "max": 1.0}
+      ]
+    },
+    "eyes_smile": {
+      "channels": [
+        {"id": "ParamEyeLSmile", "weight": 0.6},
+        {"id": "ParamEyeRSmile", "weight": 0.6}
+      ]
+    },
+    "eyebrows": {
+      "channels": [
+        {"id": "ParamBrowLAngle", "weight": 0.6},
+        {"id": "ParamBrowRAngle", "weight": 0.6},
+        {"id": "ParamBrowLForm", "weight": 0.6},
+        {"id": "ParamBrowRForm", "weight": 0.6}
+      ]
+    },
+    "mouth_form": {
+      "channels": [
+        {"id": "ParamMouthForm", "weight": 0.6}
+      ]
+    },
+    "mouth_open": {
+      "channels": [
+        {"id": "ParamMouthOpenY", "weight": 0.5, "min": 0.0, "max": 1.0}
+      ]
+    },
+    "gaze": {
+      "channels": [
+        {"id": "ParamEyeBallX", "weight": 0.3},
+        {"id": "ParamEyeBallY", "weight": 0.3}
+      ]
+    },
+    "head_angle": {
+      "channels": [
+        {"id": "ParamAngleX", "weight": 0.35, "scale": 15.0},
+        {"id": "ParamAngleY", "weight": 0.35, "scale": 12.0}
+      ]
+    },
+    "breath": {
+      "channels": [
+        {"id": "ParamBreath", "weight": 1.0}
+      ]
+    },
+    "hair": {
+      "channels": [
+        {"id": "ParamHairFront", "weight": 0.5, "scale": 0.6},
+        {"id": "ParamHairSide", "weight": 0.5, "scale": 0.4}
+      ]
+    },
+    "blush": {
+      "channels": []
+    }
+  },
+  "special_params": {},
+  "emotion_facial_targets": null
+}

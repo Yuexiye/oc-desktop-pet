@@ -37,6 +37,13 @@ class PetManager:
     def __init__(self):
         self._windows: dict[str, object] = {}  # agent_id -> PetWindow
         self._config = self._load_config()
+        self._config_mtime = 0  # P2: 配置热重载 — 上次加载的文件修改时间
+        try:
+            cfg_path = PROJECT_DIR / "config.json"
+            if cfg_path.exists():
+                self._config_mtime = cfg_path.stat().st_mtime
+        except Exception:
+            pass
         # ── launch 失败兜底：每个 agent 只记一次 ERROR，避免日志刷屏 ──
         self._launch_error_logged: set[str] = set()
         # ── M4: MultiPetBridge ──
@@ -89,6 +96,85 @@ class PetManager:
             except Exception as e:
                 logger.warning("Failed to load config: %s", e)
         return {}
+    
+    def _reload_config(self) -> bool:
+        """P2: 热重载配置（检查文件变更，自动更新缓存）
+        
+        Returns:
+            True 如果配置有变更并已重载，False 如果无变更
+        """
+        cfg_path = PROJECT_DIR / "config.json"
+        if not cfg_path.exists():
+            return False
+        
+        try:
+            # 读取文件修改时间
+            current_mtime = cfg_path.stat().st_mtime
+            last_mtime = getattr(self, '_config_mtime', 0)
+            
+            if current_mtime <= last_mtime:
+                return False  # 无变更
+            
+            # 重新加载
+            new_config = json.loads(cfg_path.read_text("utf-8"))
+            
+            # 比较关键字段（agents）
+            old_agents = self._config.get("agents", [])
+            new_agents = new_config.get("agents", [])
+            
+            if old_agents != new_agents:
+                logger.info("Config hot reload: agents changed %s -> %s",
+                            [a.get('id') for a in old_agents],
+                            [a.get('id') for a in new_agents])
+                self._config = new_config
+                self._config_mtime = current_mtime
+                return True
+            
+            # 其他字段变更（如 character、scale 等）
+            if old_agents == new_agents:
+                # 即使 agents 没变，也更新其他字段
+                self._config = new_config
+                self._config_mtime = current_mtime
+                logger.debug("Config hot reload: other fields updated")
+                return True
+            
+        except Exception as e:
+            logger.warning("Config reload failed: %s", e)
+        
+        return False
+    
+    def _validate_enabled_agents(self) -> bool:
+        """P2: 验证启用的角色是否有精灵资源，没有就自动禁用
+        
+        Returns:
+            True 如果配置有变更（禁用了无模型的角色）
+        """
+        changed = False
+        for agent in self._config.get("agents", []):
+            if not agent.get("enabled", True):
+                continue  # 已禁用的跳过
+            
+            agent_id = agent.get("id")
+            if not agent_id:
+                continue
+            
+            # 检查是否有精灵资源
+            if not self._has_sprites(agent_id):
+                logger.warning("Agent %s is enabled but has no sprites, disabling", agent_id)
+                agent["enabled"] = False
+                changed = True
+        
+        return changed
+    
+    def _has_any_characters(self) -> bool:
+        """P2: 检查是否有可用的角色模型（characters/ 目录非空）"""
+        if not CHARACTERS_DIR.exists():
+            return False
+        # 检查是否有子目录（每个角色一个目录）
+        for item in CHARACTERS_DIR.iterdir():
+            if item.is_dir():
+                return True
+        return False
 
     def _save_config(self):
         """保存 config.json"""
@@ -320,6 +406,21 @@ class PetManager:
 
     def launch_all(self):
         """启动所有 enabled 的桌宠窗口（自动启动 bridge）"""
+        # P2: 热重载配置（检查文件变更，自动更新缓存）
+        self._reload_config()
+        
+        # P2: 检查是否有可用的角色模型
+        if not self._has_any_characters():
+            logger.warning("No character models found in %s, skipping pet launch", CHARACTERS_DIR)
+            logger.warning("Please install a character package before launching pets")
+            return
+        
+        # P2: 验证启用的角色是否有精灵资源，没有就自动禁用
+        changed = self._validate_enabled_agents()
+        if changed:
+            self._save_config()
+            logger.info("Config updated: disabled agents without sprites")
+        
         # 确保 bridge 已启动
         if self._bridge_enabled and not self._bridge:
             self.start_bridge()

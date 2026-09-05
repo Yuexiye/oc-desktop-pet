@@ -10,6 +10,9 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Optional
 
+# T08: MotionMixer 抽象层类型
+from avatar.motion_mixer import Layer, MotionRequest, MotionMixer
+
 
 class AvatarRenderer(ABC):
     """Avatar 渲染器抽象基类。
@@ -112,6 +115,38 @@ class AvatarRenderer(ABC):
         默认实现为空操作；Live2DRenderer 使用该值做面部参数平滑过渡。
         """
         return None
+
+    # ── T08: MotionMixer 统一混流接口 ──
+
+    def submit_motion_request(self, req: "MotionRequest") -> bool:
+        """T08: 提交动作请求（经层优先级仲裁）。
+
+        默认实现为 no-op（精灵/VRM 渲染器继承即可）；
+        Live2DRenderer 重写为 mixer 仲裁 + motion/expression 播放。
+        """
+        return True
+
+    def force_idle(self) -> None:
+        """T08: 强制重置到 idle（替代外部直调 _force_idle）。
+
+        默认实现为 no-op；Live2DRenderer 重写为 mixer.force_reset + _force_idle。
+        """
+        return None
+
+    def play_emote_sequence(self, preset_name: str) -> bool:
+        """T09: 播放 emote 预设序列。
+
+        默认实现为 no-op（返回 False）；Live2DRenderer 和 SpriteRenderer 各自重写。
+        """
+        return False
+
+    def get_motion_layer(self) -> "Layer":
+        """T08: 获取当前活跃动作层。默认返回 IDLE。"""
+        return Layer.IDLE
+
+    def is_motion_idle(self) -> bool:
+        """T08: 是否处于 idle 层（无高优先级动作在播）。默认返回 True。"""
+        return True
 
     # ── 视线 ──
 

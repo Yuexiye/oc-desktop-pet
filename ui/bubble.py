@@ -188,6 +188,28 @@ class ChatBubble(QWidget):
 
         self.update()
 
+    def append_text(self, chunk: str):
+        """P2: 流式追加文字（边生成边显示）。
+
+        与 set_text 不同：不重启打字机，直接在已有文本后追加。
+        用于 LLM 流式输出场景。
+        """
+        if not chunk:
+            return
+        
+        # 停止当前打字机（如果还在打字）
+        self._typewriter_timer.stop()
+        self._is_typing = False
+        
+        # 追加文本
+        self._full_text += chunk
+        self._text = self._full_text
+        self._typewriter_revealed = len(self._text)  # 全部显示
+        
+        # 更新大小并刷新
+        self._update_size()
+        self.update()
+
     def set_sticker(self, emoji: str, caption: str = ""):
         """大表情贴图模式：居中玻璃卡 + 可选文案（如摸头大反应的 💕）"""
         self._typewriter_timer.stop()

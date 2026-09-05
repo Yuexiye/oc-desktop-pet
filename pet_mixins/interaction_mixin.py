@@ -153,7 +153,16 @@ class InteractionMixin:
             elif t == QEvent.MouseButtonDblClick:
                 # 双击 = 抚摸（摸一下）；取消尚未触发的单击聊天
                 self._cancel_pending_click()
-                self._on_pet_pat()
+                # P2: hit detection — 根据点击部位触发不同反应
+                hit_area = None
+                if hasattr(self, '_renderer') and hasattr(self._renderer, 'hit_detect'):
+                    try:
+                        # 获取点击位置（相对 char_label）
+                        pos = event.globalPos() - self.char_label.mapToGlobal(QPoint(0, 0))
+                        hit_area = self._renderer.hit_detect(pos.x(), pos.y())
+                    except Exception:
+                        pass
+                self._on_pet_pat(hit_area=hit_area)
                 return True
 
         return super().eventFilter(obj, event)
@@ -358,8 +367,12 @@ class InteractionMixin:
     _PAT_BIG_TEXT = "最喜欢主人了！"
     _STROKE_BUBBLES = ["呜喵…", "咕噜咕噜…", "好困…像被按了关机键", "这里也要摸~"]
 
-    def _on_pet_pat(self):
-        """双击 = 摸一下：开心反应 + 连击累计"""
+    def _on_pet_pat(self, hit_area: str | None = None):
+        """双击 = 摸一下：开心反应 + 连击累计
+
+        P2: hit_area 为点击部位（head/body/hair/eye/hand/foot），
+        不同部位触发不同动作和气泡。
+        """
         self._mark_user_interaction()
         sfx_play("pat")
         self._pet_combo += 1
@@ -370,10 +383,11 @@ class InteractionMixin:
                 self._state_mgr.apply_item_effect({"mood": 6, "likability": 3})
             else:
                 self._state_mgr.apply_item_effect({"mood": 2, "likability": 1})
-        # 摸头反馈：先触发 Live2D touch_head 动画（若有），再放开心反应
+        # P2: 根据点击部位选择动作
+        anim = self._pat_anim_for_area(hit_area)
         try:
             if hasattr(self._renderer, "play_anim"):
-                self._renderer.play_anim("touch")
+                self._renderer.play_anim(anim)
         except Exception:
             pass
         self._pet_play_happy(big=big)
@@ -384,7 +398,39 @@ class InteractionMixin:
         else:
             import random
             pool = self._PAT_BUBBLES.get(min(self._pet_combo, 4), self._PAT_BUBBLES[1])
-            self._show_bubble(random.choice(pool), emotion="happy")
+            # P2: 部位专属气泡
+            area_bubble = self._area_bubble_for(hit_area)
+            bubble_text = area_bubble or random.choice(pool)
+            self._show_bubble(bubble_text, emotion="happy")
+
+    def _pat_anim_for_area(self, hit_area: str | None) -> str:
+        """P2: 点击部位 → 动画名映射"""
+        if hit_area == 'eye':
+            return 'surprised'  # 戳眼睛 → 惊讶
+        elif hit_area == 'hand':
+            return 'waving'  # 戳手 → 挥手
+        elif hit_area == 'foot':
+            return 'surprised'  # 戳脚 → 惊讶
+        elif hit_area == 'body':
+            return 'happy'  # 戳身体 → 开心
+        elif hit_area == 'hair':
+            return 'touch'  # 戳头发 → 摸头
+        return 'touch'  # head 或默认 → 摸头
+
+    _AREA_BUBBLES = {
+        'eye': ["哎哟~ 眼睛不能戳!", "这里要温柔一点~"],
+        'hand': ["抓到手啦~", "嗯? 摸到手了"],
+        'foot': ["嘿嘿~ 痒痒的", "这里有敏感区哦"],
+        'body': ["好舒服~", "喜欢这样~"],
+        'hair': ["呼噜呼噜~", "头发要顺毛~"],
+    }
+
+    def _area_bubble_for(self, hit_area: str | None):
+        """P2: 点击部位 → 专属气泡文案"""
+        if hit_area and hit_area in self._AREA_BUBBLES:
+            import random
+            return random.choice(self._AREA_BUBBLES[hit_area])
+        return None
 
     def _on_pet_stroke(self):
         """按住不动 = 连续撸：涓流心情 + 单颗爱心"""

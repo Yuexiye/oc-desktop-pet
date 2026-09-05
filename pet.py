@@ -81,6 +81,8 @@ class PetWindow(AudioMixin, AnimationMixin, InteractionMixin, ChatMixin, Behavio
     # 跨线程信号：后台线程 -> 主线程
     engine_reply_signal = Signal(str, str, str, str, object)  # reply, emotion, anim, audio_path, action_intent
     engine_status_signal = Signal(str)  # status message
+    # P1: 流式 chunk 信号（边生成边显示气泡）
+    engine_chunk_signal = Signal(str, str, str, int)  # chunk, accumulated, emotion, gen
     voice_status_signal = Signal(str)  # voice input status
     # 跨线程截停 TTS：ASR 后台线程不得直调 _tts_player（QMediaPlayer 是 COM 组件，
     # 跨线程调用会触发 RPC_E_SERVERCALL_RETRYLATER 0x8001010D），必须经信号绕回主线程。
@@ -272,6 +274,10 @@ class PetWindow(AudioMixin, AnimationMixin, InteractionMixin, ChatMixin, Behavio
         # 让角色“在线”。“对话中暂停”通过 _mark_user_interaction → mark_interaction 实现。
         self._presence = None
         self._presence_timer = None
+        # P2: 动作冷却追踪（连续触发合并成一次，防连发）
+        # {action_id: last_trigger_time}
+        self._action_cooldowns: dict[str, float] = {}
+        self._action_cooldown_sec: float = 2.0  # 默认 2 秒冷却
         try:
             from core.presence import PresenceScheduler
             self._presence = PresenceScheduler(on_presence=self._on_presence_action)
@@ -421,6 +427,8 @@ class PetWindow(AudioMixin, AnimationMixin, InteractionMixin, ChatMixin, Behavio
         # 复用 status 通道在主线程显示 thinking 气泡，避免 27s 静默无反馈。
         self._engine.on_progress = self._on_engine_status
         self._engine.on_tts_ready = lambda: logger.info("Engine TTS ready")
+        # P1: 流式 chunk 回调（边生成边显示气泡）
+        self._engine.on_llm_chunk = self._on_engine_chunk
         # M4: 桥接 on_tool_progress -> Qt Signal
         self._engine.on_tool_progress = lambda tool_name, phase, display_text, success: \
             self.tool_progress_signal.emit(tool_name, phase, display_text, success)
@@ -431,6 +439,8 @@ class PetWindow(AudioMixin, AnimationMixin, InteractionMixin, ChatMixin, Behavio
         # 连接跨线程信号
         self.engine_reply_signal.connect(self._do_engine_reply)
         self.engine_status_signal.connect(self._do_engine_status)
+        # P1: 流式 chunk 信号连接
+        self.engine_chunk_signal.connect(self._do_engine_chunk)
         self.voice_status_signal.connect(self._do_voice_status)
         self.tts_stop_signal.connect(self._do_tts_stop)
         self.chat_state_signal.connect(self._do_chat_state)
@@ -992,6 +1002,15 @@ class PetWindow(AudioMixin, AnimationMixin, InteractionMixin, ChatMixin, Behavio
         except Exception:
             pass
         if self._engine:
+            # P1: 用户输入即时反应 — 分析内容，立刻触发动作（不等 AI 回复）
+            try:
+                if self._action_linker and self._action_linker.enabled:
+                    reactions = self._action_linker.check_user_input(text)
+                    for r in reactions:
+                        self._apply_immediate_reaction(r)
+            except Exception as e:
+                logger.debug("即时反应失败: %s", e)
+            
             try:
                 self._engine.interrupt(reason="new_message")
             except Exception:
@@ -1798,11 +1817,65 @@ class PetWindow(AudioMixin, AnimationMixin, InteractionMixin, ChatMixin, Behavio
             self.show()
 
     def _trigger_action(self, action_id: str):
-        """用户点击动作联动项"""
+        """用户点击动作联动项 — 直接触发 renderer.apply_action_intent（P0 优化：去掉 outbox 绕路）"""
         self._mark_user_interaction()
+        
+        # P2: 动作冷却检查（连续触发合并成一次）
+        now = time.time()
+        last_trigger = self._action_cooldowns.get(action_id, 0)
+        if now - last_trigger < self._action_cooldown_sec:
+            logger.debug("Action cooldown: %s (last=%.1fs ago)", action_id, now - last_trigger)
+            return  # 冷却中，跳过
+        self._action_cooldowns[action_id] = now
+        
+        # P0: 直接触发 renderer，不经过 outbox.json → Agent 绕路
+        try:
+            renderer = getattr(self, '_renderer', None)
+            if renderer and hasattr(renderer, 'apply_action_intent'):
+                renderer.apply_action_intent({"gesture": action_id, "intensity": 0.7})
+                self._show_bubble(f"{action_id}!", emotion="happy")
+                return
+        except Exception as e:
+            logger.warning("直接触发动作失败，回退 outbox: %s", e)
+        # 回退：outbox 绕路（兼容旧逻辑）
         basedir = Path(__file__).parent / "data"
         self._action_linker.trigger_action(basedir, action_id)
         self._show_bubble(f"{action_id}!", emotion="happy")
+
+    def _apply_immediate_reaction(self, reaction: dict):
+        """P1: 用户输入即时反应 — 直接应用情绪+动作到渲染器。
+
+        与 _trigger_action 不同：
+        - 不需要显示气泡（静默反应）
+        - 同时设置情绪和动作
+        - 强度可调
+
+        Args:
+            reaction: {action, emotion, intensity}
+        """
+        try:
+            renderer = getattr(self, '_renderer', None)
+            if not renderer:
+                return
+            
+            action_id = reaction.get("action", "touch")
+            emotion = reaction.get("emotion", "happy")
+            intensity = reaction.get("intensity", 0.7)
+            
+            # 设置情绪（优先级仲裁，不打断当前对话）
+            self._set_surface_emotion(emotion)
+            
+            # 触发动作
+            if hasattr(renderer, 'apply_action_intent'):
+                renderer.apply_action_intent({
+                    "gesture": action_id,
+                    "intensity": intensity,
+                })
+            
+            logger.debug("即时反应: %s (emotion=%s, intensity=%.1f)", 
+                        action_id, emotion, intensity)
+        except Exception as e:
+            logger.debug("即时反应失败: %s", e)
 
     def fit_window_to_model(self, w: int, h: int):
         """窗口贴合到模型实际大小（Live2D 渲染器测量后回调）。
@@ -2545,6 +2618,22 @@ class PetWindow(AudioMixin, AnimationMixin, InteractionMixin, ChatMixin, Behavio
         # 用 Signal 发射，Qt 会自动跨线程投递到主线程
         self.engine_reply_signal.emit(reply, emotion, anim, audio_path, action_intent)
 
+    def _on_engine_chunk(self, chunk: str, accumulated: str, emotion: str, gen: int):
+        """P1: 流式 chunk 回调 - 从后台线程调用，通过信号转到主线程"""
+        self.engine_chunk_signal.emit(chunk, accumulated, emotion, gen)
+
+    def _do_engine_chunk(self, chunk: str, accumulated: str, emotion: str, gen: int):
+        """在主线程中处理流式 chunk — 边生成边显示气泡"""
+        try:
+            # 开始流式气泡（第一次 chunk 时）
+            if not getattr(self, '_is_streaming_bubble', False):
+                self._show_bubble_stream(accumulated, emotion)
+            else:
+                # 追加文本到现有气泡
+                self._append_bubble_text(chunk)
+        except Exception:
+            logger.debug("_do_engine_chunk failed: %s", chunk[:20])
+
     def _do_engine_reply(self, reply: str, emotion: str, anim: str, audio_path: str, action_intent=None):
         """在主线程中处理引擎回复"""
         try:
@@ -2560,6 +2649,11 @@ class PetWindow(AudioMixin, AnimationMixin, InteractionMixin, ChatMixin, Behavio
         # 取消超时计时器
         if hasattr(self, '_think_timeout'):
             self._think_timeout.stop()
+        
+        # P1: 如果正在流式显示，结束流式气泡（用完整回复替换）
+        if getattr(self, '_is_streaming_bubble', False):
+            self._finish_bubble_stream()
+            self._show_bubble(reply, emotion)
 
         # 截停旧 TTS
         self._tts_player.stop()
@@ -2590,9 +2684,16 @@ class PetWindow(AudioMixin, AnimationMixin, InteractionMixin, ChatMixin, Behavio
         try:
             r = getattr(self, "_renderer", None)
             if action_intent is not None and r is not None and hasattr(r, "apply_action_intent"):
-                # 结构化动作意图（[action:{...}]）：由渲染器平滑驱动表情/动作，
-                # 复用 Live2D 每帧指数平滑或精灵图帧序列，避免瞬间跳变。
-                r.apply_action_intent(action_intent)
+                # P2: 动作冷却检查（连续触发合并成一次）
+                now = time.time()
+                gesture = action_intent.get("gesture", "")
+                last_trigger = self._action_cooldowns.get(gesture, 0)
+                if now - last_trigger >= self._action_cooldown_sec or not gesture:
+                    # 结构化动作意图（[action:{...}]）：由渲染器平滑驱动表情/动作，
+                    # 复用 Live2D 每帧指数平滑或精灵图帧序列，避免瞬间跳变。
+                    r.apply_action_intent(action_intent)
+                    if gesture:
+                        self._action_cooldowns[gesture] = now
             else:
                 # 回退：emotion 标签路径（[emotion:xxx]）→ 身体动画
                 body_anim = anim
