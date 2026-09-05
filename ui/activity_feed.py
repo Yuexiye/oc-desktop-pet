@@ -1,5 +1,7 @@
 """活动流组件 — 基于 P-04 模式卡
 
+UI重构: 继承 PanelWindow 基类，统一标题栏、刷新按钮、关闭按钮
+
 浮动窗口，渲染 ActivityEvent 列表。
 P-04 模式卡四要素：操作者 + 动词 + 对象 + 时间戳。
 
@@ -18,13 +20,14 @@ from datetime import datetime
 from typing import List
 
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QScrollArea, QWidget,
 )
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QPainter, QColor, QFont, QPainterPath, QFontMetrics, QPen
 
 from ui.theme import get_default
+from ui.panel_window import PanelWindow
 
 logger = logging.getLogger(__name__)
 
@@ -209,90 +212,57 @@ class _FeedRow(QFrame):
         p.end()
 
 
-class ActivityFeed(QDialog):
+class ActivityFeed(PanelWindow):
     """活动流浮动窗口
-
+    
+    继承 PanelWindow，统一标题栏、刷新按钮、关闭按钮。
+    
     用法：
         feed = ActivityFeed(events, parent=None)
         feed.show()
-
+    
     主题切换：自动跟随 ThemeManager（light/dark）
     """
 
     def __init__(self, events=None, parent=None):
-        super().__init__(parent)
+        super().__init__("活动流", parent, show_refresh=True, min_size=(420, 320), max_size=(600, 800))
         self._events = events or []
-        self._theme = "light"
         self._rows: List[_FeedRow] = []
-        self._drag_pos = None  # 拖动用
-
-        self.setWindowTitle("活动流")
-        # FramelessWindowHint：去掉 Qt 默认 title bar，让 #feedHeader 作为唯一标题栏
-        self.setWindowFlags(
-            Qt.Dialog | Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint
-        )
-        self.setMinimumSize(420, 320)
-        self.resize(480, 480)
-
+        
+        # 计数标签（放在标题栏右侧）
+        self._count_label = QLabel(f"· {len(self._events)} 条")
+        self._count_label.setObjectName("feedCount")
+        self._count_label.setStyleSheet("font-size: 11px; color: rgba(%s);" % (get_default().current if get_default() else "dark", "text_muted"))
+        
         # 定时刷新（5s）—— 从 perception 拉取最新事件
         self._refresh_timer = QTimer(self)
         self._refresh_timer.timeout.connect(self._auto_refresh)
         self._refresh_timer.start(5000)
         self._refresh_source = None  # 外部注入 refresh callable
-
-        # 主题感知
-        mgr = get_default()
-        if mgr is not None:
-            self._theme = mgr.current
-            mgr.theme_changed.connect(self._on_theme_changed)
-
-        # 布局
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-
-        # 标题栏
-        header = QFrame()
-        header.setObjectName("feedHeader")
-        header.setFixedHeight(44)
-        header_lay = QHBoxLayout(header)
-        header_lay.setContentsMargins(16, 0, 8, 0)
-
-        title = QLabel("活动流")
-        title.setObjectName("feedTitle")
-        font = QFont("Microsoft YaHei UI", 11, QFont.DemiBold)
-        title.setFont(font)
-        header_lay.addWidget(title)
-
-        header_lay.addStretch()
-
-        self._count_label = QLabel(f"· {len(self._events)} 条")
-        self._count_label.setObjectName("feedCount")
-        header_lay.addWidget(self._count_label)
-
-        close_btn = QPushButton("×")
-        close_btn.setObjectName("feedClose")
-        close_btn.setFixedSize(28, 28)
-        close_btn.clicked.connect(self.close)
-        header_lay.addWidget(close_btn)
-
-        root.addWidget(header)
-
+        
+        # 填充内容区域
+        self._build_content()
+        
+        # 刷新按钮连接
+        self.refresh_requested.connect(self.refresh)
+        
+        self._populate()
+    
+    def _build_content(self):
+        """构建内容区域（滚动列表）"""
         # 滚动列表
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setObjectName("feedScroll")
-
+        
         self._list_widget = QWidget()
         self._list_layout = QVBoxLayout(self._list_widget)
         self._list_layout.setContentsMargins(0, 8, 0, 8)
         self._list_layout.setSpacing(0)
         self._list_layout.addStretch()
-
+        
         scroll.setWidget(self._list_widget)
-        root.addWidget(scroll, 1)
-
-        self._populate()
+        self.content_layout.addWidget(scroll, 1)
 
     def set_events(self, events):
         """更新事件列表（外部调用）"""
