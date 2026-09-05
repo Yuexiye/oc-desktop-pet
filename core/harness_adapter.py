@@ -772,30 +772,59 @@ class HanakoPetAdapter:
         - 模型类型（Live2D/精灵）
         - 外观描述
         - 能力说明
+        
+        检查两个位置：
+        1. 项目内置：characters/<agent_id>/
+        2. 用户自定义：~/.hanako/agents/<agent_id>/pet/
         """
         try:
-            # 获取角色配置
             from pathlib import Path
-            char_dir = Path(__file__).parent.parent / "characters" / self._agent_id
+            
+            # 检查两个位置
+            char_dir_builtin = Path(__file__).parent.parent / "characters" / self._agent_id
+            char_dir_custom = Path.home() / ".hanako" / "agents" / self._agent_id / "pet"
             
             appearance_info = []
             
             # 1. 角色名称
             appearance_info.append(f"【桌宠形象】你是桌宠「{self._agent_id}」。")
             
-            # 2. 模型类型
-            if (char_dir / "live2d").exists():
-                appearance_info.append("- 模型类型：Live2D 动态模型")
-                appearance_info.append("- 你可以做出丰富的表情和动作")
-            elif (char_dir / "frames").exists():
-                appearance_info.append("- 模型类型：精灵图序列")
-                appearance_info.append("- 你可以做出基本的表情和动作")
+            # 2. 模型类型（优先检查内置，再检查自定义）
+            model_type_found = False
+            
+            # 检查内置目录
+            if char_dir_builtin.exists():
+                if (char_dir_builtin / "live2d").exists():
+                    appearance_info.append("- 模型类型：Live2D 动态模型")
+                    appearance_info.append("- 你可以做出丰富的表情和动作")
+                    model_type_found = True
+                elif (char_dir_builtin / "frames").exists():
+                    appearance_info.append("- 模型类型：精灵图序列")
+                    appearance_info.append("- 你可以做出基本的表情和动作")
+                    model_type_found = True
+            
+            # 检查用户自定义目录
+            if not model_type_found and char_dir_custom.exists():
+                if (char_dir_custom / "live2d").exists():
+                    appearance_info.append("- 模型类型：Live2D 动态模型（用户自定义）")
+                    appearance_info.append("- 你可以做出丰富的表情和动作")
+                    model_type_found = True
+                elif (char_dir_custom / "frames").exists():
+                    appearance_info.append("- 模型类型：精灵图序列（用户自定义）")
+                    appearance_info.append("- 你可以做出基本的表情和动作")
+                    model_type_found = True
+            
+            # 如果都没找到，说明是纯文本角色（无模型）
+            if not model_type_found:
+                appearance_info.append("- 模型类型：文本角色（无视觉模型）")
+                appearance_info.append("- 你通过气泡和语音与用户互动")
             
             # 3. 能力说明
             appearance_info.append("- 你可以看到用户的屏幕内容")
             appearance_info.append("- 你可以在桌面上移动、被拖拽")
             appearance_info.append("- 你可以弹出气泡说话、播放语音")
-            appearance_info.append("- 你可以做出各种动作（眨眼、挥手、跳跃等）")
+            if model_type_found:
+                appearance_info.append("- 你可以做出各种动作（眨眼、挥手、跳跃等）")
             
             # 4. 提醒 AI 不要把自己当成普通 AI
             appearance_info.append("- 注意：你是桌宠角色，不是普通聊天 AI。用角色的语气说话。")
