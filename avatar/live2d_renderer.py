@@ -2111,14 +2111,17 @@ class Live2DRenderer(AvatarRenderer):
           
         P1 修复：SetExpression 前先 ResetExpressions，杜绝多表情叠加（如“前倾+脸红”）。
         旧实现只 Set 不设 Reset，导致多个贴图表情同时激活。
+
+        动作播放期间允许叠加表情：waving/happy 等肢体动作与比心/葱等脸部贴图表情
+        共存是有价值的组合（用户夸桌宠时它正好在挥手 → 脸上也能同步比心）。
+        冲突已由下面两道防线兜住：
+          1) 同表情已激活时不刷新超时（不重复 Set）；
+          2) Set 前先 ResetExpressions，确保新表情独占贴图参数、不叠加两个表情贴图。
+        管线化集成（avatar/frame_pipeline.py）已把 idle/gesture 超时兜底拆成独立
+        处理器，动作播放与表情叠加现在分属两个通道，可以并行。
         """
         expr = self._match_expression(emotion)
         try:
-            # 非 idle motion 播放期间，不叠加新表情：waving/happy 等动作本身已包含
-            # 肢体姿势，若再叠加上“比心/葱”等表情贴图，会出现“比心+举葱”叠加。
-            # 情绪系统每秒调用 set_emotion，在动作冷却期只同步表情，这里需要抑制。
-            if expr is not None and not getattr(self, "_motion_is_idle", True):
-                return
             if expr is None:
                 # P2-9: 无论 _expression_active 真假，只要曾设过表情就重置
                 if self._expression_active or self._last_expression:
