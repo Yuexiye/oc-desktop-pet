@@ -2146,13 +2146,47 @@ class PetWindow(AudioMixin, AnimationMixin, InteractionMixin, ChatMixin, Behavio
     # ── 音频回调已迁移至 pet_mixins/audio_mixin.py（AudioMixin）──
 
     def _reposition_bubble(self):
-        """气泡置于角色头顶上方,根据实际角色内容定位"""
+        """气泡置于角色头顶上方,根据实际角色内容定位。
+
+        边界防御（气泡不显示的常见根因）：
+        - ChatBubble 是 PetWindow 的子 widget，坐标是父窗口的局部坐标。
+        - 若 top_y - bh - 20 为负（角色头顶太靠上或气泡太高），直接塞到 y=2
+          会把气泡压进 char_label 区域，可能被 QOpenGLWidget 盖住。
+        - 若 bx 越出父窗口宽度，气泡一半在窗口外被 Qt 裁掉。
+        因此这里先 clamp 到 [2, parent_bottom - bh - 2]，并在明显越界时打 warning。
+        """
         top_y = self._get_char_top_y()
         bw = self.bubble.width()
         bh = self.bubble.height()
-        bx = (self.width() - bw) // 2
-        by = top_y - bh - 20  # 头顶上方 20px，避免遮挡
-        self.bubble.move(max(bx, 2), max(by, 2))
+        pw = self.width()
+        ph = self.height()
+
+        # 水平居中，越界则贴左/右边界
+        bx = (pw - bw) // 2
+        if bx < 2:
+            bx = 2
+        if bx + bw > pw - 2:
+            bx = pw - bw - 2
+
+        # 垂直：头顶上方 20px；若被 clamp 到顶部，优先保证 y >= 2
+        by = top_y - bh - 20
+        clamped_top = False
+        if by < 2:
+            by = 2
+            clamped_top = True
+        if by + bh > ph - 2:
+            by = max(2, ph - bh - 2)
+
+        if clamped_top:
+            try:
+                logger.debug(
+                    "_reposition_bubble: top_y=%d bh=%d → y 被 clamp 到 2（角色头顶贴顶）",
+                    top_y, bh,
+                )
+            except Exception:
+                pass
+
+        self.bubble.move(max(bx, 0), max(by, 0))
         self._reposition_overlays()
 
     # ── 右键菜单 ──

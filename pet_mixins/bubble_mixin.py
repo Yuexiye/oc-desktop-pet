@@ -117,6 +117,25 @@ class BubbleMixin:
             self.bubble.show()
             self.bubble.raise_()
             self._bubble_timer.start(duration_ms if duration_ms > 0 else self._bubble_duration(text))
+            # 诊断日志：气泡实际几何 / 可见性 / 透明度 / z-order。
+            # 排查「日志显示 Showing bubble 但用户看不到」的场景：
+            # (a) 位置越出父窗口被裁 (b) setFixedSize 置 0 (c) windowOpacity 卡 0.0
+            # (d) z-order 被 char_label 压住
+            try:
+                geo = self.bubble.geometry()
+                pos_g = self.bubble.mapToGlobal(self.bubble.pos())
+                logger.info(
+                    "Bubble shown: text=%r parent_visible=%s "
+                    "geo=(%d,%d,%dx%d) global=(%d,%d) windowOpacity=%.2f "
+                    "z=%d visible=%s",
+                    text[:40], self.isVisible(),
+                    geo.x(), geo.y(), geo.width(), geo.height(),
+                    pos_g.x(), pos_g.y(), self.bubble.windowOpacity(),
+                    self.bubble.stackingOrder(),
+                    self.bubble.isVisible(),
+                )
+            except Exception as e:
+                logger.debug("Bubble diagnostic log failed: %s", e)
         except Exception:
             logger.exception("Show bubble failed")
 

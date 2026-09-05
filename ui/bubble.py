@@ -5,7 +5,7 @@
 - set_sticker：大表情贴图模式（如摸头大反应的 💕），居中玻璃卡 + 可选文案。
 """
 from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import Qt, QTimer, QRect, QPropertyAnimation, Signal
+from PySide6.QtCore import Qt, QTimer, QRect, Signal
 from PySide6.QtGui import QPainter, QFont, QColor, QPainterPath, QFontMetrics, QPixmap
 
 from ui.theme import get_default
@@ -91,11 +91,22 @@ class ChatBubble(QWidget):
             self._shadow_color = self._color("shadow")
             mgr.theme_changed.connect(self.set_theme)
 
-        # 淡入动画（P3：250ms→170ms，反馈更跟手）
-        self._fade_anim = QPropertyAnimation(self, b"windowOpacity")
-        self._fade_anim.setDuration(170)
-        self._fade_anim.setStartValue(0.0)
-        self._fade_anim.setEndValue(1.0)
+        # 淡入动画：不再用 QPropertyAnimation(windowOpacity)。
+        # ChatBubble 是 PetWindow 的子 widget（非顶层窗口），Qt 明确
+        # 规定 setWindowOpacity 只在顶层窗口生效，子控件上该调用是
+        # 静默 no-op。结果：_fade_anim.start() 之后窗口透明度停留在
+        # setWindowOpacity(0.0) 设置值上——但因 setWindowOpacity 在子控件
+        # 上无效，气泡的透明度实际上根本没变；然而一旦动画把 windowOpacity
+        # 从 0.0 起跳插值到 1.0，Qt 内部对子控件的 opacity 缓存路径
+        # 可能进入不一致状态（部分平台表现成完全不显示）。
+        # 改成在 paintEvent 里对 _bg_color 应用 alpha 系数实现淡入，
+        # 不依赖任何 window-opacity API，子控件/顶层窗口都有效。
+        self._fade_timer = QTimer(self)
+        self._fade_timer.setInterval(16)
+        self._fade_timer.timeout.connect(self._fade_tick)
+        self._fade_steps = 0
+        self._fade_total = 11          # 16*11 ≈ 176ms
+        self._fade_alpha = 1.0         # 0.0~1.0，1.0=完全显示
 
         # 打字机时钟
         self._typewriter_timer = QTimer(self)
@@ -168,9 +179,8 @@ class ChatBubble(QWidget):
         self.show()
         self.raise_()
 
-        self.setWindowOpacity(0.0)
-        self._fade_anim.stop()
-        self._fade_anim.start()
+        # 淡入（paintEvent 内 alpha 系数动画）
+        self._start_fade_in()
 
         # P3：短文本更快出字（28ms/字符），长文本 8ms/字符，交互反馈不拖沓
         length = len(text)
@@ -259,9 +269,7 @@ class ChatBubble(QWidget):
         self._update_size()
         self.show()
         self.raise_()
-        self.setWindowOpacity(0.0)
-        self._fade_anim.stop()
-        self._fade_anim.start()
+        self._start_fade_in()
         self.update()
 
     def set_sticker_image(self, image_path: str, caption: str = ""):
@@ -282,9 +290,25 @@ class ChatBubble(QWidget):
         self._update_size()
         self.show()
         self.raise_()
-        self.setWindowOpacity(0.0)
-        self._fade_anim.stop()
-        self._fade_anim.start()
+        self._start_fade_in()
+        self.update()
+
+    def _start_fade_in(self):
+        """淡入起点：alpha 从 0.0 起，逐步插值到 1.0（每 16ms 一步，共 176ms）。"""
+        self._fade_alpha = 0.0
+        self._fade_steps = 0
+        self._fade_timer.stop()
+        self._fade_timer.start()
+        self.update()
+
+    def _fade_tick(self):
+        """paintEvent 淡入步进（子 widget 有效）。"""
+        self._fade_steps += 1
+        if self._fade_steps >= self._fade_total:
+            self._fade_timer.stop()
+            self._fade_alpha = 1.0
+        else:
+            self._fade_alpha = self._fade_steps / self._fade_total
         self.update()
 
     def _typewriter_tick(self):
@@ -325,7 +349,8 @@ class ChatBubble(QWidget):
 
     def hide_bubble(self):
         self._typewriter_timer.stop()
-        self._fade_anim.stop()
+        self._fade_timer.stop()
+        self._fade_alpha = 1.0
         self._is_typing = False
         self._sticker_mode = False
         self._sticker_image = None
@@ -483,6 +508,10 @@ class ChatBubble(QWidget):
 
         bg = self._bg_color if is_on else QColor(*THEME_COLORS[self._theme]["bg"][:3], 160)
         tc = self._text_color if is_on else QColor(150, 150, 160)
+        # 淡入：把 _fade_alpha 应用到 bg / tc 的 alpha 通道（子 widget 生效）
+        if self._fade_alpha < 1.0:
+            bg.setAlphaF(bg.alphaF() * self._fade_alpha)
+            tc.setAlphaF(tc.alphaF() * self._fade_alpha)
 
         if self._sticker_mode:
             self._paint_sticker(p, w, h, r, bg, tc)
