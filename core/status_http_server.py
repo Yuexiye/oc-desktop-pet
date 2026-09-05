@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -51,7 +52,7 @@ def _make_handler(state_provider: Callable[[], dict], auth_token: str,
         def _check_auth(self) -> bool:
             token = self.headers.get('X-Auth-Token', '')
             if not auth_token:
-                return True  # 未配置 token 则跳过验证
+                return False  # 空 token 拒绝访问（安全修复：不再跳过验证）
             return token == auth_token
 
         def _send_json(self, code: int, data: dict):
@@ -143,12 +144,17 @@ class PetStatusHTTPServer:
         """
         Args:
             state_provider: 返回状态快照 dict 的可调用对象（PetWindow._status_snapshot）
-            auth_token: X-Auth-Token；空则跳过验证
+            auth_token: X-Auth-Token；空则自动生成随机 token（安全修复）
             port: 监听端口（默认 8977）
             allow_set_mode: 是否允许 POST /pet/set-mode（默认 False=只读）
         """
         self._state_provider = state_provider
-        self._auth_token = auth_token
+        # 安全修复：空 token 时自动生成随机 token，避免裸奔
+        if not auth_token:
+            self._auth_token = secrets.token_hex(16)
+            logger.info("PetStatusHTTPServer: auth_token 未配置，已自动生成随机 token（请记录到 config 或环境变量）")
+        else:
+            self._auth_token = auth_token
         self._port = int(port or DEFAULT_PORT)
         self._allow_set_mode = bool(allow_set_mode)
         self._server: HTTPServer | None = None

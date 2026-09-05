@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Callable, Optional
@@ -48,7 +49,7 @@ def _make_handler(on_trigger: Callable[[str, str, str], None], auth_token: str):
         def _check_auth(self) -> bool:
             token = self.headers.get('X-Auth-Token', '')
             if not auth_token:
-                return True  # 未配置 token 则跳过验证（本地回路用）
+                return False  # 空 token 拒绝访问（安全修复：不再跳过验证）
             return token == auth_token
 
         def _send_json(self, code: int, data: dict):
@@ -111,7 +112,12 @@ class ExternalTriggerReceiver:
     def __init__(self, on_trigger: Callable[[str, str, str], None],
                  auth_token: str = "", port: int = DEFAULT_PORT):
         self._on_trigger = on_trigger
-        self._auth_token = auth_token
+        # 安全修复：空 token 时自动生成随机 token，避免裸奔
+        if not auth_token:
+            self._auth_token = secrets.token_hex(16)
+            logger.info("ExternalTriggerReceiver: auth_token 未配置，已自动生成随机 token（请记录到 config 或环境变量）")
+        else:
+            self._auth_token = auth_token
         self._port = int(port or DEFAULT_PORT)
         self._httpd: Optional[HTTPServer] = None
         self._thread: Optional[threading.Thread] = None

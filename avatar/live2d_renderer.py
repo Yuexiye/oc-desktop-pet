@@ -87,8 +87,8 @@ class Live2DRenderer(AvatarRenderer):
     # 不尝试任何肢体动作（ParamArm*/ParamLeg*/ParamBodyAngle* 一律不碰）。
     _EMOTION_FACIAL_TARGETS = {
         "neutral": {
-            "eye_open": 0.85, "eye_smile": 0.0, "brow_angle": 0.0, "brow_form": 0.0,
-            "mouth_form": 0.0, "mouth_open": 0.0, "eye_ball_x": 0.0, "eye_ball_y": 0.0,
+            "eye_open": 0.85, "eye_smile": 0.2, "brow_angle": 0.1, "brow_form": 0.1,
+            "mouth_form": 0.2, "mouth_open": 0.0, "eye_ball_x": 0.0, "eye_ball_y": 0.0,
             "head_angle_x": 0.0, "head_angle_y": 0.0, "breath_amp": 1.0, "breath_rate": 1.0,
         },
         "happy": {
@@ -612,6 +612,16 @@ class Live2DRenderer(AvatarRenderer):
             # （等 draw 首帧跑完，HitDrawable 才有有效状态）
             from PySide6.QtCore import QTimer
             QTimer.singleShot(300, self._fit_window_to_model)
+        except ImportError as e:
+            # 明确提示：live2d-py 未安装
+            logger.error(
+                "Live2DRenderer: live2d-py 未安装（%s）。\n"
+                "请运行: pip install live2d-py\n"
+                "或检查 requirements.txt 是否包含 live2d-py。",
+                e,
+            )
+            self._ready = False
+            self._model = None
         except Exception as e:
             logger.error("Live2DRenderer: 模型加载失败（角色区域将透明）: %s", e)
             self._ready = False

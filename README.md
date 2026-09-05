@@ -142,6 +142,15 @@ pip install -r requirements.txt
 > 不用 venv 直接 `pip install -r requirements.txt` 也可以跑，但会装进全局环境。
 > 强烈建议用 venv——本项目依赖较多（PySide6 等 170MB+），可随时删除重建。
 
+**跑起来你会看到什么**（首次启动）：
+- 🖱️ 眼睛跟着鼠标转（视线跟随）
+- 👁️ 自动眨眼（每隔几秒）
+- 😴 5 分钟没操作 → 犯困打哈欠
+- 😵 15 分钟没操作 → 打瞌睡倒头
+- 💬 10 分钟空闲 → 桌宠主动找你说话
+- 🖱️ 左键拖动桌宠，释放后弹跳
+- 📌 拖到屏幕边缘 → 桌宠坐下
+
 ### 2. 确保 Hanako 已安装
 
 桌宠从 Hanako 读取：
@@ -150,7 +159,26 @@ pip install -r requirements.txt
 
 不需要单独配置 API，自动复用 Hanako 的。
 
-### 3. 启动
+### 3. 下载 Live2D 模型（首次）
+
+桌宠不随仓库分发 Live2D 模型文件。需要自备或下载官方示例模型：
+
+```bash
+# 方式 A：下载官方 Haru 示例模型（推荐新手）
+python tools/fetch_free_live2d_sample.py haru
+
+# 方式 B：按角色目录 README 下载
+# 见 characters/shizuku/README.md
+```
+
+**模型硬要求**（三条）：
+- ✅ **裸文件**：解压后能看到 `.model3.json` + `.moc3` + 贴图
+- ✅ **没加密**：模型文件可直接导入 VTube Studio
+- ✅ **Cubism 3+**：支持 Cubism 3 或 4 的模型
+
+> 💡 **判断标准**：能导入 VTube Studio 的模型就能用。下单前问卖家："是否提供 model3.json 素材文件？"
+
+### 4. 启动
 
 ```bash
 python main.py
