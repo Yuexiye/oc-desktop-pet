@@ -63,3 +63,7 @@ PROJECT_LOG.md
 # 运行时进程文件
 scripts/*.pid
 scripts/_wt_live.py
+
+# 参考项目副本（不提交）
+temp_alife/
+temp_amadeus/
