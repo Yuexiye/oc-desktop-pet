@@ -1007,16 +1007,19 @@ class ConversationEngine:
             pass
 
         # P2: 桌宠输出分析 — AI 回复内容自动匹配动作（不用显式标签）
-        # 如果上面没有解析到动作标签，尝试语义分析回复内容
+        # 规则：有 [emotion:xxx] 或 [action:{...}] 标签时，不再做语义分析（有标记就不猜）
         if action_intent is None and anim == map_emotion_to_anim(emotion):
-            try:
-                _semantic_action = self._analyze_reply_content(reply, emotion)
-                if _semantic_action:
-                    action_intent = _semantic_action
-                    anim = _semantic_action.get("anim", anim)
-                    logger.debug("语义分析触发动作: %s", _semantic_action)
-            except Exception:
-                pass
+            # 检查是否有显式情绪标签
+            has_explicit_emotion = "[emotion:" in reply
+            if not has_explicit_emotion:
+                try:
+                    _semantic_action = self._analyze_reply_content(reply, emotion)
+                    if _semantic_action:
+                        action_intent = _semantic_action
+                        anim = _semantic_action.get("anim", anim)
+                        logger.debug("语义分析触发动作: %s", _semantic_action)
+                except Exception:
+                    pass
 
         # P1-6: 文字先行——LLM 回复立即上气泡，不等 TTS 合成
         # （本地 CosyVoice 合成需数秒；若等音频做好才回调，用户看到的是
