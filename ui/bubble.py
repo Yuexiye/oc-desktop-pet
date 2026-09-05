@@ -137,7 +137,7 @@ class ChatBubble(QWidget):
 
     def set_text(self, text: str, bright: bool = False, on_typing_done=None):
         """设置文字并开始打字机效果
-
+        
         Args:
             text: 完整文本（emoji 会以贴图尺寸渲染）
             bright: 高亮模式（emotion == "happy" 时）
@@ -146,6 +146,9 @@ class ChatBubble(QWidget):
         self._sticker_mode = False
         self._typewriter_timer.stop()
         self._is_typing = False
+        
+        # UI优化: 停止流式打字光标
+        self._stop_cursor_blink()
 
         self._full_text = text
         self._text = text
@@ -190,9 +193,11 @@ class ChatBubble(QWidget):
 
     def append_text(self, chunk: str):
         """P2: 流式追加文字（边生成边显示）。
-
+        
         与 set_text 不同：不重启打字机，直接在已有文本后追加。
         用于 LLM 流式输出场景。
+        
+        UI优化: 添加打字光标动画
         """
         if not chunk:
             return
@@ -206,9 +211,36 @@ class ChatBubble(QWidget):
         self._text = self._full_text
         self._typewriter_revealed = len(self._text)  # 全部显示
         
+        # UI优化: 显示打字光标（流式生成中）
+        self._show_typing_cursor = True
+        self._start_cursor_blink()
+        
         # 更新大小并刷新
         self._update_size()
         self.update()
+    
+    def _start_cursor_blink(self):
+        """UI优化: 启动打字光标闪烁动画"""
+        if not hasattr(self, '_cursor_timer'):
+            from PySide6.QtCore import QTimer
+            self._cursor_timer = QTimer()
+            self._cursor_timer.setInterval(500)
+            self._cursor_timer.timeout.connect(self._cursor_tick)
+        
+        self._cursor_visible = True
+        self._cursor_timer.start()
+        
+    def _cursor_tick(self):
+        """UI优化: 打字光标闪烁"""
+        self._cursor_visible = not self._cursor_visible
+        self.update()
+        
+    def _stop_cursor_blink(self):
+        """UI优化: 停止打字光标闪烁"""
+        if hasattr(self, '_cursor_timer'):
+            self._cursor_timer.stop()
+        self._show_typing_cursor = False
+        self._cursor_visible = False
 
     def set_sticker(self, emoji: str, caption: str = ""):
         """大表情贴图模式：居中玻璃卡 + 可选文案（如摸头大反应的 💕）"""
@@ -297,6 +329,10 @@ class ChatBubble(QWidget):
         self._is_typing = False
         self._sticker_mode = False
         self._sticker_image = None
+        
+        # UI优化: 停止流式打字光标
+        self._stop_cursor_blink()
+        
         self.hide()
 
     def _start_flash(self):
@@ -497,6 +533,16 @@ class ChatBubble(QWidget):
         if self._is_typing and reveal < len(self._full_text):
             p.setFont(self._font)
             p.drawText(cur_x, cur_y, cur_h, cur_h, Qt.AlignLeft | Qt.AlignVCenter, "▎")
+        
+        # UI优化: 流式打字光标（闪烁）
+        if getattr(self, '_show_typing_cursor', False) and getattr(self, '_cursor_visible', False):
+            p.setPen(tc)
+            p.setFont(self._font)
+            # 在文本末尾绘制光标
+            cursor_x = cur_x + 2
+            cursor_y = cur_y
+            cursor_h = cur_h
+            p.drawRect(cursor_x, cursor_y + 2, 2, cursor_h - 4)
 
         p.end()
 

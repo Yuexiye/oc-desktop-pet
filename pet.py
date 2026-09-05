@@ -2164,13 +2164,19 @@ class PetWindow(AudioMixin, AnimationMixin, InteractionMixin, ChatMixin, Behavio
         # 构建右键菜单（分层：互动 / 玩法 / 管理 三组，退出置底）
         self._menu = QMenu(self)
         self._menu.setStyleSheet(self._menu_qss())
-
+        
+        # UI优化: 添加键盘快捷键
+        from PySide6.QtGui import QKeySequence
+        
         # ── 互动组 ──
         self._interact_menu = self._menu.addMenu("🍙 互动")
         self._interact_menu.setStyleSheet(self._menu_qss())
-        self._interact_menu.addAction("💬 对话", self._toggle_input)
+        a_chat = self._interact_menu.addAction("💬 对话", self._toggle_input)
+        a_chat.setShortcut(QKeySequence("Ctrl+L"))
         self._voice_action = self._interact_menu.addAction("🎤 说话", self._toggle_voice)
+        self._voice_action.setShortcut(QKeySequence("Ctrl+D"))
         self._voice_continuous_action = self._interact_menu.addAction("🎤 持续监听", self._toggle_voice_continuous)
+        self._voice_continuous_action.setShortcut(QKeySequence("Ctrl+Shift+D"))
         self._voice_continuous_action.setCheckable(True)
         self._voice_continuous_action.setChecked(False)
 
@@ -2199,9 +2205,11 @@ class PetWindow(AudioMixin, AnimationMixin, InteractionMixin, ChatMixin, Behavio
 
         # 穿透 / 活动流 / 新建对话
         self._passthrough_action = self._manage_menu.addAction("🔍 穿透", self._toggle_passthrough)
+        self._passthrough_action.setShortcut(QKeySequence("Ctrl+P"))
         self._passthrough_action.setCheckable(True)
         self._passthrough_action.setChecked(self._mousePassthrough)
-        self._manage_menu.addAction("📜 活动流", self._open_activity_feed)
+        a_activity = self._manage_menu.addAction("📜 活动流", self._open_activity_feed)
+        a_activity.setShortcut(QKeySequence("Ctrl+H"))
         # 多宠总览（依赖 pet_manager 注入；独立启动时隐藏）
         if getattr(self, "_pet_manager", None) is not None:
             self._manage_menu.addAction("🐾 桌宠总览", self._open_pet_overview)
@@ -2222,7 +2230,10 @@ class PetWindow(AudioMixin, AnimationMixin, InteractionMixin, ChatMixin, Behavio
         self._refresh_theme_menu()
 
         self._manage_menu.addAction("⚙️ 设置", self._open_settings)
-        self._manage_menu.addAction("🔌 插件", self._open_plugin_panel)
+        a_settings = self._manage_menu.actions()[-1]
+        a_settings.setShortcut(QKeySequence("Ctrl+S"))
+        a_plugin = self._manage_menu.addAction("🔌 插件", self._open_plugin_panel)
+        a_plugin.setShortcut(QKeySequence("Ctrl+Shift+P"))
 
         # FrameBaker 集成（管理组内）
         try:

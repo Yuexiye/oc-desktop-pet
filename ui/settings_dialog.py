@@ -51,6 +51,16 @@ class SettingsDialog(QDialog):
 
         self._main_tabs = QTabWidget()
         self._main_tabs.setStyleSheet(self._tab_qss())
+        
+        # UI优化: 添加搜索过滤框
+        search_layout = QHBoxLayout()
+        self._search_input = QLineEdit()
+        self._search_input.setPlaceholderText("🔍 搜索设置...")
+        self._search_input.setClearButtonEnabled(True)
+        self._search_input.textChanged.connect(self._filter_settings)
+        search_layout.addWidget(self._search_input)
+        layout.addLayout(search_layout)
+        
         layout.addWidget(self._main_tabs)
 
         # ── Tab 1: 基础设置 ──
@@ -251,7 +261,7 @@ class SettingsDialog(QDialog):
         basic_layout.addWidget(per_pet_group)
 
         basic_layout.addStretch()
-        self._main_tabs.addTab(basic_tab, "基础")
+        self._main_tabs.addTab(basic_tab, "🎨 基础")
 
         # ── Tab 2: 功能设置 ──
         func_tab = QWidget()
@@ -581,7 +591,7 @@ class SettingsDialog(QDialog):
         self.func_sub_tabs.addTab(memory_tab, "记忆")
 
         func_layout.addWidget(self.func_sub_tabs)
-        self._main_tabs.addTab(func_tab, "功能")
+        self._main_tabs.addTab(func_tab, "⚙️ 功能")
 
         # ── Tab 2.5: 角色包管理 (M5) ──
         pkg_tab = QWidget()
@@ -651,7 +661,7 @@ class SettingsDialog(QDialog):
 
         pkg_layout.addWidget(pkg_group)
         pkg_layout.addStretch()
-        self._main_tabs.addTab(pkg_tab, "角色包")
+        self._main_tabs.addTab(pkg_tab, "📦 角色包")
 
         # ── Tab 3: API 配置 ──
         api_tab = QWidget()
@@ -781,7 +791,7 @@ class SettingsDialog(QDialog):
 
         api_layout.addWidget(api_group)
         api_layout.addStretch()
-        self._main_tabs.addTab(api_tab, "API")
+        self._main_tabs.addTab(api_tab, "🔌 API")
 
         # .env / agent / 角色包列表在 showEvent 中异步加载
 
@@ -1465,6 +1475,28 @@ class SettingsDialog(QDialog):
 
         self.accept()
 
+    def _filter_settings(self, text: str):
+        """UI优化: 根据搜索文本过滤设置项（隐藏不匹配的标签页）"""
+        text = text.lower().strip()
+        
+        # 标签页名称映射
+        tab_keywords = {
+            0: ["基础", "behavior", "behavior", "window", "sfx", "render", "per_pet"],
+            1: ["功能", "voice", "tts", "asr", "interaction", "memory", "active", "screen", "break"],
+            2: ["角色包", "package", "pkg", "m5"],
+            3: ["api", "llm", "tts", "asr", "endpoint"],
+        }
+        
+        for i in range(self._main_tabs.count()):
+            tab_text = self._main_tabs.tabText(i).lower()
+            keywords = tab_keywords.get(i, [])
+            
+            # 检查标签页名称或关键词是否匹配
+            if text == "" or text in tab_text or any(text in kw for kw in keywords):
+                self._main_tabs.setTabVisible(i, True)
+            else:
+                self._main_tabs.setTabVisible(i, False)
+    
     def get_config(self) -> dict:
         return self._config
 
