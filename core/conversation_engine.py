@@ -907,7 +907,15 @@ class ConversationEngine:
                 self.emit(self.EVT_LLM_START, text=tagged_text, source=source, gen=gen)
                 
                 # P2: 检查是否支持流式 — 边生成边解析 emotion/action
-                if hasattr(self._adapter, 'chat_stream'):
+                if hasattr(self._adapter, 'chat') and getattr(self._adapter, 'transport_mode', None) in ('prefer_hanako', 'hanako_only'):
+                    # 优先走 Hana 通道（chat_via_hanako）
+                    reply, emotion = self._adapter.chat(
+                        message=tagged_text, inject_memory=True,
+                        extra_context=perception_ctx,
+                        tools=self._tools if self._tools else None,
+                        source=source,
+                    )
+                elif hasattr(self._adapter, 'chat_stream'):
                     reply, emotion = self._chat_stream_wrapper(
                         tagged_text, perception_ctx, source, gen
                     )
