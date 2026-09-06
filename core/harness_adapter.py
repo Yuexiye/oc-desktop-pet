@@ -659,10 +659,10 @@ class HanakoPetAdapter:
         """
         if not text:
             return "", "neutral"
-        # 支持 [emotion:xxx] / [emotion: xxx] / [ emotion : xxx ] 等 LLM 常见变体
-        em_matches = re.findall(r"\[\s*emotion\s*:\s*(\w+)\s*\]", text, flags=re.IGNORECASE)
+        # 支持 [emotion:xxx] / [emotion=xxx] / [emotion: xxx] / [ emotion : xxx ] 等 LLM 常见变体
+        em_matches = re.findall(r"\[\s*emotion\s*[:=]\s*(\w+)\s*\]", text, flags=re.IGNORECASE)
         emotion = em_matches[-1].lower() if em_matches else "neutral"
-        cleaned = re.sub(r"\s*\[\s*emotion\s*:\s*\w+\s*\]\s*", " ", text, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*\[\s*emotion\s*[:=]\s*\w+\s*\]\s*", " ", text, flags=re.IGNORECASE)
         # BugFix #4：整段剥离 <mood>...</mood> 内省块（Vibe/Reflections/Will/
         # Sparks 字段是给服务端/记忆用的元数据，不是给用户的回复）——必须在
         # HTML 剥离之前做，否则 <mood> 标签被剥掉后只剩 Vibe 文本。

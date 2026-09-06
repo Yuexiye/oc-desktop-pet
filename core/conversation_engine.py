@@ -962,8 +962,8 @@ class ConversationEngine:
                 reply = "…"
             logger.info("LLM 回复: %s [emotion:%s]", reply, emotion)
             
-            # BugFix: 确保剥离 [emotion:xxx] 标签（chat_direct 已解析，但 chat_via_hanako 等路径可能漏）
-            if "[emotion:" in reply or "[emotion:" in reply:
+            # BugFix: 确保剥离 [emotion:xxx] / [emotion=xxx] 标签（chat_direct 已解析，但 chat_via_hanako 等路径可能漏）
+            if "[emotion:" in reply or "[emotion=" in reply:
                 reply = self._adapter.parse_emotion(reply)[0]
             
             # P2: 记录情绪到历史（用于分布统计）
@@ -976,7 +976,7 @@ class ConversationEngine:
         # P0: 格式纠正 — AI 回复缺少 emotion/action 标签时，内部补默认标签
         # 不再 poke 纠正消息给 LLM（避免 LLM 把纠正消息当用户输入回复，造成来源混淆）
         if not self._is_correction_message(tagged_text):
-            has_emotion_tag = "[emotion:" in reply
+            has_emotion_tag = "[emotion:" in reply or "[emotion=" in reply
             has_action_tag = "[action:" in reply
             if not has_emotion_tag and not has_action_tag:
                 # 内部补默认 emotion 标签，不上送 LLM
