@@ -362,12 +362,43 @@ class HanakoPetAdapter:
         emotion/action_intent 在解析到完整标签时更新（None = 尚未检测到）。
 
         用于 _process_message 边生成边触发情绪/动作，用户更早看到反应。
+
+        路由逻辑（同 chat()）：
+        - user 消息：优先走 Hanako session，失败再 fallback 到 LLM API
+        - 内部来源（proactive/idle/memory_extract/memory_reflect/screen_enrich）：直接走 LLM API
         """
-        if not self._base_url or not self._api_key:
-            yield "...(模型未配置,请在设置中配置模型)", "neutral", None
+        # 内部来源：直接走 LLM API（不占 session、不写本地 _history）
+        if source in ("proactive", "idle", "memory_extract", "memory_reflect", "screen_enrich"):
+            yield from self._chat_stream_direct(message, inject_memory, extra_context, tools, source)
             return
 
-        # 构建 messages（同 chat_direct）
+        # direct 模式：跳过 Hanako
+        if self.transport_mode == "direct":
+            yield from self._chat_stream_direct(message, inject_memory, extra_context, tools, source)
+            return
+
+        # Hanako 模式：先尝试 Hanako，失败再考虑 fallback
+        try:
+            yield from self._chat_stream_via_hanako(message, inject_memory, extra_context, tools, source)
+        except HanakoUnavailableBeforeSend as e:
+            logger.warning("Hanako 不可用（send 前）: %s", e)
+            if self.transport_mode == "prefer_hanako":
+                logger.info("Fallback -> chat_stream_direct")
+                yield from self._chat_stream_direct(message, inject_memory, extra_context, tools, source)
+            else:
+                yield "...", "neutral", None
+        except HanakoUnavailableAfterSend as e:
+            # 已交给 Hanako，绝不 fallback - 避免双执行
+            logger.error("Hanako 已接收但未完成，不能 fallback: %s", e)
+            yield "…", "neutral", None
+
+    def _chat_stream_direct(self, message: str, inject_memory: bool = True, extra_context: str = "", tools: list = None, source: str = "user"):
+        """直接走 LLM API 的流式调用（原 chat_stream 逻辑）"""
+        if not self._base_url or not self._api_key:
+            yield "...(模型未配置，请在设置中配置模型)", "neutral", None
+            return
+
+        # 构建 messages
         user_content = message.strip()
         if source in ("proactive", "idle"):
             user_content = f"[{source}] {user_content}"
@@ -377,7 +408,7 @@ class HanakoPetAdapter:
         if inject_memory:
             memory_text = self._context.build_memory_context(max_chars=self._memory_budget)
             if memory_text:
-                messages.append({"role": "system", "content": f"[以下是你当前的记忆和状态,请自然参考--不要逐字复述,可以作为话题延续的线索]\n{memory_text}"})
+                messages.append({"role": "system", "content": f"[以下是你当前的记忆和状态，请自然参考--不要逐字复述，可以作为话题延续的线索]\n{memory_text}"})
 
         if extra_context:
             messages.append({"role": "system", "content": extra_context})
@@ -393,7 +424,51 @@ class HanakoPetAdapter:
                 yield chunk
         except Exception as e:
             logger.error("流式 API 调用失败: %s", e)
-            yield f"（嗯…让我缓一下）", "neutral", None
+            yield "（嗯…让我缓一下）", "neutral", None
+
+    def _chat_stream_via_hanako(self, message: str, inject_memory: bool = True, extra_context: str = "", tools: list = None, source: str = "user"):
+        """通过 Hanako WS Session 发送消息（非流式，但模拟流式 yield）"""
+        # 先调用 chat_via_hanako 获取完整回复，再模拟流式 yield
+        reply, emotion = self.chat_via_hanako(
+            message=message,
+            inject_memory=inject_memory,
+            extra_context=extra_context,
+            tools=tools,
+            source=source,
+        )
+        
+        if not reply:
+            yield "...", "neutral", None
+            return
+
+        # 解析 emotion/action 标签
+        action_intent = None
+        if "[action:" in reply:
+            import re
+            import json as _json
+            m = re.search(r'\[action:(\{[^}]*\})\]', reply)
+            if m:
+                try:
+                    action_intent = _json.loads(m.group(1))
+                except Exception:
+                    pass
+
+        # 模拟流式：把完整回复切成小段 yield
+        chunks = []
+        current = ""
+        for char in reply:
+            current += char
+            if len(current) >= 10 or char in "。！？\n":
+                chunks.append(current)
+                current = ""
+        if current:
+            chunks.append(current)
+
+        for chunk in chunks:
+            yield chunk, reply, emotion, action_intent
+
+        # 完成
+        yield "", reply, emotion, action_intent
 
     def _call_api_stream(self, messages: list[dict], tools: list = None):
         """P2: 流式调用 OpenAI 兼容 API — yield chunks。
