@@ -38,3 +38,4 @@ pydantic~=2.0
 # onnxruntime>=1.17.0       # 记忆向量化
 # tokenizers>=0.15.0        # HuggingFace tokenizer
 # portalocker>=2.8.0        # 事实库跨进程锁
+comtypes>=1.4.0             # Windows SMTC 媒体感知（正在听的歌）
