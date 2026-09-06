@@ -19,6 +19,7 @@ import requests
 
 from .hanako_context import HanakoContext
 from .hanako_ws_client import HanakoUnavailableBeforeSend
+from .usage_tracker import get_usage_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -937,6 +938,21 @@ class HanakoPetAdapter:
         if not content:
             logger.warning("API returned empty content | finish=%s | usage=%s", finish, data.get("usage", {}))
             return ""
+        
+        # 记录 Token 使用量
+        usage = data.get("usage", {})
+        if usage:
+            try:
+                tracker = get_usage_tracker()
+                tracker.record_usage(
+                    prompt_tokens=usage.get("prompt_tokens", 0),
+                    completion_tokens=usage.get("completion_tokens", 0),
+                    source="chat",
+                    model=self._model,
+                )
+            except Exception as e:
+                logger.debug("Usage tracking failed: %s", e)
+        
         logger.info("API OK | finish=%s | usage=%s", finish, data.get("usage", {}))
         return content.strip()
 
