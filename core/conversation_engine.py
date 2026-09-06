@@ -1422,7 +1422,14 @@ class ConversationEngine:
                     # 若需本地 CosyVoice 耗时提示，改用 on_progress。
                     # self.on_status("\U0001f50a 语音生成中…")
                     # BugFix: TTS 合成前移除 emotion 标签（避免读出 [emotion:xxx]）
-                    tts_text = self._adapter.parse_emotion(reply)[0] if reply else reply
+                    tts_text = reply
+                    if reply:
+                        try:
+                            tts_text = self._adapter.parse_emotion(reply)[0]
+                        except (AttributeError, Exception):
+                            # _adapter 可能不存在（测试环境），回退原始 reply
+                            import re
+                            tts_text = re.sub(r"\s*\[\s*emotion\s*[:=]\s*\w+\s*\]\s*", " ", reply, flags=re.IGNORECASE).strip()
                     audio_path = tts.synthesize(
                         tts_text, character_id=character, instruct=instruct, voice=voice,
                         emotion=emotion,
