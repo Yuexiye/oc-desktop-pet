@@ -427,19 +427,22 @@ class HanakoPetAdapter:
             yield "（嗯…让我缓一下）", "neutral", None
 
     def _chat_stream_via_hanako(self, message: str, inject_memory: bool = True, extra_context: str = "", tools: list = None, source: str = "user"):
-        """通过 Hanako WS Session 发送消息（非流式，但模拟流式 yield）"""
-        # 先调用 chat_via_hanako 获取完整回复，再模拟流式 yield
+        """通过 Hanako WS Session 发送消息（非流式，但模拟流式 yield）
+
+        使用较短的超时（30 秒），超时后 raise HanakoUnavailableBeforeSend 让 chat_stream 走 fallback。
+        """
+        # 先调用 chat_via_hanako 获取完整回复，超时 30 秒
         reply, emotion = self.chat_via_hanako(
             message=message,
             inject_memory=inject_memory,
             extra_context=extra_context,
             tools=tools,
             source=source,
+            timeout=30.0,  # 较短的超时，避免长时间等待
         )
         
         if not reply:
-            yield "...", "neutral", None
-            return
+            raise HanakoUnavailableBeforeSend("Hanako 返回空回复")
 
         # 解析 emotion/action 标签
         action_intent = None
