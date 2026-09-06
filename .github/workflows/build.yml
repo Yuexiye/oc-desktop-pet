@@ -6,6 +6,9 @@ on:
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: write  # 允许创建 Release
+
 jobs:
   build:
     runs-on: windows-latest
