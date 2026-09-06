@@ -31,16 +31,34 @@ cd oc-pet
 
 > 首次拉取如果因网络中断报 `early EOF`，重试一次即可（可加 `git config http.postBuffer 524288000` 增大缓冲）。
 
-### 2. 创建虚拟环境并安装依赖
+### 2. 安装依赖
+
+**方式 A：完整安装（推荐）**
 
 ```bash
+# 推荐：创建 venv，避免污染系统 Python
 python -m venv .venv
 .venv\Scripts\activate
+
 pip install -r requirements.txt
 ```
 
-> 不用 venv 直接 `pip install -r requirements.txt` 也可以跑，但会装进全局环境。
-> 强烈建议用 venv——本项目依赖较多（PySide6 等 170MB+），可随时删除重建。
+**方式 B：最小安装（核心功能）**
+
+```bash
+pip install -r requirements-minimal.txt
+```
+
+**方式 C：免装 Python（嵌入式）**
+
+```bash
+# 双击 setup-runtime.bat
+# 或运行脚本
+python scripts/embedded_python_bootstrap.py
+```
+
+> 方式 C 会下载嵌入式 Python（约 110MB），无需预装 Python。
+> 适合不想装 Python 的用户，或需要分发给他人时使用。
 
 ### 3. 下载 Live2D 模型（首次）
 
