@@ -34,6 +34,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
+from .memory_write_buffer import get_write_buffer
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_MEMORY_DIR = Path.home() / ".oc-pet" / "memory"
@@ -118,9 +120,30 @@ class CompanionMemory:
             logger.warning("CompanionMemory 加载失败（用空档）: %s", e)
 
     def save(self) -> None:
-        """写回磁盘（幂等）。"""
+        """写回磁盘（批量 flush + 异步落盘，不阻塞对话）。
+        
+        性能优化（参考 FaustBot）：
+        - 批量 flush：累积 N 次写入或 M 秒后统一落盘
+        - 异步落盘：写入在后台线程执行，不阻塞主线程
+        """
         try:
             self._dir.mkdir(parents=True, exist_ok=True)
+            
+            # 使用写入缓冲区（批量 flush + 异步落盘）
+            buffer = get_write_buffer()
+            buffer.mark_dirty()
+            
+            # 设置保存回调（如果未设置）
+            if buffer._save_callback is None:
+                buffer._save_callback = self._do_save
+                buffer.start()
+            
+        except Exception as e:
+            logger.warning("CompanionMemory 保存失败: %s", e)
+    
+    def _do_save(self) -> None:
+        """实际写入磁盘（由缓冲区调用）"""
+        try:
             data = {
                 "agent_id": self._agent_id,
                 "last_active_date": self._last_active_date,
@@ -132,6 +155,7 @@ class CompanionMemory:
                 "streak_days": self._streak_days,
             }
             self._path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            logger.debug("CompanionMemory saved to %s", self._path)
         except Exception as e:
             logger.warning("CompanionMemory 保存失败: %s", e)
 
