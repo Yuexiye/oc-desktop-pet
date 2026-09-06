@@ -38,6 +38,7 @@ from .flags import PetPermissions
 from .screen import ScreenPerception
 from .screen_types import ScreenEvent, ActivityEvent
 from .proactive import ProactiveScheduler
+from .media import MediaPerception, MediaEvent
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,7 @@ class PerceptionController:
         self._inspection = InspectionPerception(self._schedule)
         self._inspection_callback = None  # 巡检命中回调（pet.py 注入 _on_proactive_trigger）
         self._screen = ScreenPerception()
+        self._media = MediaPerception()
         self._proactive: ProactiveScheduler | None = None
         self._scene_memory = None  # C 场景记忆（收盘聚类透传；由 pet.py 注入）
         self._last_schedule_refresh = 0.0
@@ -136,6 +138,10 @@ class PerceptionController:
     @property
     def screen(self) -> ScreenPerception:
         return self._screen
+
+    @property
+    def media(self) -> MediaPerception:
+        return self._media
 
     @property
     def proactive(self) -> ProactiveScheduler | None:
@@ -513,6 +519,18 @@ class PerceptionController:
                         parts.append(f"[环境观察] {obs}")
             except Exception as e:
                 logger.debug("M2 build_context observation failed: %s", e)
+
+        # ── 媒体播放感知（SMTC）──
+        if self._media:
+            try:
+                current = self._media.get_current()
+                if current and current.state == "playing":
+                    media_ctx = f"[正在听] {current.artist} - {current.title}"
+                    if current.album:
+                        media_ctx += f" ({current.album})"
+                    parts.append(media_ctx)
+            except Exception as e:
+                logger.debug("Media build_context failed: %s", e)
 
         # ── 手机活动感知 ──
         if self._phone_activity and self._phone_enabled:

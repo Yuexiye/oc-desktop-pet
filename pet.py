@@ -318,6 +318,13 @@ class PetWindow(AudioMixin, AnimationMixin, InteractionMixin, ChatMixin, Behavio
         if self._diag_disable_perception:
             self._perception.screen.disable()
             logger.warning("Screen perception DISABLED via OC_DISABLE_PERCEPTION=1")
+        # ── 媒体播放感知（SMTC）──
+        try:
+            self._perception.media.start()
+            logger.info("MediaPerception (SMTC) started")
+        except Exception as e:
+            logger.debug("MediaPerception start failed: %s", e)
+
         # 截图保护开关（默认全关，配置开启）
         if screen_cfg.get("blur", False):
             self._perception.screen.set_blur(True)
