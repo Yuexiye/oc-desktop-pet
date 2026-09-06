@@ -1475,6 +1475,12 @@ class SettingsDialog(QDialog):
         c.setdefault("memory", {})["budget_mode"] = "auto" if self.mem_mode.currentIndex() == 0 else "manual"
         c["memory"]["budget_chars"] = self.mem_budget.value()
 
+        # 快捷键
+        c.setdefault("shortcuts", {})["enabled"] = self.shortcuts_enabled.isChecked()
+        shortcuts_keys = c["shortcuts"].setdefault("keys", {})
+        for key_input, action_id in self._shortcuts_list:
+            shortcuts_keys[action_id] = key_input.text()
+
         # API .env
         self._save_env()
 
