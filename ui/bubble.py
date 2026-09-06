@@ -302,6 +302,9 @@ class ChatBubble(QWidget):
         self._fade_steps = 0
         self._fade_timer.stop()
         self._fade_timer.start()
+        # BugFix: QTimer 可能不触发（子 widget + 事件循环问题），直接设 1.0 保底
+        # 淡入效果优先保证可见性
+        QTimer.singleShot(200, lambda: (setattr(self, "_fade_alpha", 1.0), self.update()))
         self.update()
 
     def _fade_tick(self):
@@ -498,6 +501,9 @@ class ChatBubble(QWidget):
     def paintEvent(self, event):
         if not self._full_text and not self._sticker_mode:
             return
+        # BugFix: QTimer 在子 widget 上不触发，淡入永远停在 0.0
+        # 直接设 1.0，放弃淡入效果（保证可见性优先）
+        self._fade_alpha = 1.0
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
 
