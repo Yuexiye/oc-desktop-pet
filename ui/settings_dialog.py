@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QCheckBox, QSlider, QSpinBox, QDoubleSpinBox, QComboBox,
     QPushButton, QLabel, QGroupBox, QTabWidget, QWidget,
     QLineEdit, QListWidget, QListWidgetItem, QAbstractItemView,
-    QMessageBox
+    QScrollArea, QMessageBox
 )
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
@@ -39,7 +39,8 @@ class SettingsDialog(QDialog):
         self._config = config or load_config()
         self._pet_manager = pet_manager
         self.setWindowTitle("设置")
-        self.setMinimumSize(380, 500)  # P2: 调小最小尺寸，减少空余空间
+        self.setMinimumSize(380, 400)  # P2: 调小最小尺寸，减少空余空间
+        self.setMaximumHeight(800)  # 限制最大高度，避免超出屏幕
         # UI优化: 允许纵向缩放（QDialog 默认可缩放）
         mgr = get_default()
         self._ui_theme = mgr.current if mgr else "dark"
@@ -62,7 +63,11 @@ class SettingsDialog(QDialog):
         search_layout.addWidget(self._search_input)
         layout.addLayout(search_layout)
         
-        layout.addWidget(self._main_tabs)
+        # 滚动区域：内容过多时可滚动，避免窗口超出屏幕
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self._main_tabs)
+        layout.addWidget(scroll)
 
         # ── Tab 1: 基础设置 ──
         basic_tab = QWidget()
