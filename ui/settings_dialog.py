@@ -160,11 +160,18 @@ class SettingsDialog(QDialog):
             from avatar.factory import detect_format
             _cur_char = str(self._config.get("character") or "yuexinmiao")
             # 用户手动指定过的 render_format 优先（auto=未指定，走自动检测）
+            # 但如果角色有 live2d 资源，自动检测应该优先于用户指定的 sprite（避免白屏）
             _saved_fmt = self._config.get("render_format")
+            _auto_fmt = detect_format(_cur_char)
             if _saved_fmt in ("sprite", "live2d"):
-                current_format = _saved_fmt
+                # 用户手动指定过：但如果角色有 live2d 资源，强制使用 live2d
+                if _auto_fmt == "live2d":
+                    current_format = "live2d"
+                else:
+                    current_format = _saved_fmt
             else:
-                current_format = detect_format(_cur_char)
+                # 未指定：走自动检测
+                current_format = _auto_fmt
             fmt_map = {"sprite": 1, "live2d": 2, "auto": 0}
             self.render_format_select.setCurrentIndex(fmt_map.get(current_format, 0))
         except Exception:
