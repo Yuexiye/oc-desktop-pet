@@ -550,6 +550,50 @@ class SettingsDialog(QDialog):
         break_layout.addRow("提醒间隔", self.break_cooldown)
 
         interact_layout.addWidget(break_group)
+
+        # 工作提醒
+        work_group = QGroupBox("工作提醒")
+        work_layout = QFormLayout(work_group)
+        work_layout.setSpacing(10)
+
+        self.work_enabled = QCheckBox("启用工作提醒")
+        self.work_enabled.setChecked(self._config.get("work_reminder", {}).get("enabled", True))
+        work_layout.addRow(self.work_enabled)
+
+        self.work_after = QSpinBox()
+        self.work_after.setRange(30, 240)
+        self.work_after.setSuffix(" 分钟")
+        self.work_after.setValue(self._config.get("work_reminder", {}).get("after_minutes", 90))
+        work_layout.addRow("连续工作", self.work_after)
+
+        self.work_late_night = QCheckBox("深夜加倍（22:00-06:00）")
+        self.work_late_night.setChecked(True)
+        work_layout.addRow(self.work_late_night)
+
+        self.work_late_night_multiplier = QDoubleSpinBox()
+        self.work_late_night_multiplier.setRange(1.0, 5.0)
+        self.work_late_night_multiplier.setSuffix("x")
+        self.work_late_night_multiplier.setSingleStep(0.5)
+        self.work_late_night_multiplier.setValue(self._config.get("work_reminder", {}).get("late_night_multiplier", 3.0))
+        work_layout.addRow("深夜倍数", self.work_late_night_multiplier)
+
+        self.work_cooldown = QSpinBox()
+        self.work_cooldown.setRange(10, 120)
+        self.work_cooldown.setSuffix(" 分钟")
+        self.work_cooldown.setValue(self._config.get("work_reminder", {}).get("cooldown_minutes", 60))
+        work_layout.addRow("提醒间隔", self.work_cooldown)
+
+        self.work_snooze = QSpinBox()
+        self.work_snooze.setRange(5, 60)
+        self.work_snooze.setSuffix(" 分钟")
+        self.work_snooze.setValue(self._config.get("work_reminder", {}).get("snooze_minutes", 10))
+        work_layout.addRow("稍后提醒", self.work_snooze)
+
+        self.work_tts = QCheckBox("语音提醒")
+        self.work_tts.setChecked(self._config.get("work_reminder", {}).get("tts_enabled", False))
+        work_layout.addRow(self.work_tts)
+
+        interact_layout.addWidget(work_group)
         interact_layout.addStretch()
 
         self.func_sub_tabs.addTab(interact_tab, "交互")
@@ -1460,6 +1504,14 @@ class SettingsDialog(QDialog):
         c.setdefault("break_reminder", {})["enabled"] = self.break_enabled.isChecked()
         c["break_reminder"]["idle_minutes"] = self.break_idle.value()
         c["break_reminder"]["cooldown_minutes"] = self.break_cooldown.value()
+
+        # 工作提醒
+        c.setdefault("work_reminder", {})["enabled"] = self.work_enabled.isChecked()
+        c["work_reminder"]["after_minutes"] = self.work_after.value()
+        c["work_reminder"]["late_night_multiplier"] = self.work_late_night_multiplier.value()
+        c["work_reminder"]["cooldown_minutes"] = self.work_cooldown.value()
+        c["work_reminder"]["snooze_minutes"] = self.work_snooze.value()
+        c["work_reminder"]["tts_enabled"] = self.work_tts.isChecked()
 
         # ASR
         c.setdefault("asr", {})["provider"] = ["whisper_local", "mimo", "api"][self.asr_provider.currentIndex()]
