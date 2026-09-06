@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import secrets
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import TYPE_CHECKING
@@ -124,7 +125,12 @@ class PhoneActivityReceiver:
 
     def __init__(self, perception: 'PhoneActivityPerception', auth_token: str = ''):
         self._perception = perception
-        self._auth_token = auth_token
+        # 安全修复：auth_token 未配置时自动生成随机 token
+        if not auth_token:
+            self._auth_token = secrets.token_hex(16)
+            logger.info("PhoneActivityReceiver: auth_token 未配置，已自动生成随机 token（请记录到 config 或环境变量）")
+        else:
+            self._auth_token = auth_token
         self._port = int(os.environ.get('PHONE_RECEIVER_PORT', '8077'))
         self._server: HTTPServer | None = None
         self._thread: threading.Thread | None = None
