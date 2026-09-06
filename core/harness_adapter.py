@@ -363,15 +363,10 @@ class HanakoPetAdapter:
 
         用于 _process_message 边生成边触发情绪/动作，用户更早看到反应。
 
-        路由逻辑（同 chat()）：
-        - user 消息：优先走 Hanako session，失败再 fallback 到 LLM API
-        - 内部来源（proactive/idle/memory_extract/memory_reflect/screen_enrich）：直接走 LLM API
+        路由逻辑：
+        - 所有消息（包括 proactive）：优先走 Hanako session，失败再 fallback 到 LLM API
+        - direct 模式：跳过 Hanako，直接走 LLM API
         """
-        # 内部来源：直接走 LLM API（不占 session、不写本地 _history）
-        if source in ("proactive", "idle", "memory_extract", "memory_reflect", "screen_enrich"):
-            yield from self._chat_stream_direct(message, inject_memory, extra_context, tools, source)
-            return
-
         # direct 模式：跳过 Hanako
         if self.transport_mode == "direct":
             yield from self._chat_stream_direct(message, inject_memory, extra_context, tools, source)

@@ -144,46 +144,10 @@ class SettingsDialog(QDialog):
 
         basic_layout.addWidget(sfx_group)
         
-        # ── 渲染格式切换（Live2D / 精灵图）──
-        render_group = QGroupBox("渲染格式")
-        render_layout = QFormLayout(render_group)
-        
-        self.render_format_select = QComboBox()
-        self.render_format_select.addItem("自动检测", "auto")
-        self.render_format_select.addItem("精灵图 (Sprite)", "sprite")
-        self.render_format_select.addItem("Live2D", "live2d")
-        # 读取当前角色格式
-        # 注意：配置顶层没有 agent_id 键（角色在 character / agents[].id），
-        # 之前用 self._config.get("agent_id", "yuexinmiao") 永远回退到 yuexinmiao
-        # → 非 yuexinmiao 角色（如 miku/live2d）也永远显示精灵图。改用 character 键。
-        try:
-            from avatar.factory import detect_format
-            _cur_char = str(self._config.get("character") or "yuexinmiao")
-            # 用户手动指定过的 render_format 优先（auto=未指定，走自动检测）
-            # 但如果角色有 live2d 资源，自动检测应该优先于用户指定的 sprite（避免白屏）
-            _saved_fmt = self._config.get("render_format")
-            _auto_fmt = detect_format(_cur_char)
-            if _saved_fmt in ("sprite", "live2d"):
-                # 用户手动指定过：但如果角色有 live2d 资源，强制使用 live2d
-                if _auto_fmt == "live2d":
-                    current_format = "live2d"
-                else:
-                    current_format = _saved_fmt
-            else:
-                # 未指定：走自动检测
-                current_format = _auto_fmt
-            fmt_map = {"sprite": 1, "live2d": 2, "auto": 0}
-            self.render_format_select.setCurrentIndex(fmt_map.get(current_format, 0))
-        except Exception:
-            pass
-        render_layout.addRow("格式", self.render_format_select)
-        
-        render_hint = QLabel("<i>切换后重启桌宠生效。精灵图适合静态角色，Live2D 支持更丰富的表情和动作。</i>")
-        render_hint.setWordWrap(True)
-        render_hint.setStyleSheet("color: rgb(%s); font-size: 10px;" % rgb(self._ui_theme, "text_muted"))
-        render_layout.addRow("", render_hint)
-        
-        basic_layout.addWidget(render_group)
+        # ── 渲染格式（自动检测，无需用户指定）──
+        # 已移除：渲染格式完全自动检测，不需要用户手动指定
+        # 角色有 live2d 资源 → live2d，否则 → sprite
+        # 参见 avatar/factory.py 的 create_renderer() 和 detect_format()
 
         # ── 桌宠独立配置（per-pet：每个桌宠自己的 TTS 引擎/音色/助手） ──
         per_pet_group = QGroupBox("桌宠独立配置")
