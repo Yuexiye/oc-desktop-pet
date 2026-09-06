@@ -1421,8 +1421,10 @@ class ConversationEngine:
                     # 2026-08-22 修复：去掉合成前的 on_status 调用。
                     # 若需本地 CosyVoice 耗时提示，改用 on_progress。
                     # self.on_status("\U0001f50a 语音生成中…")
+                    # BugFix: TTS 合成前移除 emotion 标签（避免读出 [emotion:xxx]）
+                    tts_text = self._adapter.parse_emotion(reply)[0] if reply else reply
                     audio_path = tts.synthesize(
-                        reply, character_id=character, instruct=instruct, voice=voice,
+                        tts_text, character_id=character, instruct=instruct, voice=voice,
                         emotion=emotion,
                     ) or ""
                     if audio_path:
