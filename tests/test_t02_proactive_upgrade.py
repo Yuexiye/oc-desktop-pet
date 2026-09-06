@@ -218,27 +218,26 @@ def test_generator_success_delivers_generated_text():
     assert adapter.calls[0]["source"] == "proactive"
 
 
-def test_generator_failure_falls_back():
-    """LLM 调用抛异常 → on_fallback 收到模板池回退文案。"""
+def test_generator_failure_no_fallback():
+    """LLM 调用抛异常 → 不触发回调（无模板池兜底，直接不搭话）。"""
     adapter = _FakeAdapter(reply="", exc=RuntimeError("llm down"))
     gen = ProactiveGenerator(adapter=adapter, use_qt_bridge=False)
     results = []
     gen.set_callbacks(on_generated=lambda t: results.append(("gen", t)), on_fallback=lambda t: results.append(("fb", t)))
     gen.generate({"scenario": "late_night_work"}, "都这么晚了还在忙呀…")
-    assert results, "应触发回调"
-    kind, text = results[0]
-    assert kind == "fb"
-    assert text == "都这么晚了还在忙呀…"
+    # 生成失败，不触发任何回调（无模板池兜底）
+    assert not results, "生成失败应不触发回调（无模板池兜底）"
 
 
-def test_generator_empty_output_falls_back():
-    """LLM 返回空串 → on_fallback（回退模板池）。"""
+def test_generator_empty_output_no_fallback():
+    """LLM 返回空串 → 不触发回调（无模板池兜底，直接不搭话）。"""
     adapter = _FakeAdapter(reply="   ")
     gen = ProactiveGenerator(adapter=adapter, use_qt_bridge=False)
     results = []
     gen.set_callbacks(on_generated=lambda t: results.append(("gen", t)), on_fallback=lambda t: results.append(("fb", t)))
     gen.generate({"scenario": "long_work_break"}, "写了这么久，休息一下吧？")
-    assert results[0][0] == "fb"
+    # 生成空结果，不触发任何回调（无模板池兜底）
+    assert not results, "生成空结果应不触发回调（无模板池兜底）"
 
 
 def test_generator_no_adapter_not_available():
@@ -271,8 +270,8 @@ def test_scheduler_generation_started_on_rule(monkeypatch):
     assert sched._daily_count == 1
 
 
-def test_scheduler_generation_failure_falls_back_to_template(monkeypatch):
-    """LLM 失败 → 自动回退模板池（日志 fallback + 投递模板文案）。"""
+def test_scheduler_generation_failure_no_fallback(monkeypatch):
+    """LLM 失败 → 不搭话（无模板池兜底，直接跳过）。"""
     sched, _, _ = _make_scheduler(rules=[{"idle_min": 0, "foreground": ["*"], "prompt": "写了这么久，休息一下吧？", "weight": 1.0}])
     sched._is_fullscreen = lambda: False
     monkeypatch.setattr(
@@ -287,9 +286,9 @@ def test_scheduler_generation_failure_falls_back_to_template(monkeypatch):
     sched.set_generator(gen)
 
     sched.tick()
-    assert delivered, "生成失败应回退模板池投递"
-    assert delivered[0] == "写了这么久，休息一下吧？"
-    assert sched._daily_count == 1
+    # 生成失败，不投递任何文案（无模板池兜底）
+    assert not delivered, "生成失败应不投递文案（无模板池兜底）"
+    assert sched._daily_count == 0
 
 
 def test_scheduler_no_double_trigger_same_tick(monkeypatch):
