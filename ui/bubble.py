@@ -4,11 +4,14 @@
 - 普通文本：emoji 以"贴图"尺寸（1.5x）渲染，与文字混排自动换行。
 - set_sticker：大表情贴图模式（如摸头大反应的 💕），居中玻璃卡 + 可选文案。
 """
+import logging
 from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Qt, QTimer, QRect, Signal
 from PySide6.QtGui import QPainter, QFont, QColor, QPainterPath, QFontMetrics, QPixmap
 
 from ui.theme import get_default
+
+logger = logging.getLogger(__name__)
 
 
 # 主题色字典（与 ui/theme/light.qss 和 dark.qss 对齐）
