@@ -1,18 +1,20 @@
 # -*- coding: utf-8 -*-
-"""主动搭话 LLM 生成 — 候选生成 + LLM 决策是否开口 + 模板池回退。
+"""主动搭话 LLM 生成 — 候选生成 + LLM 决策是否开口。
 
 设计（参考 N.E.K.O. `main_logic/proactive_chat/generation.py` 思路重写，
 去 asyncio/HTTP，走 oc-pet 的 harness_adapter 同步通道）：
 
   - ``ProactiveGenerator`` 复用 HanakoPetAdapter（source="proactive"）生成一句
     自然、简短、贴合当前场景的主动搭话文案；
-  - 生成失败 / 超时 / 空结果 → 返回 None，由调度器回退到现有模板池；
+  - 生成失败 / 超时 / 空结果 → 返回 None，直接不搭话（无模板池兜底）；
   - 线程约束：生成在后台线程执行，结果经 Qt Signal 回主线程再投递（0x8001010D
     教训——所有 UI/COM 操作只能在主线程）。无 Qt 环境（headless 单测）时
     退化为同步回调路径。
 
 prompt 模式：proactive 专用指令（场景 + 最近对话间隔 + 参考方向 + 防重复），
 不污染 Hanako 会话历史（chat() 对 source="proactive" 走 chat_direct 直连）。
+
+理念：感知触发交给 AI 自由发挥，不念预置台词。网络是必需条件，无模板池兜底。
 """
 from __future__ import annotations
 
@@ -193,15 +195,15 @@ class ProactiveGenerator:
 
     # ── 对外入口 ────────────────────────────────────────────
 
-    def generate(self, context: dict, fallback_text: str) -> None:
+    def generate(self, context: dict, fallback_text: str = "") -> None:
         """发起一次主动搭话生成（异步，立即返回）。
 
         Args:
             context: 生成上下文（scenario/signals/fallback_prompt…）。
-            fallback_text: 生成失败时回退的模板池文案。
+            fallback_text: 兼容参数（已弃用，生成失败直接不搭话）。
         """
         if not self.is_available():
-            self._deliver_fallback(fallback_text)
+            logger.debug("Proactive generation skipped: LLM not available")
             return
         if self._bridge is None:
             # headless / 无 Qt：同步执行（单测路径）
@@ -213,7 +215,7 @@ class ProactiveGenerator:
             if text:
                 self._deliver_generated(text)
             else:
-                self._deliver_fallback(fallback_text)
+                logger.debug("Proactive generation empty: no fallback, skip")
             return
         threading.Thread(
             target=self._worker,
@@ -224,7 +226,7 @@ class ProactiveGenerator:
 
     # ── 内部实现 ────────────────────────────────────────────
 
-    def _worker(self, context: dict, fallback_text: str) -> None:
+    def _worker(self, context: dict, fallback_text: str = "") -> None:
         """后台线程：执行生成并 emit 信号回主线程。"""
         try:
             text = self._generate_sync(context)
@@ -234,7 +236,7 @@ class ProactiveGenerator:
         if text:
             self._bridge.generated.emit(text)
         else:
-            self._bridge.fallback.emit(fallback_text)
+            logger.debug("Proactive generation empty: no fallback, skip")
 
     def _generate_sync(self, context: dict) -> str:
         """同步生成一条主动搭话文案（可被单测直接调用）。
