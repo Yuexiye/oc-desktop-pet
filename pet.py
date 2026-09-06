@@ -2386,7 +2386,10 @@ class PetWindow(AudioMixin, AnimationMixin, InteractionMixin, ChatMixin, Behavio
     def _open_settings(self):
         """打开配置面板"""
         from ui.settings_dialog import SettingsDialog
-        dialog = SettingsDialog(parent=self, config=self.config, pet_manager=self._pet_manager)
+        # parent=None：不挂在 PetWindow 下。PetWindow 是 WS_EX_LAYERED/
+        # WS_EX_TRANSPARENT 的特殊透明窗口（且带鼠标穿透），以此为 parent 的
+        # 对话框会被约束/穿透，导致"exec 在跑但窗口不显示"或位置异常。独立窗口最干净。
+        dialog = SettingsDialog(parent=None, config=self.config, pet_manager=self._pet_manager)
         if dialog.exec():
             self.config = dialog.get_config()
             save_config(self.config)
