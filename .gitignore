@@ -68,3 +68,24 @@ scripts/_wt_live.py
 temp_alife/
 temp_amadeus/
 third_party_reference/
+
+# 测试文件（不提交）
+tests/
+
+# 内部文档（不提交）
+docs/2026-09-05-execution-log.md
+docs/doudou-memory-analysis.md
+docs/embody-value-case-2026-09-04.md
+docs/handoff-2026-09-03-t10.md
+docs/handoff-2026-09-04-t07.md
+docs/migration-neko-port-plan.md
+docs/optimization-plan.md
+docs/pet-creation-mouth-frames.md
+docs/playmate-direction-prd.md
+docs/playmate-gap-analysis.md
+docs/poc-silero-vad-onnx-2026-09-04.md
+docs/refactor-2026-09-03-incremental-design.md
+docs/SILENT-EXCEPTIONS.md
+docs/SPIKE-BORROW-SHELL.md
+docs/TEST-FAILURES.md
+docs/upgrade-a-g-design.md
