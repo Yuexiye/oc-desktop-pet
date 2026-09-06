@@ -237,14 +237,14 @@ class Live2DRenderer(AvatarRenderer):
         "excited": 1.2, "grin": 1.0, "shy": 1.2, "proud": 1.0, "sleepy": 0.7,
         "nod": 2.0, "head_shake": 1.6, "head_tilt": 1.8,
         "giggle": 1.4, "sneeze": 0.4, "stretch_yawn": 0.5,
-        # 身体动作（参数驱动）
-        "stretch": 1.5, "dance": 0.8, "sit": 1.2, "lie": 0.5, "blink_quick": 2.0,
+        # 身体动作（参数驱动）— 2026-09-06 提权：让用户看到“身体感”而不仅只是摇头晃脑
+        "stretch": 2.5, "dance": 1.5, "sit": 2.0, "lie": 0.5, "blink_quick": 2.0,
         # 微表情
         "eye_twinkle": 1.8, "brow_raise": 1.2, "lip_pucker": 1.0,
         # 头部细节
         "head_bob": 1.5, "head_roll": 1.2, "head_tilt_left": 1.4, "head_tilt_right": 1.4,
-        # 身体细节
-        "body_sway": 1.6, "shoulder_shrug": 1.0, "arm_wave": 1.4,
+        # 身体细节 — 2026-09-06 提权：肩/手部微动增加身体感
+        "body_sway": 2.5, "shoulder_shrug": 1.8, "arm_wave": 2.5,
         # 嘴巴细节
         "mouth_smile": 2.0, "mouth_pursed": 1.0, "tongue_out": 0.6,
         # 眼神细节
@@ -1691,12 +1691,13 @@ class Live2DRenderer(AvatarRenderer):
             return
         if now < self._auto_motion_next_at:
             return
-        # 动作优化：idle 到点后，25% 概率用表情序列替代随机 motion（纯参数驱动，
+        # 动作优化：idle 到点后，10% 概率用表情序列替代随机 motion（纯参数驱动，
         # 不新增 motion 文件；序列 2~4s 自动结束，不影响 GESTURE_TIMEOUT 兜底）。
+        # 2026-09-06 调低：从 25% 降到 10%，motion 播放更频繁，减少“摇头晃脑”观感。
         # 从 20+ 预设池按权重加权随机（_EMOTE_PRESET_WEIGHTS：日常微妙表情权重高，
         # 戏剧性表情权重低），避免待机时频繁出现夸张脸。
         try:
-            if random.random() < 0.25:
+            if random.random() < 0.10:
                 preset = self._pick_emote_preset()
                 if preset and self.play_emote_sequence(preset):
                     logger.info("Live2DRenderer: 自动表情序列 %s（替代随机 motion）", preset)

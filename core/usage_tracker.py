@@ -60,7 +60,10 @@ class UsageTracker:
     ):
         self._storage_path = Path(storage_path) if storage_path else None
         self._records: list[UsageRecord] = []
-        self._lock = __import__("threading").Lock()
+        # RLock：允许同一线程重入，防止持锁状态下再调持锁方法时自死锁
+        self._lock = __import__("threading").RLock()
+        # 标记是否有 _save_history 线程正在运行，避免并发 record_usage 时线程堆积
+        self._saving = False
         
         # 预算限制
         self._daily_token_limit = daily_token_limit
@@ -88,19 +91,25 @@ class UsageTracker:
             logger.warning("Failed to load usage history: %s", e)
     
     def _save_history(self):
-        """保存历史记录"""
+        """保存历史记录（串行化：读 _records 也拿锁；同一时间只允许一个 saver 在跑）"""
         if not self._storage_path:
             return
-        
+
+        with self._lock:
+            self._saving = True
         try:
             self._storage_path.parent.mkdir(parents=True, exist_ok=True)
-            data = [vars(r) for r in self._records]
+            with self._lock:
+                data = [vars(r) for r in self._records]
             self._storage_path.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
                 encoding="utf-8"
             )
         except Exception as e:
             logger.warning("Failed to save usage history: %s", e)
+        finally:
+            with self._lock:
+                self._saving = False
     
     def record_usage(
         self,
@@ -135,16 +144,19 @@ class UsageTracker:
         
         with self._lock:
             self._records.append(record)
-        
+            # 上一个 saver 还没跑完就不再起新线程，避免线程堆积
+            should_save = not self._saving
+
         # 检查预算
         self._check_limits(source)
-        
-        # 异步保存（避免阻塞）
-        __import__("threading").Thread(
-            target=self._save_history,
-            daemon=True,
-            name="usage-save",
-        ).start()
+
+        # 异步保存（避免阻塞；同一时间只有一个 saver 线程）
+        if should_save:
+            __import__("threading").Thread(
+                target=self._save_history,
+                daemon=True,
+                name="usage-save",
+            ).start()
         
         logger.debug(
             "Usage recorded: source=%s prompt=%d completion=%d total=%d cost=%.4f",
@@ -154,9 +166,12 @@ class UsageTracker:
         return record
     
     def _check_limits(self, source: str = ""):
-        """检查预算限制"""
-        with self._lock:
-            summary = self._get_summary()
+        """检查预算限制
+
+        注意：_get_summary 内部会自己取锁，这里不能再包一层 with self._lock，
+        否则同一线程二次抢锁会自死锁（旧代码正是死在这）。
+        """
+        summary = self._get_summary()
         
         # 检查每日限制
         if self._daily_token_limit > 0 and summary.today_tokens >= self._daily_token_limit:

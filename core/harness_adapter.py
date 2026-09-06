@@ -179,7 +179,15 @@ class HanakoPetAdapter:
         （``list(self._history)[-10:]``），QA 实测确认 memory 来源会污染。
         """
         if not self._base_url or not self._api_key:
+            # 内部来源（proactive/idle/screen_enrich/memory_*）静默降级，不弹"模型未配置"
+            if not self._records_history(source):
+                return "", "neutral"
             return "...(模型未配置,请在设置中配置模型)", "neutral"
+
+        # 内部来源静默：LLM 报错时不弹误导性文案给用户，只记日志、返回空串
+        _user = self._records_history(source)
+        def _err(msg: str, emotion: str = "neutral") -> tuple:
+            return (msg, emotion) if _user else ("", "neutral")
 
         # 来源标记：proactive/idle 加 [source] 前缀；user 保持原样（不破坏现有 prompt 结构）
         user_content = message.strip()
@@ -277,10 +285,10 @@ class HanakoPetAdapter:
             return text, emotion
         except requests.exceptions.Timeout:
             logger.warning("LLM timeout")
-            return "(网络有点慢,你再说一遍?)", "neutral"
+            return _err("(网络有点慢,你再说一遍?)")
         except requests.exceptions.ConnectionError:
             logger.warning("LLM connection error")
-            return "(连不上--检查一下网络配置吧)", "sad"
+            return _err("(连不上--检查一下网络配置吧)", "sad")
         except requests.exceptions.HTTPError as e:
             status = getattr(getattr(e, "response", None), "status_code", None)
             if status == 401:
@@ -297,14 +305,17 @@ class HanakoPetAdapter:
                         "LLM 401 — Hanako/TokenPlan 凭证失效，请重新登录 Hanako "
                         "刷新 server-info.json / provider-catalog.json"
                     )
-                    return "(API 凭证失效了，重新登录一下 Hanako 就行)", "neutral"
+                    return _err("(API 凭证失效了，重新登录一下 Hanako 就行)")
                 logger.warning("LLM 401 — .env 的 LLM_API_KEY 失效，请更新 .env")
-                return "(API 凭证失效了，检查下 .env 的 LLM_API_KEY)", "neutral"
+                return _err("(API 凭证失效了，检查下 .env 的 LLM_API_KEY)")
+            if status == 429:
+                logger.warning("LLM 429 Too Many Requests: %s", e)
+                return _err("(模型有点忙，稍后再试)")
             logger.warning("LLM HTTP error: %s", e)
-            return "(出了点岔子)", "neutral"
+            return _err("(出了点岔子)")
         except Exception as e:
             logger.warning("Chat failed: %s", e)
-            return "(出了点岔子)", "neutral"
+            return _err("(出了点岔子)")
 
     @staticmethod
     def _records_history(source: str) -> bool:

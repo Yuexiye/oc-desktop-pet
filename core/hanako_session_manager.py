@@ -762,7 +762,18 @@ class HanakoSessionManager:
             logger.info("[SM] turn_end: text_parts=%d, text='%s'", len(turn.text_parts), "".join(turn.text_parts)[:80])
             self._complete_turn(turn)
         elif event_type == "error":
-            self._finish_with_error(turn, str(event.get("message") or event.get("error") or "Hanako turn failed"))
+            err_msg = str(event.get("message") or event.get("error") or "Hanako turn failed")
+            # P0 修复：服务端 error event 不一定是终态失败（如流中断、tool 未收尾、
+            # 模型端 429/5xx）——若会话历史里已经有完整回复（云端生成、WS 未送达），
+            # 直接用历史文本完成 turn，避免桌宠只看到 “…” 或误把错误当回复。
+            # finish_on_missing=False：历史无回复时不判死，交给下面 _finish_with_error。
+            try:
+                self._recover_from_history(turn, finish_on_missing=False)
+            except Exception as exc:
+                logger.debug("[SM] error event recovery failed (ignored): %s", exc)
+            if turn.done:
+                return
+            self._finish_with_error(turn, err_msg)
         elif event_type == "abort_rejected":
             self._emit("progress", turn.session, "终止请求被拒绝…")
         elif event_type == "abort_result":

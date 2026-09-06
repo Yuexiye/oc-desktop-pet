@@ -441,7 +441,11 @@ class PerceptionController:
                 logger.debug("M2 env scan tick failed: %s", e)
 
     def _tick_inspection(self):
-        """D: 巡检命中 → 回调主动汇报（复用 proactive 触发链路）。"""
+        """D: 巡检命中 → 回调主动汇报（复用 proactive 触发链路）。
+
+        Stagger 派发（5 秒一条）：避免启动时一次性 15 条 bubble 炸出来。
+        每次 tick 最多立即派发 1 条，剩余通过 threading.Timer 逐个入队。
+        """
         if self._inspection is None:
             return
         try:
@@ -451,11 +455,29 @@ class PerceptionController:
             return
         if not triggers or self._inspection_callback is None:
             return
-        for text in triggers:
+        self._dispatch_inspection_staggered(triggers)
+
+    def _dispatch_inspection_staggered(self, triggers: list, interval: float = 5.0) -> None:
+        """stagger 派发巡检触发（默认 5 秒一条），避免启动时一次性堆炸。
+
+        使用 threading.Timer 递归派发；每个 Timer 是守护线程，进程退出自动清理。
+        单次 tick 最多 15 条 → 75 秒内依次播报，节奏自然不堆撞。
+        """
+        import threading
+
+        def _dispatch_next():
+            if not triggers:
+                return
             try:
-                self._inspection_callback(text)
+                self._inspection_callback(triggers.pop(0))
             except Exception as e:
                 logger.debug("Inspection callback failed: %s", e)
+            if triggers:
+                t = threading.Timer(interval, _dispatch_next)
+                t.daemon = True
+                t.start()
+
+        threading.Timer(0, _dispatch_next).start()
 
     def _scan_environment(self):
         """M2: 扫描当前环境并更新上下文
