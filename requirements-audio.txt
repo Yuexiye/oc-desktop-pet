@@ -1,6 +1,0 @@
-# L2 音频依赖（录音 + 播放）
-# 安装: pip install -r requirements-audio.txt
-sounddevice~=0.4.6
-numpy~=1.24
-scipy~=1.10
-soundfile~=0.12

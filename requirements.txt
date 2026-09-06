@@ -1,15 +1,11 @@
-# oc-pet 完整依赖（L1+L2+L3+L4）
+# oc-pet 完整依赖（所有功能）
 # 安装: pip install -r requirements.txt
 #
 # 分层安装（可选）：
-#   pip install -r requirements-core.txt    # L1 核心（最小运行集）
-#   pip install -r requirements-audio.txt   # L2 音频
-#   pip install -r requirements-live2d.txt  # L2 Live2D
-#   pip install -r requirements-tts.txt     # L3 TTS
-#   pip install -r requirements-asr.txt     # L3 ASR
-#   pip install -r requirements-optional.txt # L4 可选
+#   pip install -r requirements-minimal.txt    # 最小依赖（核心功能）
+#   pip install -r requirements.txt            # 完整依赖（所有功能）
 
-# === L1 核心 ===
+# ── L1 核心依赖（必须）──
 PySide6~=6.5          # 6.5.x，不升 6.6
 PySide6-Addons~=6.5
 requests~=2.28
@@ -17,25 +13,29 @@ Pillow~=9.0
 PyYAML~=6.0
 websocket-client~=1.8
 
-# === L2 音频 ===
+# ── L2 音频依赖（录音 + 播放）──
 sounddevice~=0.4.6
 numpy~=1.24
 scipy~=1.10
 soundfile~=0.12
 
-# === L2 Live2D ===
+# ── L2 Live2D 渲染 ──
 live2d-py~=1.0
 
-# === L3 TTS ===
-edge-tts~=6.1
-tqdm~=4.65
+# ── L3 TTS 依赖（语音合成）──
+edge-tts~=6.1         # 微软 Edge TTS（免费在线，默认引擎）
+tqdm~=4.65            # CosyVoice 间接依赖
 
-# === L3 ASR ===
-# openai-whisper~=20230918  # 可选，本地语音识别
+# ── L3 ASR 依赖（语音识别）──
 pydantic~=2.0
 
-# === L4 可选（不装不影响运行） ===
-# onnxruntime>=1.17.0       # 记忆向量化
-# tokenizers>=0.15.0        # HuggingFace tokenizer
-# portalocker>=2.8.0        # 事实库跨进程锁
-comtypes>=1.4.0             # Windows SMTC 媒体感知（正在听的歌）
+# ── L4 可选依赖（高级功能）──
+onnxruntime>=1.17.0   # 记忆向量化（缺失时自动降级纯 BM25）
+tokenizers>=0.15.0    # HuggingFace tokenizer
+portalocker>=2.8.0    # 事实库跨进程文件锁
+
+# ── SMTC 媒体感知（Windows）──
+comtypes>=1.4.0       # Windows COM 接口（SMTC 媒体感知）
+
+# ── 其他依赖 ──
+openai-whisper~=20230918  # 本地语音识别（可选，较大）

@@ -1,4 +1,0 @@
-# L3 ASR 依赖（语音识别）
-# 安装: pip install -r requirements-asr.txt
-# openai-whisper~=20230918  # 可选，本地语音识别
-pydantic~=2.0
