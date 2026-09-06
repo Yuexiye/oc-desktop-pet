@@ -41,6 +41,7 @@ from .proactive import ProactiveScheduler
 from .media import MediaPerception, MediaEvent
 from .screen_observer_process import ScreenObserverProcess
 from core.service_health import get_health_monitor, HealthMonitor
+from core.autonomy_panel import get_autonomy_panel
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,7 @@ class PerceptionController:
         self._screen = ScreenPerception()
         self._media = MediaPerception()
         self._screen_process = ScreenObserverProcess()
+        self._autonomy = get_autonomy_panel()
         self._health = get_health_monitor()
         self._proactive: ProactiveScheduler | None = None
         self._scene_memory = None  # C 场景记忆（收盘聚类透传；由 pet.py 注入）
@@ -150,6 +152,10 @@ class PerceptionController:
     @property
     def screen_process(self) -> ScreenObserverProcess:
         return self._screen_process
+
+    @property
+    def autonomy(self) -> AutonomyPanel:
+        return self._autonomy
 
     @property
     def health(self) -> HealthMonitor:
