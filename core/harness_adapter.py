@@ -340,12 +340,8 @@ class HanakoPetAdapter:
 
         # Hanako 模式：先尝试 Hanako，失败再考虑 fallback
         logger.debug("chat() 路由: source=%s transport_mode=%s session_mgr=%s", source, self.transport_mode, self._session_manager is not None)
-        logger.info("chat() 路由选择: source=%s transport_mode=%s", source, self.transport_mode)
         try:
-            logger.info("chat() 尝试走 chat_via_hanako")
-            result = self.chat_via_hanako(message, inject_memory, extra_context, tools)
-            logger.info("chat() chat_via_hanako 成功: %s", str(result[0])[:50])
-            return result
+            return self.chat_via_hanako(message, inject_memory, extra_context, tools)
         except HanakoUnavailableBeforeSend as e:
             logger.warning("Hanako 不可用（send 前）: %s", e)
             if self.transport_mode == "prefer_hanako":

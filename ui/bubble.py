@@ -517,10 +517,6 @@ class ChatBubble(QWidget):
 
         bg = self._bg_color if is_on else QColor(*THEME_COLORS[self._theme]["bg"][:3], 160)
         tc = self._text_color if is_on else QColor(150, 150, 160)
-        # 诊断日志：首次绘制时输出颜色信息
-        if not getattr(self, "_diag_logged", False):
-            logger.info(f"Bubble paint: theme={self._theme} bg=({bg.red()},{bg.green()},{bg.blue()},{int(bg.alphaF()*255)}) tc=({tc.red()},{tc.green()},{tc.blue()},{int(tc.alphaF()*255)}) fade_alpha={self._fade_alpha:.2f} text='{self._full_text[:30]}'")
-            self._diag_logged = True
         # 淡入：把 _fade_alpha 应用到 bg / tc 的 alpha 通道（子 widget 生效）
         if self._fade_alpha < 1.0:
             bg.setAlphaF(bg.alphaF() * self._fade_alpha)
