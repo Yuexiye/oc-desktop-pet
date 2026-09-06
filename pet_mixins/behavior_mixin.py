@@ -649,19 +649,47 @@ class BehaviorMixin:
             pass
 
     def _do_screen_proactive(self, prompt: str):
-        """在主线程处理屏幕内容主动对话"""
+        """在主线程处理屏幕内容主动对话
+
+        P5 优化：proactive 文案本身就是桌宠要说的话，直接显示即可获得"即时感"，
+        不再走 engine.send 等 2-5 秒 LLM 往返。LLM 不再参与本路径。
+        """
         try:
-            # 不显示原始提示词（那是内部 prompt，不是给用户看的）
-            # 只显示思考状态
-            self._show_bubble("⏳ 思考中...", emotion="thinking")
-            self._is_thinking = True
-            # 发送给对话引擎生成回复（会触发 TTS）
-            if hasattr(self, '_engine') and self._engine:
-                self._engine.send(prompt, source="proactive")
-            elif hasattr(self, '_conversation_engine') and self._conversation_engine:
-                self._conversation_engine.send(prompt)
+            # 直接显示场景文案气泡（prompt 即要显示的话，无需 LLM）
+            from pet_mixins.behavior_mixin import get_bubble_emotion_for_prompt
+            emotion = get_bubble_emotion_for_prompt(prompt)
+            self._show_bubble(prompt, emotion=emotion)
+            
+            # 记录日志
+            logger.info("Screen proactive: %s", prompt[:80])
+            
+            # 触发动画：主动动作是用户的明确意图，必须【无视 emotion 冷却】强制播放挥手
+            try:
+                renderer = getattr(self, "_renderer", None)
+                if renderer is not None:
+                    if hasattr(renderer, "submit_motion_request"):
+                        from avatar.motion_mixer import MotionRequest, Layer
+                        renderer.submit_motion_request(
+                            MotionRequest(
+                                layer=Layer.USER_INITIATED,
+                                motion_group="waving",
+                                can_interrupt=True,
+                                name="screen_proactive_waving",
+                            ),
+                            fallback_motion="happy",
+                        )
+                    elif hasattr(renderer, "_play_motion_kw"):
+                        if not renderer._play_motion_kw("waving"):
+                            renderer._play_motion_kw("happy")
+                    if hasattr(renderer, "set_emotion_expression_only"):
+                        renderer.set_emotion_expression_only(emotion)
+            except Exception as e:
+                logger.debug("Screen proactive 主动动作触发失败: %s", e)
+            
+            # 记录动画序列
+            self._set_anim_seq("waving", emotion=emotion, style=get_transition_style(emotion))
         except Exception as e:
-            logger.debug("Screen proactive failed: %s", e)
+            logger.error("Screen proactive failed: %s", e)
 
     def _on_screen_update(self, description: str):
         """屏幕分析结果更新（后台线程回调，通过信号绕回主线程）"""
