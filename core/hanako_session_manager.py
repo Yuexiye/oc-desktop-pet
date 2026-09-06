@@ -308,6 +308,9 @@ class HanakoSessionManager:
         self._abort_pending: dict[str, tuple[str, str | None]] = {}  # session_id -> (session_path, stream_id)
         self._sessions_by_id: dict[str, SessionRef] = {}
         self._sessions_by_path: dict[str, SessionRef] = {}
+        # WS 断连时刻（monotonic）；READY 后清空。用于 send_and_wait 判断
+        # “断连超过宽限期 → 不再死等，直接判死 turn”（修复桌宠卡“还在想”）。
+        self._ws_offline_since: float | None = None
 
         self._callbacks: dict[str, list[Callable[..., None]]] = {
             "progress": [],
@@ -598,6 +601,30 @@ class HanakoSessionManager:
                         return future.result(timeout=1.0)
                     self._finish_with_error(turn, f"Hanako reply timed out after {timeout:g}s")
                     return future.result(timeout=1.0)
+                # WS 断连超过宽限期：回复不可能送达（服务端已生成也收不到），
+                # 尝试从历史恢复（云端有文本）；恢复失败则判死，让桌宠快速出兑底，
+                # 不再死等到 deadline（修复桌宠一直“还在想”）。
+                with self._lock:
+                    offline_since = self._ws_offline_since
+                if offline_since is not None and not turn.done:
+                    offline_for = now - offline_since
+                    if offline_for >= self.silent_turn_grace:
+                        logger.warning(
+                            "[SM] WS 断连 %.0fs（grace=%0.fs），尝试历史恢复后判死 (session=%s)",
+                            offline_for, self.silent_turn_grace,
+                            getattr(turn.session, "session_id", "?"),
+                        )
+                        try:
+                            self._recover_from_history(turn)
+                        except Exception:
+                            pass
+                        if turn.done:
+                            return future.result(timeout=1.0)
+                        self._finish_with_error(
+                            turn,
+                            f"WS 断连 {offline_for:.0f}s，Hanako 回复未送达",
+                        )
+                        return future.result(timeout=1.0)
 
     def abort(self, session: SessionRef, reason: str = "user_abort") -> bool:
         with self._lock:
@@ -820,7 +847,15 @@ class HanakoSessionManager:
 
     def _handle_connection_state(self, state: ConnectionState, _error: str | None) -> None:
         if state is not ConnectionState.READY:
+            # 断连/重连中：记录首次断连时刻（不覆盖更早的记录），
+            # send_and_wait 据此判断宽限期。
+            with self._lock:
+                if self._ws_offline_since is None:
+                    self._ws_offline_since = time.monotonic()
             return
+        # READY（重连成功）：清空断连记录
+        with self._lock:
+            self._ws_offline_since = None
         with self._lock:
             turns = self._unique_pending_locked()
         for turn in turns:
