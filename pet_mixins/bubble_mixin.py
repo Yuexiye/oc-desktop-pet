@@ -143,7 +143,16 @@ class BubbleMixin:
         try:
             engine = getattr(self, "_engine", None)
             if engine and hasattr(engine, "speak"):
-                engine.speak(text, emotion=emotion)
+                # 音频合成完成后播放（通过 _tts_player）
+                def _on_audio(audio_path):
+                    try:
+                        player = getattr(self, "_tts_player", None)
+                        if player and audio_path:
+                            logger.info("Playing TTS (bubble): %s", audio_path)
+                            player.play(audio_path)
+                    except Exception as e:
+                        logger.debug("TTS play from bubble failed: %s", e)
+                engine.speak(text, emotion=emotion, on_audio=_on_audio)
         except Exception as e:
             logger.debug("TTS trigger from bubble failed: %s", e)
     
