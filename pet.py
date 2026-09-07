@@ -87,6 +87,8 @@ class PetWindow(AudioMixin, AnimationMixin, InteractionMixin, ChatMixin, Behavio
     # 跨线程截停 TTS：ASR 后台线程不得直调 _tts_player（QMediaPlayer 是 COM 组件，
     # 跨线程调用会触发 RPC_E_SERVERCALL_RETRYLATER 0x8001010D），必须经信号绕回主线程。
     tts_stop_signal = Signal()  # 请求在主线程停止 TTS 播放
+    # 2026-09-07: TTS 音频播放信号（供 BubbleMixin 的 speak() 回调使用）
+    tts_audio_signal = Signal(str)  # audio_path
     # 语音识别完成后（后台线程）的状态写入：_is_thinking/_pending_* 与
     # _record_topic 一并经信号挪到主线程执行，避免主线程同帧读到中间态（B3-2）。
     chat_state_signal = Signal(str)  # 语音输入文本 -> 主线程更新聊天状态
@@ -450,6 +452,8 @@ class PetWindow(AudioMixin, AnimationMixin, InteractionMixin, ChatMixin, Behavio
         self.engine_chunk_signal.connect(self._do_engine_chunk)
         self.voice_status_signal.connect(self._do_voice_status)
         self.tts_stop_signal.connect(self._do_tts_stop)
+        # 2026-09-07: TTS 音频播放信号（供 BubbleMixin 的 speak() 回调使用）
+        self.tts_audio_signal.connect(self._do_play_tts_audio)
         self.chat_state_signal.connect(self._do_chat_state)
         self.screen_emotion_signal.connect(self._do_screen_emotion)
         self.screen_proactive_signal.connect(self._do_screen_proactive)
@@ -2855,6 +2859,22 @@ class PetWindow(AudioMixin, AnimationMixin, InteractionMixin, ChatMixin, Behavio
                 player.stop()
         except Exception as e:
             logger.warning("_do_tts_stop error: %s", e)
+
+    def _do_play_tts_audio(self, audio_path: str):
+        """主线程槽：播放 TTS 音频（由 tts_audio_signal 从后台线程绕回主线程）。
+
+        2026-09-07: 供 BubbleMixin 的 speak() 回调使用，让 idle chatter、
+        屏幕感知 proactive 等回复也有语音。
+        """
+        try:
+            if not audio_path or not os.path.exists(audio_path):
+                return
+            player = getattr(self, "_tts_player", None)
+            if player is not None and player.enabled:
+                logger.info("Playing TTS (signal): %s", audio_path)
+                player.play(audio_path)
+        except Exception as e:
+            logger.warning("_do_play_tts_audio error: %s", e)
 
     def _do_chat_state(self, text: str):
         """主线程槽：语音识别完成后更新聊天状态（由 chat_state_signal 绕回主线程）。
