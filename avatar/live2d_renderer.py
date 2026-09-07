@@ -224,6 +224,43 @@ class Live2DRenderer(AvatarRenderer):
     # T09: 预设已外置到 avatar/emote_presets.py
     _EMOTE_PRESETS: dict[str, list[dict]] = LIVE2D_PRESETS
 
+    # 参数名映射：emote_presets.py 用下划线小写命名，StandardParams 用大写驼峰。
+    # 2026-09-06 新增：修复“身体动作”预设（stretch/dance/body_sway/arm_wave）因参数名
+    # 不匹配而无效的问题——之前 getattr(P, "body_angle_y") 找不到，SDK 收到字符串而非 ID。
+    _PARAM_NAME_MAP: dict[str, str] = {
+        "body_angle_x": "ParamBodyAngleX",
+        "body_angle_y": "ParamBodyAngleY",
+        "body_angle_z": "ParamBodyAngleZ",
+        "arm_angle_l": "ParamArmLA",
+        "arm_angle_r": "ParamArmRA",
+        "head_angle_x": "ParamAngleX",
+        "head_angle_y": "ParamAngleY",
+        "head_angle_z": "ParamAngleZ",
+        "eye_ball_x": "ParamEyeBallX",
+        "eye_ball_y": "ParamEyeBallY",
+        "mouth_form": "ParamMouthForm",
+        "mouth_open": "ParamMouthOpenY",
+        "blush": "ParamCheek",
+    }
+    
+    # 参数白名单（参考 LLM_Live2D 的 genericParameterCatalog，2026-09-06）
+    # 只允许写入白名单里的参数，防止 LLM 或动画预设写入无效参数
+    _PARAM_WHITE_LIST: set[str] = {
+        "ParamAngleX", "ParamAngleY", "ParamAngleZ",
+        "ParamBodyAngleX", "ParamBodyAngleY", "ParamBodyAngleZ",
+        "ParamEyeBallX", "ParamEyeBallY",
+        "ParamBrowAngle", "ParamBrowForm",
+        "ParamMouthForm", "ParamMouthOpenY",
+        "ParamEyeOpen", "ParamEyeSmile",
+        "ParamBreathAmp", "ParamBreathRate",
+        "ParamArmLA", "ParamArmRA",
+        "ParamBlush",
+        "ParamCheek",
+        "ParamEyeLOpen", "ParamEyeROpen",
+        "ParamBrowLAngle", "ParamBrowRAngle",
+        "ParamBrowLForm", "ParamBrowRForm",
+    }
+
     # 自动表情序列的加权随机权重（_tick_auto_motion 25% 分支用）。
     # 值越大越常出现；0 表示不参与自动播放。戏剧性/长时间表情给低权重，
     # 微妙/日常表情给高权重，避免待机时频繁出现夸张脸。
@@ -1367,7 +1404,12 @@ class Live2DRenderer(AvatarRenderer):
             _intent_cur = getattr(self, "_param_cur", None) or {}
             for _name, _val in _intent_cur.items():
                 try:
-                    _pid = getattr(P, _name, _name)
+                    # 2026-09-06: 先查映射表，再查 StandardParams 属性，最后用原名兜底
+                    _mapped = self._PARAM_NAME_MAP.get(_name, _name)
+                    _pid = getattr(P, _mapped, _mapped)
+                    # 白名单检查：只允许写入白名单里的参数（参考 LLM_Live2D 的 genericParameterCatalog）
+                    if _pid not in self._PARAM_WHITE_LIST:
+                        continue
                     self._model.SetParameterValue(_pid, float(_val), 1.0)
                 except Exception:
                     pass
