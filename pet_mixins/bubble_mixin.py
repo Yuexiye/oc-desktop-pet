@@ -140,17 +140,40 @@ class BubbleMixin:
             logger.exception("Show bubble failed")
         
         # 2026-09-07: 触发 TTS（让 idle chatter、屏幕感知 proactive 等回复也有语音）
+        # 但排除系统提示（短气泡、状态提示、操作提示）
         try:
-            engine = getattr(self, "_engine", None)
-            if engine and hasattr(engine, "speak"):
-                # 音频合成完成后播放（通过 tts_audio_signal 绕回主线程）
-                def _on_audio(audio_path):
-                    try:
-                        if audio_path:
-                            self.tts_audio_signal.emit(audio_path)
-                    except Exception as e:
-                        logger.debug("TTS signal from bubble failed: %s", e)
-                engine.speak(text, emotion=emotion, on_audio=_on_audio)
+            # 过滤条件：短气泡、状态提示、操作提示不触发 TTS
+            _skip_tts = False
+            
+            # 1. 短气泡（duration_ms > 0）：如缩放提示、工具进度
+            if duration_ms > 0:
+                _skip_tts = True
+            
+            # 2. 状态提示：思考中、语音生成中、观察中等
+            _status_keywords = ("思考中", "语音生成中", "正在观察", "正在思考", "正在回复", "观察中", "分析中")
+            if any(kw in text for kw in _status_keywords):
+                _skip_tts = True
+            
+            # 3. 操作提示：缩放、拖拽、点击等系统操作
+            _op_keywords = ("🔍", "缩放", "拖拽", "点击", "右键", "双击", "快捷键")
+            if any(kw in text for kw in _op_keywords):
+                _skip_tts = True
+            
+            # 4. 文本太短（< 10 字）：通常是提示，不是对话
+            if len(text) < 10:
+                _skip_tts = True
+            
+            if not _skip_tts:
+                engine = getattr(self, "_engine", None)
+                if engine and hasattr(engine, "speak"):
+                    # 音频合成完成后播放（通过 tts_audio_signal 绕回主线程）
+                    def _on_audio(audio_path):
+                        try:
+                            if audio_path:
+                                self.tts_audio_signal.emit(audio_path)
+                        except Exception as e:
+                            logger.debug("TTS signal from bubble failed: %s", e)
+                    engine.speak(text, emotion=emotion, on_audio=_on_audio)
         except Exception as e:
             logger.debug("TTS trigger from bubble failed: %s", e)
     
