@@ -105,6 +105,20 @@ class ProactiveScheduler:
         self._daily_limit: int = DAILY_LIMIT
         self._daily_count: int = 0
         self._daily_date: str = ""
+        
+        # 2026-09-06: 按时间段分配的打扰预算
+        self._period_limits: dict[str, int] = {
+            "morning": 2,   # 08:00-12:00
+            "afternoon": 2, # 12:00-18:00
+            "evening": 2,   # 18:00-24:00
+            "night": 0      # 00:00-08:00
+        }
+        self._period_counts: dict[str, int] = {
+            "morning": 0,
+            "afternoon": 0,
+            "evening": 0,
+            "night": 0
+        }
 
         # ── P6 全屏检测（游戏/视频全屏不打扰）──
         self._fullscreen_threshold: float = 0.95  # 窗口覆盖屏幕比例阈值（可配置）
@@ -377,10 +391,28 @@ class ProactiveScheduler:
         self._last_proactive_at = now
         self._user_replied_since_last = False
         self._daily_count += 1
+        # 2026-09-06: 更新按时间段计数
+        period = self._get_period()
+        self._period_counts[period] = self._period_counts.get(period, 0) + 1
         self._cooldown_until = now + self._current_cooldown * 60
         if self._daily_count == self._daily_limit:
             logger.info("Proactive daily limit reached (%d), no more triggers today", self._daily_count)
 
+    def _get_period(self) -> str:
+        """获取当前时间段（morning/afternoon/evening/night）。
+        
+        2026-09-06: 按时间段分配的打扰预算
+        """
+        hour = time.localtime().tm_hour
+        if hour < 8:
+            return "night"      # 00:00-08:00
+        elif hour < 12:
+            return "morning"    # 08:00-12:00
+        elif hour < 18:
+            return "afternoon"  # 12:00-18:00
+        else:
+            return "evening"    # 18:00-24:00
+    
     def _is_dnd_active(self) -> bool:
         """检查是否处于静默模式（Do Not Disturb）。
         
@@ -707,7 +739,14 @@ class ProactiveScheduler:
         if today != self._daily_date:
             self._daily_date = today
             self._daily_count = 0
+            self._period_counts = {"morning": 0, "afternoon": 0, "evening": 0, "night": 0}
         if self._daily_count >= self._daily_limit:
+            return None
+        
+        # 2026-09-06: 按时间段分配的打扰预算
+        period = self._get_period()
+        if self._period_counts.get(period, 0) >= self._period_limits.get(period, 0):
+            logger.debug("Proactive suppressed: period budget exhausted (%s)", period)
             return None
 
         if now < self._cooldown_until:
