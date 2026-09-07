@@ -381,6 +381,31 @@ class ProactiveScheduler:
         if self._daily_count == self._daily_limit:
             logger.info("Proactive daily limit reached (%d), no more triggers today", self._daily_count)
 
+    def _is_dnd_active(self) -> bool:
+        """检查是否处于静默模式（Do Not Disturb）。
+        
+        2026-09-06: 深夜时段（00:00-08:00）不响，用户可手动开启勿扰。
+        """
+        # 1. 检查配置
+        cfg = self._config.get("proactive", {}).get("dnd", {}) or {}
+        if not cfg.get("enabled", True):
+            return False
+        
+        # 2. 深夜时段检查
+        now = time.localtime()
+        hour = now.tm_hour
+        start = cfg.get("late_night_start", 0)
+        end = cfg.get("late_night_end", 8)
+        if hour < end or hour >= 24 - start:  # 00:00-08:00 或 22:00-24:00（如果 start=2）
+            if hour < end:
+                return True
+        
+        # 3. 用户手动开启勿扰（未来实现）
+        # if self._dnd_manual:
+        #     return True
+        
+        return False
+    
     def _is_fullscreen(self) -> bool:
         """检测当前前台窗口是否全屏（游戏/视频全屏不打扰）。
 
@@ -686,6 +711,11 @@ class ProactiveScheduler:
             return None
 
         if now < self._cooldown_until:
+            return None
+
+        # 2026-09-06: 静默模式（Do Not Disturb）——深夜时段不响
+        if self._is_dnd_active():
+            logger.debug("Proactive suppressed: DND active")
             return None
 
         # P0-1 生成在途：等待异步结果回主线程投递，本轮不再触发其他路径（防重复）
