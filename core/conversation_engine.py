@@ -1379,6 +1379,74 @@ class ConversationEngine:
 
         return None
 
+    def speak(self, text: str, emotion: str = "neutral", character_id: str = None) -> None:
+        """直接触发 TTS 合成（供 BubbleMixin 等外部调用）。
+        
+        与 _synth_and_reply 的区别：不回调 on_reply（气泡已显示，只需合成音频）。
+        线程安全：异步提交到 TTS 线程池，不阻塞调用方。
+        """
+        if not text or not text.strip() or text.strip() in ("…", "..."):
+            return
+        character_id = character_id or self._character_id
+        instruct_map = {
+            "happy": "开心", "sad": "难过", "angry": "生气",
+            "cute": "可爱", "thinking": "思考",
+        }
+        instruct = instruct_map.get(emotion, "")
+        gen = self._generation  # 使用当前代际，但不检查过期（外部调用不需要打断检查）
+        try:
+            self._tts_executor.submit(
+                self._synth_only, text, emotion, character_id, instruct,
+            )
+        except RuntimeError:
+            logger.debug("TTS 线程池已关闭，跳过合成")
+    
+    def _synth_only(self, reply, emotion, character, instruct):
+        """在 TTS 线程池中执行：仅合成，不回调（供 speak 方法使用）。"""
+        with self._lock:
+            tts = self._tts
+            tts_ready = self._tts_ready
+            if tts is not None:
+                self._tts_in_use += 1
+        try:
+            if tts and tts_ready and reply and reply.strip():
+                try:
+                    voice = ""
+                    resolver = getattr(self, "_voice_resolver", None)
+                    if callable(resolver):
+                        try:
+                            voice = resolver(character, emotion) or ""
+                        except Exception:
+                            pass
+                    # 移除 emotion 标签
+                    tts_text = reply
+                    if reply:
+                        try:
+                            tts_text = self._adapter.parse_emotion(reply)[0]
+                        except (AttributeError, Exception):
+                            import re
+                            tts_text = re.sub(r"\s*\[\s*emotion\s*[:=]\s*\w+\s*\]\s*", " ", reply, flags=re.IGNORECASE).strip()
+                    audio_path = tts.synthesize(
+                        tts_text, character_id=character, instruct=instruct, voice=voice,
+                        emotion=emotion,
+                    ) or ""
+                    if audio_path:
+                        logger.info("TTS done (speak): %s", os.path.basename(audio_path))
+                        # 播放音频
+                        try:
+                            self.on_reply(reply, emotion, "", audio_path, None)
+                        except Exception:
+                            pass
+                    else:
+                        _err = getattr(tts, "last_error", "") or "未知"
+                        logger.warning("TTS 合成失败 (speak)：原因=%s", _err)
+                except Exception as e:
+                    logger.warning("TTS error (speak): %s", e)
+        finally:
+            with self._lock:
+                if self._tts_in_use > 0:
+                    self._tts_in_use -= 1
+    
     def _synth_and_reply(self, reply, emotion, anim, character, instruct, source, gen):
         """在 TTS 线程池中执行：合成 + 回调（on_reply 仍带 audio_path，口型链路不变）。"""
         # synth 前检查：已打断则不浪费算力

@@ -138,7 +138,15 @@ class BubbleMixin:
                 logger.debug("Bubble diagnostic log failed: %s", e)
         except Exception:
             logger.exception("Show bubble failed")
-
+        
+        # 2026-09-07: 触发 TTS（让 idle chatter、屏幕感知 proactive 等回复也有语音）
+        try:
+            engine = getattr(self, "_engine", None)
+            if engine and hasattr(engine, "speak"):
+                engine.speak(text, emotion=emotion)
+        except Exception as e:
+            logger.debug("TTS trigger from bubble failed: %s", e)
+    
     def _show_bubble_stream(self, initial_text: str = "", emotion: str = "neutral", priority: int = 0):
         """P1: 流式气泡开始 — 显示初始文本（空或"思考中"），准备接收后续 chunk"""
         self._is_streaming_bubble = True
