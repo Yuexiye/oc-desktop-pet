@@ -607,6 +607,22 @@ class SettingsDialog(QDialog):
         mem_layout.addRow(self.mem_hint)
 
         memory_layout.addWidget(mem_group)
+        
+        # 2026-09-07: 会话记忆开关（新开对话是否保存记忆）
+        sess_group = QGroupBox("会话记忆")
+        sess_layout = QFormLayout(sess_group)
+        sess_layout.setSpacing(10)
+        
+        self.sess_memory_enabled = QCheckBox("新开对话保存记忆（默认关闭，避免污染主会话）")
+        self.sess_memory_enabled.setChecked(self._config.get("session_memory_enabled", False))
+        sess_layout.addRow(self.sess_memory_enabled)
+        
+        sess_hint = QLabel("关闭时，桌宠新开的 Hana 对话不会保存记忆，只在配置显式启用时才保存。")
+        sess_hint.setWordWrap(True)
+        sess_hint.setStyleSheet("color: rgb(%s); font-size: 10px;" % rgb(self._ui_theme, "text_muted"))
+        sess_layout.addRow(sess_hint)
+        
+        memory_layout.addWidget(sess_group)
         memory_layout.addStretch()
 
         self.func_sub_tabs.addTab(memory_tab, "记忆")
@@ -1502,6 +1518,10 @@ class SettingsDialog(QDialog):
         # 记忆注入
         c.setdefault("memory", {})["budget_mode"] = "auto" if self.mem_mode.currentIndex() == 0 else "manual"
         c["memory"]["budget_chars"] = self.mem_budget.value()
+        
+        # 2026-09-07: 会话记忆开关
+        if hasattr(self, "sess_memory_enabled"):
+            c["session_memory_enabled"] = self.sess_memory_enabled.isChecked()
 
         # 快捷键
         c.setdefault("shortcuts", {})["enabled"] = self.shortcuts_enabled.isChecked()
