@@ -66,7 +66,7 @@ class Live2DRenderer(AvatarRenderer):
     _IGNORED_EXPRESSIONS = _IGNORED_EXPRESSIONS_DEFAULT  # 可被 config.json 覆盖
     # 卡手势防御：非 idle motion 播满此秒数强制回 idle（模型 motion 全 Loop=true，
     # waving/touch 等手势 mp3.json 都是 2.667s 循环，播 1.5 圈后回位）
-    GESTURE_TIMEOUT = 3.0
+    GESTURE_TIMEOUT = 5.0  # 2026-09-07: 从 3.0 提到 5.0，避免 LLM 生成期间表情被重置
     # 动作过渡（easing）：表情（SetExpression）从上一个状态淡入到新状态的默认时长。
     # Live2D motion 文件本身的跨 blend 目前受限于 live2d-py wrapper 未暴露
     # motion weight API，无法在同一 motion 内部做淡入（仍为硬切）；但表情层
