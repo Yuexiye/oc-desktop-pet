@@ -12,6 +12,7 @@ DEFAULT_CONFIG = {
         "agent_id": "",  # 对话后端绑定的 Hanako agent（空=未绑定，首次启动引导选择；不硬编码默认）
         # 每个桌宠实例可自定义绑定；多桌宠各自独立
     },
+    "session_memory_enabled": False,  # 2026-09-07: 新开对话是否保存记忆（默认关闭，避免污染主会话）
     "scale": 1.0,
     "opacity": 1.0,
     "behavior": "normal",

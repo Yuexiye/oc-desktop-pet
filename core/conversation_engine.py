@@ -1674,6 +1674,13 @@ class ConversationEngine:
             return None
         try:
             aid = agent_id or self._agent_id
+            # 2026-09-07: 从配置读取 session_memory_enabled（默认关闭，避免污染主会话）
+            if "memory_enabled" not in kwargs:
+                try:
+                    from config import load_config
+                    kwargs["memory_enabled"] = load_config().get("session_memory_enabled", False)
+                except Exception:
+                    kwargs["memory_enabled"] = False
             session = self._session_manager.create_session(agent_id=aid, **kwargs)
             self.set_session(session)
             # P2-10 修复：更新 adapter 的 pin 缓存，否则 chat_via_hanako
@@ -1686,7 +1693,8 @@ class ConversationEngine:
                 # 清空本地历史，避免旧上下文注入
                 if hasattr(self._adapter, '_history'):
                     self._adapter._history.clear()
-            logger.info("新 Session 已创建: %s (agent=%s)", getattr(session, "session_id", "?"), aid)
+            logger.info("新 Session 已创建: %s (agent=%s, memory_enabled=%s)", 
+                        getattr(session, "session_id", "?"), aid, kwargs.get("memory_enabled", "?"))
             return session
         except Exception as e:
             logger.error("create_session 失败: %s", e)
