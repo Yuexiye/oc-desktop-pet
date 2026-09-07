@@ -254,7 +254,7 @@ class ProactiveGenerator:
         try:
             reply, _emotion = self._adapter.chat(
                 prompt,
-                inject_memory=False,
+                inject_memory=True,  # 2026-09-06: 注入 Hana 记忆，避免生成"感到寂寞"等无上下文内容
                 extra_context=extra,
                 source="proactive",
             )

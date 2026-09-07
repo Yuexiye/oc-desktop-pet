@@ -77,6 +77,23 @@ DEFAULT_CONFIG = {
     "proactive": {
         "enabled": True,
         "cooldown_minutes": 10,
+        # 2026-09-06: 打扰预算（每日上限，按时间段分配）
+        "daily_budget": {
+            "enabled": True,
+            "daily_limit": 6,  # 每日总上限
+            "period_limits": {  # 按时间段分配
+                "morning": 2,   # 08:00-12:00
+                "afternoon": 2, # 12:00-18:00
+                "evening": 2,   # 18:00-24:00
+                "night": 0      # 00:00-08:00（深夜不响）
+            }
+        },
+        # 2026-09-06: 静默模式（Do Not Disturb）
+        "dnd": {
+            "enabled": True,
+            "late_night_start": 0,  # 00:00
+            "late_night_end": 8     # 08:00
+        },
         # P0-1 主动搭话 LLM 生成开关（默认开）：模板池 → 候选生成 + LLM 决策是否开口；
         # 生成失败/超时自动回退固定模板池（fallback），不影响既有规则引擎
         "llm_generation": True,
