@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 class BubbleMixin:
     """气泡显示与 Hanako 状态呈现。"""
 
-    def _show_bubble(self, text: str, emotion: str = "neutral", priority: int = 0, duration_ms: int = 0):
+    def _show_bubble(self, text: str, emotion: str = "neutral", priority: int = 0, duration_ms: int = 0, source: str = ""):
         """显示消息气泡 —— 线程安全入口。
 
         MultiPetBridge 的 dispatcher 线程（pet_enter 事件 -> mission_tracker
@@ -42,7 +42,7 @@ class BubbleMixin:
         if QThread.currentThread() is not self.thread():
             self.bubble_signal.emit(str(text), str(emotion), int(priority))
             return
-        self._show_bubble_impl(text, emotion, priority, duration_ms)
+        self._show_bubble_impl(text, emotion, priority, duration_ms, source)
 
     def _bubble_duration(self, text: str) -> int:
         """根据文本长度计算气泡显示时长（base 10s + 字数系数，封顶 30s）。"""
@@ -51,7 +51,7 @@ class BubbleMixin:
         extra = int(n / 8) * 1000   # 每 8 字加 1s
         return min(base + extra, 30000)
 
-    def _show_bubble_impl(self, text: str, emotion: str = "neutral", priority: int = 0, duration_ms: int = 0):
+    def _show_bubble_impl(self, text: str, emotion: str = "neutral", priority: int = 0, duration_ms: int = 0, source: str = ""):
         """气泡实现体（仅限主线程调用；相同内容不重复刷新，高优先级不被低优先级覆盖）
 
         duration_ms > 0 时覆盖默认时长（如缩放提示短气泡）。
@@ -87,6 +87,10 @@ class BubbleMixin:
                         logger.debug("Action from bubble failed: %s", e)
             except Exception:
                 pass
+        
+        # 2026-09-06: 添加触发来源标签（调试用）
+        if source and source not in ("user", "system"):
+            text = f"[{source}] {text}" 
         
         # 原始逻辑
         now = time.time()

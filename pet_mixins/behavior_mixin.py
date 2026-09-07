@@ -289,7 +289,8 @@ class BehaviorMixin:
         emotion = get_bubble_emotion_for_prompt(prompt_text)
 
         # 直接显示场景文案气泡（prompt_text 即要显示的话，无需 LLM）
-        self._show_bubble(prompt_text, emotion=emotion)
+        # 2026-09-06: 添加触发来源标签（调试用）
+        self._show_bubble(prompt_text, emotion=emotion, source="proactive")
 
         # 记录对话空闲计时：主动对话也算一次"对话"，让 proactive 冷却正常
         # （user_reply=False：proactive 自身触发后的记录，非用户回应，不重置
